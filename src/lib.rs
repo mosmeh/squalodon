@@ -61,7 +61,7 @@ impl<S: Storage> Database<S> {
         for statement in parser {
             let statement = statement?;
             let mut catalog = self.catalog.lock().unwrap();
-            let plan = planner::plan(&catalog, statement)?;
+            let plan = planner::plan(&catalog, statement)?.into_node();
             let mut txn = SchemaAwareTransaction::new(self.storage.transaction());
             let executor = Executor::new(&mut txn, &mut catalog, plan)?;
             for row in executor {
@@ -82,8 +82,7 @@ impl<S: Storage> Database<S> {
         let mut catalog = self.catalog.lock().unwrap();
         let plan = planner::plan(&catalog, statement)?;
         let columns = plan
-            .schema
-            .columns
+            .columns()
             .iter()
             .map(|column| {
                 Column {
@@ -93,7 +92,7 @@ impl<S: Storage> Database<S> {
             })
             .collect();
         let mut txn = SchemaAwareTransaction::new(self.storage.transaction());
-        let rows = Executor::new(&mut txn, &mut catalog, plan)?
+        let rows = Executor::new(&mut txn, &mut catalog, plan.into_node())?
             .map(|columns| columns.map(|columns| Row { columns }).map_err(Into::into))
             .collect::<Result<Vec<_>>>()?;
         txn.commit();

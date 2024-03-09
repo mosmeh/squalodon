@@ -1,4 +1,4 @@
-use super::{ColumnIndex, Error, PlanKind, PlanNode, Result};
+use super::{ColumnIndex, Error, PlanNode, Result, TypedPlanNode};
 use crate::{
     parser, planner,
     storage::Catalog,
@@ -15,7 +15,7 @@ impl<'a> Binder<'a> {
         Self { catalog }
     }
 
-    pub fn bind(&mut self, statement: parser::Statement) -> Result<PlanNode> {
+    pub fn bind(&mut self, statement: parser::Statement) -> Result<TypedPlanNode> {
         match statement {
             parser::Statement::Explain(statement) => self.bind_explain(*statement),
             parser::Statement::CreateTable(create_table) => Ok(bind_create_table(create_table)),
@@ -24,15 +24,12 @@ impl<'a> Binder<'a> {
         }
     }
 
-    fn bind_explain(&mut self, statement: parser::Statement) -> Result<PlanNode> {
+    fn bind_explain(&mut self, statement: parser::Statement) -> Result<TypedPlanNode> {
         let plan = self.bind(statement)?;
-        Ok(PlanNode {
-            kind: PlanKind::Explain(Box::new(plan)),
-            schema: planner::Schema::empty().into(),
-        })
+        Ok(TypedPlanNode::sink(PlanNode::Explain(Box::new(plan.node))))
     }
 
-    fn bind_insert(&self, insert: parser::Insert) -> Result<PlanNode> {
+    fn bind_insert(&self, insert: parser::Insert) -> Result<TypedPlanNode> {
         let table_id = self.catalog.table_id(&insert.table_name)?;
         let mut exprs = Vec::with_capacity(insert.column_names.len());
         let table = self.catalog.table(table_id)?;
@@ -45,8 +42,8 @@ impl<'a> Binder<'a> {
         for column in &table.columns {
             let index_in_values = column_names.iter().position(|name| *name == &column.name);
             let expr = if let Some(index) = index_in_values {
-                bind_expr(&PlanNode::empty_row(), insert.exprs[index].clone())?
-                    .expect_type(column.ty)?
+                let expr = insert.exprs[index].clone();
+                bind_expr(&TypedPlanNode::empty_source(), expr)?.expect_type(column.ty)?
             } else {
                 if column.is_not_null {
                     return Err(Error::TypeError);
@@ -62,20 +59,17 @@ impl<'a> Binder<'a> {
             }
             exprs.push(expr);
         }
-        Ok(PlanNode {
-            kind: PlanKind::Insert(planner::Insert {
-                table: table_id,
-                primary_key_column: primary_key_column.expect("table has no primary key"),
-                exprs,
-            }),
-            schema: planner::Schema::empty().into(),
-        })
+        Ok(TypedPlanNode::sink(PlanNode::Insert(planner::Insert {
+            table: table_id,
+            primary_key_column: primary_key_column.expect("table has no primary key"),
+            exprs,
+        })))
     }
 
-    fn bind_select(&mut self, select: parser::Select) -> Result<PlanNode> {
+    fn bind_select(&mut self, select: parser::Select) -> Result<TypedPlanNode> {
         let mut node = match select.from {
             Some(table_ref) => self.bind_table_ref(table_ref)?,
-            None => PlanNode::empty_row(),
+            None => TypedPlanNode::empty_source(),
         };
         if let Some(where_clause) = select.where_clause {
             node = bind_where_clause(node, where_clause)?;
@@ -86,61 +80,56 @@ impl<'a> Binder<'a> {
         Ok(node)
     }
 
-    fn bind_table_ref(&self, table_ref: parser::TableRef) -> Result<PlanNode> {
+    fn bind_table_ref(&self, table_ref: parser::TableRef) -> Result<TypedPlanNode> {
         match table_ref {
             parser::TableRef::BaseTable { name } => self.bind_base_table(&name),
         }
     }
 
-    fn bind_base_table(&self, name: &str) -> Result<PlanNode> {
+    fn bind_base_table(&self, name: &str) -> Result<TypedPlanNode> {
         let table_id = self.catalog.table_id(name)?;
         let table = self.catalog.table(table_id)?;
-        Ok(PlanNode {
-            kind: PlanKind::Scan(planner::Scan::SeqScan {
+        Ok(TypedPlanNode {
+            node: PlanNode::Scan(planner::Scan::SeqScan {
                 table: table_id,
                 columns: (0..table.columns.len()).map(ColumnIndex).collect(),
             }),
-            schema: planner::Schema::new(
-                table
-                    .columns
-                    .into_iter()
-                    .map(|column| planner::Column {
-                        name: column.name,
-                        ty: column.ty.into(),
-                    })
-                    .collect(),
-            )
-            .into(),
+            columns: table
+                .columns
+                .into_iter()
+                .map(|column| planner::Column {
+                    name: column.name,
+                    ty: column.ty.into(),
+                })
+                .collect(),
         })
     }
 }
 
-fn bind_create_table(create_table: parser::CreateTable) -> PlanNode {
-    PlanNode {
-        kind: PlanKind::CreateTable(planner::CreateTable(create_table)),
-        schema: planner::Schema::empty().into(),
-    }
+fn bind_create_table(create_table: parser::CreateTable) -> TypedPlanNode {
+    TypedPlanNode::sink(PlanNode::CreateTable(planner::CreateTable(create_table)))
 }
 
-fn bind_where_clause(source: PlanNode, expr: parser::Expression) -> Result<PlanNode> {
+fn bind_where_clause(source: TypedPlanNode, expr: parser::Expression) -> Result<TypedPlanNode> {
     let cond = bind_expr(&source, expr)?.expect_type(Type::Boolean)?;
-    let schema = source.schema.clone();
-    Ok(PlanNode {
-        kind: PlanKind::Filter(planner::Filter {
+    Ok(source.inherit_schema(|source| {
+        PlanNode::Filter(planner::Filter {
             source: Box::new(source),
             cond,
-        }),
-        schema,
-    })
+        })
+    }))
 }
 
-fn bind_projections(source: PlanNode, projections: Vec<parser::Projection>) -> Result<PlanNode> {
+fn bind_projections(
+    source: TypedPlanNode,
+    projections: Vec<parser::Projection>,
+) -> Result<TypedPlanNode> {
     let mut exprs = Vec::new();
     let mut columns = Vec::new();
     for projection in projections {
         match projection {
             parser::Projection::Wildcard => {
-                for (i, column) in source.schema.columns.iter().cloned().enumerate() {
+                for (i, column) in source.columns.iter().cloned().enumerate() {
                     exprs.push(planner::Expression::ColumnRef {
                         column: ColumnIndex(i),
                     });
@@ -160,16 +149,16 @@ fn bind_projections(source: PlanNode, projections: Vec<parser::Projection>) -> R
             }
         }
     }
-    Ok(PlanNode {
-        kind: PlanKind::Project(planner::Project {
-            source: Box::new(source),
+    Ok(TypedPlanNode {
+        node: PlanNode::Project(planner::Project {
+            source: Box::new(source.node),
             exprs,
         }),
-        schema: planner::Schema::new(columns).into(),
+        columns,
     })
 }
 
-fn bind_order_by(source: PlanNode, order_by: Vec<parser::OrderBy>) -> Result<PlanNode> {
+fn bind_order_by(source: TypedPlanNode, order_by: Vec<parser::OrderBy>) -> Result<TypedPlanNode> {
     if order_by.is_empty() {
         return Ok(source);
     }
@@ -182,23 +171,21 @@ fn bind_order_by(source: PlanNode, order_by: Vec<parser::OrderBy>) -> Result<Pla
             null_order: item.null_order,
         });
     }
-    let schema = source.schema.clone();
-    Ok(PlanNode {
-        kind: PlanKind::Sort(planner::Sort {
+    Ok(source.inherit_schema(|source| {
+        PlanNode::Sort(planner::Sort {
             source: source.into(),
             order_by: bound_order_by,
-        }),
-        schema,
-    })
+        })
+    }))
 }
 
 fn bind_limit(
-    source: PlanNode,
+    source: TypedPlanNode,
     limit: Option<parser::Expression>,
     offset: Option<parser::Expression>,
-) -> Result<PlanNode> {
+) -> Result<TypedPlanNode> {
     fn bind(
-        source: &PlanNode,
+        source: &TypedPlanNode,
         expr: Option<parser::Expression>,
     ) -> Result<Option<planner::Expression>> {
         let Some(expr) = expr else {
@@ -214,18 +201,16 @@ fn bind_limit(
 
     let limit = bind(&source, limit)?;
     let offset = bind(&source, offset)?;
-    let schema = source.schema.clone();
-    Ok(PlanNode {
-        kind: PlanKind::Limit(planner::Limit {
+    Ok(source.inherit_schema(|source| {
+        PlanNode::Limit(planner::Limit {
             source: Box::new(source),
             limit,
             offset,
-        }),
-        schema,
-    })
+        })
+    }))
 }
 
-fn bind_expr(source: &PlanNode, expr: parser::Expression) -> Result<TypedExpression> {
+fn bind_expr(source: &TypedPlanNode, expr: parser::Expression) -> Result<TypedExpression> {
     match expr {
         parser::Expression::Constant(value) => {
             let ty = value.ty();
@@ -235,7 +220,7 @@ fn bind_expr(source: &PlanNode, expr: parser::Expression) -> Result<TypedExpress
             })
         }
         parser::Expression::ColumnRef(column) => {
-            let (index, column) = source.schema.resolve_column(&column)?;
+            let (index, column) = source.resolve_column(&column)?;
             let expr = planner::Expression::ColumnRef { column: index };
             Ok(TypedExpression {
                 expr,

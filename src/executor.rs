@@ -1,5 +1,5 @@
 use crate::{
-    planner::{self, ColumnIndex, Expression, OrderBy, PlanKind, PlanNode},
+    planner::{self, ColumnIndex, Expression, OrderBy, PlanNode},
     serde::SerdeOptions,
     storage::{Catalog, SchemaAwareTransaction, StorageError, TableId, Transaction},
     BinaryOp, Value,
@@ -72,7 +72,7 @@ impl IntoOutput for Option<Result<Vec<Value>>> {
     }
 }
 
-pub struct Executor<'a>(ExecutorKind<'a>);
+pub struct Executor<'a>(ExecutorNode<'a>);
 
 impl<'a> Executor<'a> {
     pub fn new<T: Transaction>(
@@ -80,7 +80,7 @@ impl<'a> Executor<'a> {
         catalog: &mut Catalog,
         plan: PlanNode,
     ) -> Result<Self> {
-        ExecutorKind::new(txn, catalog, plan).map(Self)
+        ExecutorNode::new(txn, catalog, plan).map(Self)
     }
 }
 
@@ -96,7 +96,7 @@ impl Iterator for Executor<'_> {
     }
 }
 
-enum ExecutorKind<'a> {
+enum ExecutorNode<'a> {
     SeqScan(SeqScan<'a>),
     Project(Project<'a>),
     Filter(Filter<'a>),
@@ -106,18 +106,18 @@ enum ExecutorKind<'a> {
     NoRow,
 }
 
-impl<'a> ExecutorKind<'a> {
+impl<'a> ExecutorNode<'a> {
     fn new<T: Transaction>(
         txn: &'a mut SchemaAwareTransaction<T>,
         catalog: &mut Catalog,
         plan: PlanNode,
     ) -> Result<Self> {
-        let executor = match plan.kind {
-            PlanKind::Explain(plan) => {
+        let executor = match plan {
+            PlanNode::Explain(plan) => {
                 println!("{plan}");
                 Self::NoRow
             }
-            PlanKind::CreateTable(create_table) => {
+            PlanNode::CreateTable(create_table) => {
                 catalog.create_table(
                     txn.inner_mut(),
                     create_table.0.name,
@@ -125,7 +125,7 @@ impl<'a> ExecutorKind<'a> {
                 )?;
                 Self::NoRow
             }
-            PlanKind::Insert(insert) => {
+            PlanNode::Insert(insert) => {
                 let columns = insert
                     .exprs
                     .into_iter()
@@ -138,21 +138,21 @@ impl<'a> ExecutorKind<'a> {
                 );
                 Self::NoRow
             }
-            PlanKind::Scan(planner::Scan::SeqScan { table, columns }) => {
+            PlanNode::Scan(planner::Scan::SeqScan { table, columns }) => {
                 Self::SeqScan(SeqScan::new(txn, table, columns))
             }
-            PlanKind::Project(planner::Project { source, exprs }) => Self::Project(Project {
+            PlanNode::Project(planner::Project { source, exprs }) => Self::Project(Project {
                 source: Self::new(txn, catalog, *source)?.into(),
                 exprs,
             }),
-            PlanKind::Filter(planner::Filter { source, cond }) => Self::Filter(Filter {
+            PlanNode::Filter(planner::Filter { source, cond }) => Self::Filter(Filter {
                 source: Self::new(txn, catalog, *source)?.into(),
                 cond,
             }),
-            PlanKind::Sort(planner::Sort { source, order_by }) => {
+            PlanNode::Sort(planner::Sort { source, order_by }) => {
                 Self::Sort(Sort::new(Self::new(txn, catalog, *source)?, order_by))
             }
-            PlanKind::Limit(planner::Limit {
+            PlanNode::Limit(planner::Limit {
                 source,
                 limit,
                 offset,
@@ -161,13 +161,13 @@ impl<'a> ExecutorKind<'a> {
                 limit,
                 offset,
             )?),
-            PlanKind::OneRow(one_row) => Self::OneRow(OneRow::new(one_row.columns)?),
+            PlanNode::OneRow(one_row) => Self::OneRow(OneRow::new(one_row.columns)?),
         };
         Ok(executor)
     }
 }
 
-impl Node for ExecutorKind<'_> {
+impl Node for ExecutorNode<'_> {
     fn next_row(&mut self) -> Output {
         match self {
             Self::SeqScan(e) => e.next_row(),
@@ -181,7 +181,7 @@ impl Node for ExecutorKind<'_> {
     }
 }
 
-impl Iterator for ExecutorKind<'_> {
+impl Iterator for ExecutorNode<'_> {
     type Item = Result<Vec<Value>>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -220,7 +220,7 @@ impl Node for SeqScan<'_> {
 }
 
 struct Project<'a> {
-    source: Box<ExecutorKind<'a>>,
+    source: Box<ExecutorNode<'a>>,
     exprs: Vec<Expression>,
 }
 
@@ -236,7 +236,7 @@ impl Node for Project<'_> {
 }
 
 struct Filter<'a> {
-    source: Box<ExecutorKind<'a>>,
+    source: Box<ExecutorNode<'a>>,
     cond: Expression,
 }
 
@@ -253,7 +253,7 @@ impl Node for Filter<'_> {
 
 enum Sort<'a> {
     Collect {
-        source: Box<ExecutorKind<'a>>,
+        source: Box<ExecutorNode<'a>>,
         order_by: Vec<OrderBy>,
     },
     Output {
@@ -262,7 +262,7 @@ enum Sort<'a> {
 }
 
 impl<'a> Sort<'a> {
-    fn new(source: ExecutorKind<'a>, order_by: Vec<OrderBy>) -> Self {
+    fn new(source: ExecutorNode<'a>, order_by: Vec<OrderBy>) -> Self {
         Self::Collect {
             source: source.into(),
             order_by,
@@ -299,7 +299,7 @@ impl Node for Sort<'_> {
 }
 
 struct Limit<'a> {
-    source: Box<ExecutorKind<'a>>,
+    source: Box<ExecutorNode<'a>>,
     limit: Option<usize>,
     offset: usize,
     cursor: usize,
@@ -307,7 +307,7 @@ struct Limit<'a> {
 
 impl<'a> Limit<'a> {
     fn new(
-        source: ExecutorKind<'a>,
+        source: ExecutorNode<'a>,
         limit: Option<Expression>,
         offset: Option<Expression>,
     ) -> Result<Self> {

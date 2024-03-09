@@ -6,7 +6,6 @@ use crate::{
     types::{Type, Value},
     BinaryOp, NullOrder, Order, StorageError,
 };
-use std::rc::Rc;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -22,7 +21,7 @@ pub enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-pub fn plan(catalog: &Catalog, statement: parser::Statement) -> Result<PlanNode> {
+pub fn plan(catalog: &Catalog, statement: parser::Statement) -> Result<TypedPlanNode> {
     binder::Binder::new(catalog).bind(statement)
 }
 
@@ -35,20 +34,44 @@ impl std::fmt::Display for ColumnIndex {
     }
 }
 
-#[derive(Debug)]
-pub struct Schema {
-    pub columns: Vec<Column>,
+pub struct TypedPlanNode {
+    node: PlanNode,
+    columns: Vec<Column>,
 }
 
-impl Schema {
-    fn empty() -> Self {
+impl TypedPlanNode {
+    pub fn into_node(self) -> PlanNode {
+        self.node
+    }
+
+    pub fn columns(&self) -> &[Column] {
+        &self.columns
+    }
+
+    fn empty_source() -> Self {
         Self {
+            node: PlanNode::OneRow(OneRow {
+                columns: Vec::new(),
+            }),
             columns: Vec::new(),
         }
     }
 
-    fn new(columns: Vec<Column>) -> Self {
-        Self { columns }
+    fn sink(node: PlanNode) -> Self {
+        Self {
+            node,
+            columns: Vec::new(),
+        }
+    }
+
+    fn inherit_schema<F>(self, f: F) -> Self
+    where
+        F: FnOnce(PlanNode) -> PlanNode,
+    {
+        Self {
+            node: f(self.node),
+            columns: self.columns,
+        }
     }
 
     fn resolve_column(&self, name: &str) -> Result<(ColumnIndex, &Column)> {
@@ -67,22 +90,6 @@ pub struct Column {
     pub ty: Option<Type>,
 }
 
-pub struct PlanNode {
-    pub kind: PlanKind,
-    pub schema: Rc<Schema>,
-}
-
-impl PlanNode {
-    fn empty_row() -> Self {
-        Self {
-            kind: PlanKind::OneRow(OneRow {
-                columns: Vec::new(),
-            }),
-            schema: Schema::empty().into(),
-        }
-    }
-}
-
 trait Explain {
     fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result;
 
@@ -95,29 +102,7 @@ trait Explain {
     }
 }
 
-impl Explain for PlanNode {
-    fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
-        match &self.kind {
-            PlanKind::Explain(explain) => explain.explain(f, depth),
-            PlanKind::CreateTable(create_table) => create_table.explain(f, depth),
-            PlanKind::Insert(insert) => insert.explain(f, depth),
-            PlanKind::Scan(scan) => scan.explain(f, depth),
-            PlanKind::Project(project) => project.explain(f, depth),
-            PlanKind::Filter(filter) => filter.explain(f, depth),
-            PlanKind::Sort(sort) => sort.explain(f, depth),
-            PlanKind::Limit(limit) => limit.explain(f, depth),
-            PlanKind::OneRow(one_row) => one_row.explain(f, depth),
-        }
-    }
-}
-
-impl std::fmt::Display for PlanNode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.explain(f, 0)
-    }
-}
-
-pub enum PlanKind {
+pub enum PlanNode {
     Explain(Box<PlanNode>),
     CreateTable(CreateTable),
     Insert(Insert),
@@ -127,6 +112,28 @@ pub enum PlanKind {
     Sort(Sort),
     Limit(Limit),
     OneRow(OneRow),
+}
+
+impl Explain for PlanNode {
+    fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
+        match self {
+            Self::Explain(explain) => explain.explain(f, depth),
+            Self::CreateTable(create_table) => create_table.explain(f, depth),
+            Self::Insert(insert) => insert.explain(f, depth),
+            Self::Scan(scan) => scan.explain(f, depth),
+            Self::Project(project) => project.explain(f, depth),
+            Self::Filter(filter) => filter.explain(f, depth),
+            Self::Sort(sort) => sort.explain(f, depth),
+            Self::Limit(limit) => limit.explain(f, depth),
+            Self::OneRow(one_row) => one_row.explain(f, depth),
+        }
+    }
+}
+
+impl std::fmt::Display for PlanNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.explain(f, 0)
+    }
 }
 
 pub struct CreateTable(pub parser::CreateTable);
