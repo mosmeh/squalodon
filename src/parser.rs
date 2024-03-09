@@ -91,7 +91,8 @@ pub struct Select {
     pub from: Option<TableRef>,
     pub where_clause: Option<Expression>,
     pub order_by: Vec<OrderBy>,
-    pub limit: Option<Limit>,
+    pub limit: Option<Expression>,
+    pub offset: Option<Expression>,
 }
 
 #[derive(Debug)]
@@ -113,12 +114,6 @@ pub struct OrderBy {
     pub expr: Expression,
     pub order: Order,
     pub null_order: NullOrder,
-}
-
-#[derive(Debug)]
-pub struct Limit {
-    pub expr: Expression,
-    pub offset: Option<Expression>,
 }
 
 pub struct Parser<'a> {
@@ -283,8 +278,15 @@ impl<'a> Parser<'a> {
             .then(|| self.parse_order_by())
             .transpose()?
             .unwrap_or_default();
-        let limit = (*self.lexer.peek()? == Token::Limit)
-            .then(|| self.parse_limit())
+        let limit = self
+            .lexer
+            .consume_if_eq(Token::Limit)?
+            .then(|| self.parse_expr())
+            .transpose()?;
+        let offset = self
+            .lexer
+            .consume_if_eq(Token::Offset)?
+            .then(|| self.parse_expr())
             .transpose()?;
         Ok(Select {
             projections,
@@ -292,6 +294,7 @@ impl<'a> Parser<'a> {
             where_clause,
             order_by,
             limit,
+            offset,
         })
     }
 
@@ -349,17 +352,6 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(order_by)
-    }
-
-    fn parse_limit(&mut self) -> Result<Limit> {
-        self.expect(Token::Limit)?;
-        let expr = self.parse_expr()?;
-        let offset = self
-            .lexer
-            .consume_if_eq(Token::Offset)?
-            .then(|| self.parse_expr())
-            .transpose()?;
-        Ok(Limit { expr, offset })
     }
 
     fn parse_expr(&mut self) -> Result<Expression> {

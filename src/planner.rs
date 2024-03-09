@@ -105,6 +105,7 @@ impl Explain for PlanNode {
             PlanKind::Project(project) => project.explain(f, depth),
             PlanKind::Filter(filter) => filter.explain(f, depth),
             PlanKind::Sort(sort) => sort.explain(f, depth),
+            PlanKind::Limit(limit) => limit.explain(f, depth),
             PlanKind::OneRow(one_row) => one_row.explain(f, depth),
         }
     }
@@ -124,6 +125,7 @@ pub enum PlanKind {
     Project(Project),
     Filter(Filter),
     Sort(Sort),
+    Limit(Limit),
     OneRow(OneRow),
 }
 
@@ -246,6 +248,26 @@ impl Explain for Sort {
             }
         }
         f.write_str("]\n")?;
+        self.source.explain_child(f, depth)
+    }
+}
+
+pub struct Limit {
+    pub source: Box<PlanNode>,
+    pub limit: Option<Expression>,
+    pub offset: Option<Expression>,
+}
+
+impl Explain for Limit {
+    fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
+        f.write_str("Limit")?;
+        if let Some(limit) = &self.limit {
+            write!(f, " limit={limit}")?;
+        }
+        if let Some(offset) = &self.offset {
+            write!(f, " offset={offset}")?;
+        }
+        f.write_str("\n")?;
         self.source.explain_child(f, depth)
     }
 }

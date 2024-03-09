@@ -45,14 +45,8 @@ impl<'a> Binder<'a> {
         for column in &table.columns {
             let index_in_values = column_names.iter().position(|name| *name == &column.name);
             let expr = if let Some(index) = index_in_values {
-                let TypedExpression { expr, ty } =
-                    bind_expr(&PlanNode::empty_row(), insert.exprs[index].clone())?;
-                if let Some(ty) = ty {
-                    if ty != column.ty {
-                        return Err(Error::TypeError);
-                    }
-                }
-                expr
+                bind_expr(&PlanNode::empty_row(), insert.exprs[index].clone())?
+                    .expect_type(column.ty)?
             } else {
                 if column.is_not_null {
                     return Err(Error::TypeError);
@@ -86,9 +80,9 @@ impl<'a> Binder<'a> {
         if let Some(where_clause) = select.where_clause {
             node = bind_where_clause(node, where_clause)?;
         }
-        node = bind_projections(node, select.projections)?;
         node = bind_order_by(node, select.order_by)?;
-        assert!(select.limit.is_none(), "LIMIT is not supported");
+        node = bind_limit(node, select.limit, select.offset)?;
+        node = bind_projections(node, select.projections)?;
         Ok(node)
     }
 
@@ -129,7 +123,7 @@ fn bind_create_table(create_table: parser::CreateTable) -> PlanNode {
 }
 
 fn bind_where_clause(source: PlanNode, expr: parser::Expression) -> Result<PlanNode> {
-    let cond = bind_expr(&source, expr)?.expr;
+    let cond = bind_expr(&source, expr)?.expect_type(Type::Boolean)?;
     let schema = source.schema.clone();
     Ok(PlanNode {
         kind: PlanKind::Filter(planner::Filter {
@@ -155,7 +149,12 @@ fn bind_projections(source: PlanNode, projections: Vec<parser::Projection>) -> R
             }
             parser::Projection::Expression { expr, alias } => {
                 let TypedExpression { expr, ty } = bind_expr(&source, expr)?;
-                let name = alias.unwrap_or_else(|| expr.to_string());
+                let name = alias.unwrap_or_else(|| match expr {
+                    planner::Expression::ColumnRef { column } => {
+                        source.columns[column.0].name.clone()
+                    }
+                    _ => expr.to_string(),
+                });
                 exprs.push(expr);
                 columns.push(planner::Column { name, ty });
             }
@@ -188,6 +187,39 @@ fn bind_order_by(source: PlanNode, order_by: Vec<parser::OrderBy>) -> Result<Pla
         kind: PlanKind::Sort(planner::Sort {
             source: source.into(),
             order_by: bound_order_by,
+        }),
+        schema,
+    })
+}
+
+fn bind_limit(
+    source: PlanNode,
+    limit: Option<parser::Expression>,
+    offset: Option<parser::Expression>,
+) -> Result<PlanNode> {
+    fn bind(
+        source: &PlanNode,
+        expr: Option<parser::Expression>,
+    ) -> Result<Option<planner::Expression>> {
+        let Some(expr) = expr else {
+            return Ok(None);
+        };
+        let expr = bind_expr(source, expr)?.expect_type(Type::Integer)?;
+        Ok(Some(expr))
+    }
+
+    if limit.is_none() && offset.is_none() {
+        return Ok(source);
+    }
+
+    let limit = bind(&source, limit)?;
+    let offset = bind(&source, offset)?;
+    let schema = source.schema.clone();
+    Ok(PlanNode {
+        kind: PlanKind::Limit(planner::Limit {
+            source: Box::new(source),
+            limit,
+            offset,
         }),
         schema,
     })
@@ -243,4 +275,15 @@ fn bind_expr(source: &PlanNode, expr: parser::Expression) -> Result<TypedExpress
 struct TypedExpression {
     expr: planner::Expression,
     ty: Option<Type>,
+}
+
+impl TypedExpression {
+    fn expect_type(self, expected: Type) -> Result<planner::Expression> {
+        if let Some(ty) = self.ty {
+            if ty != expected {
+                return Err(Error::TypeError);
+            }
+        }
+        Ok(self.expr)
+    }
 }

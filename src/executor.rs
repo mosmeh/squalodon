@@ -31,7 +31,7 @@ enum NodeError {
     // HACK: This is not a real error, but treating it as one allows us to use
     // the ? operator to exit early when reaching the end of the rows.
     #[error("End of rows")]
-    Finished,
+    EndOfRows,
 }
 
 type Output = std::result::Result<Vec<Value>, NodeError>;
@@ -48,7 +48,7 @@ impl IntoOutput for Result<Vec<Value>> {
 
 impl IntoOutput for Option<Vec<Value>> {
     fn into_output(self) -> Output {
-        self.ok_or(NodeError::Finished)
+        self.ok_or(NodeError::EndOfRows)
     }
 }
 
@@ -56,7 +56,7 @@ impl IntoOutput for Result<Option<Vec<Value>>> {
     fn into_output(self) -> Output {
         match self {
             Ok(Some(row)) => Ok(row),
-            Ok(None) => Err(NodeError::Finished),
+            Ok(None) => Err(NodeError::EndOfRows),
             Err(e) => Err(NodeError::Error(e)),
         }
     }
@@ -67,7 +67,7 @@ impl IntoOutput for Option<Result<Vec<Value>>> {
         match self {
             Some(Ok(row)) => Ok(row),
             Some(Err(e)) => Err(NodeError::Error(e)),
-            None => Err(NodeError::Finished),
+            None => Err(NodeError::EndOfRows),
         }
     }
 }
@@ -91,7 +91,7 @@ impl Iterator for Executor<'_> {
         match self.0.next_row() {
             Ok(row) => Some(Ok(row)),
             Err(NodeError::Error(e)) => Some(Err(e)),
-            Err(NodeError::Finished) => None,
+            Err(NodeError::EndOfRows) => None,
         }
     }
 }
@@ -101,6 +101,7 @@ enum ExecutorKind<'a> {
     Project(Project<'a>),
     Filter(Filter<'a>),
     Sort(Sort<'a>),
+    Limit(Limit<'a>),
     OneRow(OneRow),
     NoRow,
 }
@@ -151,6 +152,15 @@ impl<'a> ExecutorKind<'a> {
             PlanKind::Sort(planner::Sort { source, order_by }) => {
                 Self::Sort(Sort::new(Self::new(txn, catalog, *source)?, order_by))
             }
+            PlanKind::Limit(planner::Limit {
+                source,
+                limit,
+                offset,
+            }) => Self::Limit(Limit::new(
+                Self::new(txn, catalog, *source)?,
+                limit,
+                offset,
+            )?),
             PlanKind::OneRow(one_row) => Self::OneRow(OneRow::new(one_row.columns)?),
         };
         Ok(executor)
@@ -164,8 +174,9 @@ impl Node for ExecutorKind<'_> {
             Self::Project(e) => e.next_row(),
             Self::Filter(e) => e.next_row(),
             Self::Sort(e) => e.next_row(),
+            Self::Limit(e) => e.next_row(),
             Self::OneRow(e) => e.next_row(),
-            Self::NoRow => Err(NodeError::Finished),
+            Self::NoRow => Err(NodeError::EndOfRows),
         }
     }
 }
@@ -177,7 +188,7 @@ impl Iterator for ExecutorKind<'_> {
         match self.next_row() {
             Ok(row) => Some(Ok(row)),
             Err(NodeError::Error(e)) => Some(Err(e)),
-            Err(NodeError::Finished) => None,
+            Err(NodeError::EndOfRows) => None,
         }
     }
 }
@@ -283,6 +294,57 @@ impl Node for Sort<'_> {
                 self.next_row()
             }
             Self::Output { rows } => rows.next().into_output(),
+        }
+    }
+}
+
+struct Limit<'a> {
+    source: Box<ExecutorKind<'a>>,
+    limit: Option<usize>,
+    offset: usize,
+    cursor: usize,
+}
+
+impl<'a> Limit<'a> {
+    fn new(
+        source: ExecutorKind<'a>,
+        limit: Option<Expression>,
+        offset: Option<Expression>,
+    ) -> Result<Self> {
+        fn eval(expr: Option<Expression>) -> Result<Option<usize>> {
+            let Some(expr) = expr else {
+                return Ok(None);
+            };
+            let i = expr.eval(&[])?.as_integer().ok_or(Error::TypeError)?;
+            i.try_into()
+                .map_or_else(|_| Err(Error::OutOfRange), |i| Ok(Some(i)))
+        }
+
+        Ok(Self {
+            source: source.into(),
+            limit: eval(limit)?,
+            offset: eval(offset)?.unwrap_or(0),
+            cursor: 0,
+        })
+    }
+}
+
+impl Node for Limit<'_> {
+    fn next_row(&mut self) -> Output {
+        loop {
+            let row = self.source.next_row()?;
+            if self.cursor < self.offset {
+                self.cursor += 1;
+                continue;
+            }
+            match self.limit {
+                Some(limit) if self.cursor < self.offset + limit => {
+                    self.cursor += 1;
+                    return Ok(row);
+                }
+                Some(_) => return Err(NodeError::EndOfRows),
+                None => return Ok(row),
+            }
         }
     }
 }

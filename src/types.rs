@@ -129,4 +129,11 @@ impl Value {
     pub fn as_bool(&self) -> bool {
         !matches!(self, Self::Boolean(false) | Self::Integer(0) | Self::Null)
     }
+
+    pub fn as_integer(&self) -> Option<i64> {
+        match self {
+            Self::Integer(i) => Some(*i),
+            _ => None,
+        }
+    }
 }
