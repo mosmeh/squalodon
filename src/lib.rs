@@ -12,6 +12,7 @@ pub use types::{Type, Value};
 
 use executor::Executor;
 use parser::Parser;
+use std::sync::Mutex;
 use storage::{Catalog, SchemaAwareTransaction};
 
 #[derive(Debug, thiserror::Error)]
@@ -42,22 +43,26 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 pub struct Database<S> {
     storage: S,
-    catalog: Catalog,
+    catalog: Mutex<Catalog>,
 }
 
 impl<S: Storage> Database<S> {
     pub fn new(storage: S) -> Result<Self> {
         let catalog = Catalog::load(&storage.transaction())?;
-        Ok(Self { storage, catalog })
+        Ok(Self {
+            storage,
+            catalog: catalog.into(),
+        })
     }
 
-    pub fn execute(&mut self, sql: &str) -> Result<()> {
+    pub fn execute(&self, sql: &str) -> Result<()> {
         let parser = Parser::new(sql);
         for statement in parser {
             let statement = statement?;
-            let plan = planner::plan(&self.catalog, statement)?;
+            let mut catalog = self.catalog.lock().unwrap();
+            let plan = planner::plan(&catalog, statement)?;
             let mut txn = SchemaAwareTransaction::new(self.storage.transaction());
-            let executor = Executor::new(&mut txn, &mut self.catalog, plan)?;
+            let executor = Executor::new(&mut txn, &mut catalog, plan)?;
             for row in executor {
                 row?;
             }
@@ -66,14 +71,15 @@ impl<S: Storage> Database<S> {
         Ok(())
     }
 
-    pub fn query(&mut self, sql: &str) -> Result<Rows> {
+    pub fn query(&self, sql: &str) -> Result<Rows> {
         let mut parser = Parser::new(sql);
         let statement = parser.next().unwrap()?;
         assert!(
             parser.next().is_none(),
             "multiple statements are not supported"
         );
-        let plan = planner::plan(&self.catalog, statement)?;
+        let mut catalog = self.catalog.lock().unwrap();
+        let plan = planner::plan(&catalog, statement)?;
         let columns = plan
             .schema
             .columns
@@ -86,9 +92,9 @@ impl<S: Storage> Database<S> {
             })
             .collect();
         let mut txn = SchemaAwareTransaction::new(self.storage.transaction());
-        let rows = Executor::new(&mut txn, &mut self.catalog, plan)?
-            .map(|columns| columns.map(|columns| Row { columns }))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let rows = Executor::new(&mut txn, &mut catalog, plan)?
+            .map(|columns| columns.map(|columns| Row { columns }).map_err(Into::into))
+            .collect::<Result<Vec<_>>>()?;
         txn.commit();
         Ok(Rows {
             iter: rows.into_iter(),

@@ -5,7 +5,7 @@ use std::io::Write;
 use unicode_width::UnicodeWidthStr;
 
 fn main() -> Result<()> {
-    let mut db = Database::new(Memory::new())?;
+    let db = Database::new(Memory::new())?;
     let mut rl = rustyline::DefaultEditor::new()?;
     let mut buf = String::new();
     loop {

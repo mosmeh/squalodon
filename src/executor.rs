@@ -18,6 +18,59 @@ pub enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
+trait Node {
+    fn next_row(&mut self) -> Output;
+}
+
+#[derive(Debug, thiserror::Error)]
+enum NodeError {
+    #[error(transparent)]
+    Error(#[from] Error),
+
+    // HACK: This is not a real error, but treating it as one allows us to use
+    // the ? operator to exit early when reaching the end of the rows.
+    #[error("End of rows")]
+    Finished,
+}
+
+type Output = std::result::Result<Vec<Value>, NodeError>;
+
+trait IntoOutput {
+    fn into_output(self) -> Output;
+}
+
+impl IntoOutput for Result<Vec<Value>> {
+    fn into_output(self) -> Output {
+        self.map_err(NodeError::Error)
+    }
+}
+
+impl IntoOutput for Option<Vec<Value>> {
+    fn into_output(self) -> Output {
+        self.ok_or(NodeError::Finished)
+    }
+}
+
+impl IntoOutput for Result<Option<Vec<Value>>> {
+    fn into_output(self) -> Output {
+        match self {
+            Ok(Some(row)) => Ok(row),
+            Ok(None) => Err(NodeError::Finished),
+            Err(e) => Err(NodeError::Error(e)),
+        }
+    }
+}
+
+impl IntoOutput for Option<Result<Vec<Value>>> {
+    fn into_output(self) -> Output {
+        match self {
+            Some(Ok(row)) => Ok(row),
+            Some(Err(e)) => Err(NodeError::Error(e)),
+            None => Err(NodeError::Finished),
+        }
+    }
+}
+
 pub struct Executor<'a>(ExecutorKind<'a>);
 
 impl<'a> Executor<'a> {
@@ -34,7 +87,11 @@ impl Iterator for Executor<'_> {
     type Item = Result<Vec<Value>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next()
+        match self.0.next_row() {
+            Ok(row) => Some(Ok(row)),
+            Err(NodeError::Error(e)) => Some(Err(e)),
+            Err(NodeError::Finished) => None,
+        }
     }
 }
 
@@ -95,22 +152,32 @@ impl<'a> ExecutorKind<'a> {
     }
 }
 
+impl Node for ExecutorKind<'_> {
+    fn next_row(&mut self) -> Output {
+        match self {
+            Self::SeqScan(e) => e.next_row(),
+            Self::Project(e) => e.next_row(),
+            Self::Filter(e) => e.next_row(),
+            Self::OneRow(e) => e.next_row(),
+            Self::NoRow => Err(NodeError::Finished),
+        }
+    }
+}
+
 impl Iterator for ExecutorKind<'_> {
     type Item = Result<Vec<Value>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::SeqScan(e) => e.next(),
-            Self::Project(e) => e.next(),
-            Self::Filter(e) => e.next(),
-            Self::OneRow(e) => e.next().map(Ok),
-            Self::NoRow => None,
+        match self.next_row() {
+            Ok(row) => Some(Ok(row)),
+            Err(NodeError::Error(e)) => Some(Err(e)),
+            Err(NodeError::Finished) => None,
         }
     }
 }
 
 struct SeqScan<'a> {
-    iter: Box<dyn Iterator<Item = std::result::Result<Vec<Value>, StorageError>> + 'a>,
+    iter: Box<dyn Iterator<Item = Result<Vec<Value>>> + 'a>,
     columns: Vec<ColumnIndex>,
 }
 
@@ -121,22 +188,17 @@ impl<'a> SeqScan<'a> {
         columns: Vec<ColumnIndex>,
     ) -> Self {
         Self {
-            iter: Box::new(txn.scan_table(table)),
+            iter: Box::new(txn.scan_table(table).map(|row| row.map_err(Into::into))),
             columns,
         }
     }
 }
 
-impl Iterator for SeqScan<'_> {
-    type Item = Result<Vec<Value>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let row = match self.iter.next()? {
-            Ok(row) => row,
-            Err(e) => return Some(Err(e.into())),
-        };
+impl Node for SeqScan<'_> {
+    fn next_row(&mut self) -> Output {
+        let row = self.iter.next().into_output()?;
         let columns = self.columns.iter().map(|i| row[i.0].clone()).collect();
-        Some(Ok(columns))
+        Ok(columns)
     }
 }
 
@@ -145,16 +207,14 @@ struct Project<'a> {
     exprs: Vec<Expression>,
 }
 
-impl Iterator for Project<'_> {
-    type Item = Result<Vec<Value>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let row = match self.source.next()? {
-            Ok(row) => row,
-            Err(e) => return Some(Err(e)),
-        };
-        let columns: Result<Vec<_>> = self.exprs.iter().map(|expr| expr.eval(&row)).collect();
-        Some(columns)
+impl Node for Project<'_> {
+    fn next_row(&mut self) -> Output {
+        let row = self.source.next_row()?;
+        self.exprs
+            .iter()
+            .map(|expr| expr.eval(&row))
+            .collect::<Result<Vec<_>>>()
+            .into_output()
     }
 }
 
@@ -163,21 +223,35 @@ struct Filter<'a> {
     cond: Expression,
 }
 
-impl Iterator for Filter<'_> {
-    type Item = Result<Vec<Value>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl Node for Filter<'_> {
+    fn next_row(&mut self) -> Output {
         loop {
-            let row = match self.source.next()? {
-                Ok(row) => row,
-                Err(e) => return Some(Err(e)),
-            };
-            match self.cond.eval(&row) {
-                Ok(x) if x.as_bool() => return Some(Ok(row)),
-                Ok(_) => continue,
-                Err(e) => return Some(Err(e)),
+            let row = self.source.next_row()?;
+            if self.cond.eval(&row)?.as_bool() {
+                return Ok(row);
             }
         }
+    }
+}
+
+#[derive(Default)]
+struct OneRow {
+    row: Option<Vec<Value>>,
+}
+
+impl OneRow {
+    fn new(columns: Vec<Expression>) -> Result<Self> {
+        let row = columns
+            .into_iter()
+            .map(|expr| expr.eval(&[]))
+            .collect::<Result<_>>()?;
+        Ok(Self { row: Some(row) })
+    }
+}
+
+impl Node for OneRow {
+    fn next_row(&mut self) -> Output {
+        self.row.take().into_output()
     }
 }
 
@@ -233,28 +307,5 @@ impl Expression {
             }
         };
         Ok(value)
-    }
-}
-
-#[derive(Default)]
-struct OneRow {
-    row: Option<Vec<Value>>,
-}
-
-impl OneRow {
-    fn new(columns: Vec<Expression>) -> Result<Self> {
-        let row = columns
-            .into_iter()
-            .map(|expr| expr.eval(&[]))
-            .collect::<Result<_>>()?;
-        Ok(Self { row: Some(row) })
-    }
-}
-
-impl Iterator for OneRow {
-    type Item = Vec<Value>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.row.take()
     }
 }
