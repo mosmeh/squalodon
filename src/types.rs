@@ -125,85 +125,8 @@ impl_try_from_value!(bool, Boolean);
 impl_try_from_value!(String, Text);
 impl_try_from_value!(Vec<u8>, Text);
 
-const NULL_TAG: u8 = 0;
-const INTEGER_TAG: u8 = 1;
-const BOOLEAN_TAG: u8 = 2;
-const TEXT_TAG: u8 = 3;
-
-const CHUNK_SIZE: usize = 8;
-const UNIT_SIZE: usize = CHUNK_SIZE + 1;
-const CHUNK_SIZE_U8: u8 = CHUNK_SIZE as u8;
-const UNIT_SIZE_U8: u8 = UNIT_SIZE as u8;
-
 impl Value {
     pub fn as_bool(&self) -> bool {
         !matches!(self, Self::Boolean(false) | Self::Integer(0) | Self::Null)
-    }
-
-    /// Serializes the value into `buf` in a memcomparable format.
-    pub fn serialize_into(&self, buf: &mut Vec<u8>) {
-        match self {
-            Self::Null => buf.push(NULL_TAG),
-            Self::Integer(i) => {
-                buf.push(INTEGER_TAG);
-                buf.extend_from_slice(&(*i as u64 ^ (1 << (u64::BITS - 1))).to_be_bytes());
-            }
-            Self::Boolean(b) => {
-                buf.push(BOOLEAN_TAG);
-                buf.push(u8::from(*b));
-            }
-            Self::Text(s) => {
-                buf.push(TEXT_TAG);
-                buf.push(u8::from(!s.is_empty()));
-                let mut len = 0;
-                for chunk in s.as_bytes().chunks(CHUNK_SIZE) {
-                    buf.extend_from_slice(chunk);
-                    for _ in chunk.len()..CHUNK_SIZE {
-                        buf.push(0);
-                    }
-                    len += chunk.len();
-                    buf.push(if len == s.len() {
-                        chunk.len() as u8
-                    } else {
-                        UNIT_SIZE_U8
-                    });
-                }
-            }
-        }
-    }
-
-    pub fn deserialize_from(buf: &[u8]) -> Result<Self> {
-        match buf {
-            [NULL_TAG] => Ok(Self::Null),
-            [INTEGER_TAG, serialized @ ..] => {
-                let serialized = serialized.try_into().map_err(|_| Error::InvalidEncoding)?;
-                let i = (u64::from_be_bytes(serialized) ^ (1 << (u64::BITS - 1))) as i64;
-                Ok(Self::Integer(i))
-            }
-            [BOOLEAN_TAG, 0] => Ok(Self::Boolean(false)),
-            [BOOLEAN_TAG, 1] => Ok(Self::Boolean(true)),
-            [TEXT_TAG, 0] => Ok(Self::Text(String::new())),
-            [TEXT_TAG, 1, serialized @ ..] => {
-                let mut s = Vec::with_capacity(serialized.len() / UNIT_SIZE);
-                let mut serialized = serialized;
-                loop {
-                    let (unit, rest) = serialized.split_at(UNIT_SIZE);
-                    match unit[CHUNK_SIZE] {
-                        len @ 1..=CHUNK_SIZE_U8 => {
-                            s.extend_from_slice(&unit[..len as usize]);
-                            break;
-                        }
-                        UNIT_SIZE_U8 => {
-                            s.extend_from_slice(&unit[..CHUNK_SIZE]);
-                            serialized = rest;
-                        }
-                        _ => return Err(Error::InvalidEncoding),
-                    }
-                }
-                let s = String::from_utf8(s).map_err(|_| Error::InvalidEncoding)?;
-                Ok(Self::Text(s))
-            }
-            _ => Err(Error::InvalidEncoding),
-        }
     }
 }

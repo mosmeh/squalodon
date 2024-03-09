@@ -87,7 +87,7 @@ impl<'a> Binder<'a> {
             node = bind_where_clause(node, where_clause)?;
         }
         node = bind_projections(node, select.projections)?;
-        assert!(select.order_by.is_empty(), "ORDER BY is not supported");
+        node = bind_order_by(node, select.order_by)?;
         assert!(select.limit.is_none(), "LIMIT is not supported");
         Ok(node)
     }
@@ -167,6 +167,29 @@ fn bind_projections(source: PlanNode, projections: Vec<parser::Projection>) -> R
             exprs,
         }),
         schema: planner::Schema::new(columns).into(),
+    })
+}
+
+fn bind_order_by(source: PlanNode, order_by: Vec<parser::OrderBy>) -> Result<PlanNode> {
+    if order_by.is_empty() {
+        return Ok(source);
+    }
+    let mut bound_order_by = Vec::with_capacity(order_by.len());
+    for item in order_by {
+        let TypedExpression { expr, .. } = bind_expr(&source, item.expr)?;
+        bound_order_by.push(planner::OrderBy {
+            expr,
+            order: item.order,
+            null_order: item.null_order,
+        });
+    }
+    let schema = source.schema.clone();
+    Ok(PlanNode {
+        kind: PlanKind::Sort(planner::Sort {
+            source: source.into(),
+            order_by: bound_order_by,
+        }),
+        schema,
     })
 }
 

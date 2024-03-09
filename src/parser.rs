@@ -6,7 +6,7 @@ pub use Error as ParserError;
 use crate::{
     storage::Column,
     types::{Type, Value},
-    BinaryOp,
+    BinaryOp, NullOrder, Order,
 };
 use lexer::{Lexer, Token};
 
@@ -111,7 +111,8 @@ pub enum TableRef {
 #[derive(Debug)]
 pub struct OrderBy {
     pub expr: Expression,
-    pub is_ascending: bool,
+    pub order: Order,
+    pub null_order: NullOrder,
 }
 
 #[derive(Debug)]
@@ -319,12 +320,30 @@ impl<'a> Parser<'a> {
         let mut order_by = Vec::new();
         loop {
             let expr = self.parse_expr()?;
-            let is_ascending = !matches!(
-                self.lexer
-                    .consume_if(|t| matches!(t, Token::Asc | Token::Desc))?,
-                Some(Token::Desc)
-            );
-            order_by.push(OrderBy { expr, is_ascending });
+
+            let order = if self.lexer.consume_if_eq(Token::Asc)? {
+                Order::Asc
+            } else if self.lexer.consume_if_eq(Token::Desc)? {
+                Order::Desc
+            } else {
+                Default::default()
+            };
+
+            let null_order = if self.lexer.consume_if_eq(Token::Nulls)? {
+                match self.lexer.consume()? {
+                    Token::First => NullOrder::NullsFirst,
+                    Token::Last => NullOrder::NullsLast,
+                    token => return Err(Error::UnexpectedToken(token)),
+                }
+            } else {
+                Default::default()
+            };
+
+            order_by.push(OrderBy {
+                expr,
+                order,
+                null_order,
+            });
             if !self.lexer.consume_if_eq(Token::Comma)? {
                 break;
             }

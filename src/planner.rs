@@ -4,7 +4,7 @@ use crate::{
     parser,
     storage::{Catalog, TableId},
     types::{Type, Value},
-    BinaryOp, StorageError,
+    BinaryOp, NullOrder, Order, StorageError,
 };
 use std::rc::Rc;
 
@@ -104,6 +104,7 @@ impl Explain for PlanNode {
             PlanKind::Scan(scan) => scan.explain(f, depth),
             PlanKind::Project(project) => project.explain(f, depth),
             PlanKind::Filter(filter) => filter.explain(f, depth),
+            PlanKind::Sort(sort) => sort.explain(f, depth),
             PlanKind::OneRow(one_row) => one_row.explain(f, depth),
         }
     }
@@ -122,6 +123,7 @@ pub enum PlanKind {
     Scan(Scan),
     Project(Project),
     Filter(Filter),
+    Sort(Sort),
     OneRow(OneRow),
 }
 
@@ -225,6 +227,38 @@ impl Explain for Filter {
     fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
         writeln!(f, "Filter {}", self.cond)?;
         self.source.explain_child(f, depth)
+    }
+}
+
+pub struct Sort {
+    pub source: Box<PlanNode>,
+    pub order_by: Vec<OrderBy>,
+}
+
+impl Explain for Sort {
+    fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
+        f.write_str("Sort by [")?;
+        for (i, order_by) in self.order_by.iter().enumerate() {
+            if i == 0 {
+                write!(f, "{order_by}")?;
+            } else {
+                write!(f, ", {order_by}")?;
+            }
+        }
+        f.write_str("]\n")?;
+        self.source.explain_child(f, depth)
+    }
+}
+
+pub struct OrderBy {
+    pub expr: Expression,
+    pub order: Order,
+    pub null_order: NullOrder,
+}
+
+impl std::fmt::Display for OrderBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {} {}", self.expr, self.order, self.null_order)
     }
 }
 

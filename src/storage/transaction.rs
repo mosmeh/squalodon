@@ -1,5 +1,5 @@
 use super::{Result, TableId, TableKeyPrefix, Transaction};
-use crate::Value;
+use crate::{serde::SerdeOptions, Value};
 
 pub struct SchemaAwareTransaction<T> {
     inner: T,
@@ -35,7 +35,7 @@ impl<T: Transaction> SchemaAwareTransaction<T> {
 
     pub fn update(&mut self, table: TableId, primary_key: &Value, columns: &[Value]) {
         let mut key = TableKeyPrefix::TableData(table).serialize().to_vec();
-        primary_key.serialize_into(&mut key);
+        SerdeOptions::new().serialize_into(primary_key, &mut key);
         self.inner
             .insert(key, bincode::serialize(&columns).unwrap());
     }

@@ -1,6 +1,7 @@
 mod executor;
 mod parser;
 mod planner;
+mod serde;
 mod storage;
 mod types;
 
@@ -190,6 +191,48 @@ impl std::fmt::Display for BinaryOp {
             Self::Ge => ">=",
             Self::And => "AND",
             Self::Or => "OR",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Order {
+    Asc,
+    Desc,
+}
+
+impl Default for Order {
+    fn default() -> Self {
+        Self::Asc
+    }
+}
+
+impl std::fmt::Display for Order {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Asc => "ASC",
+            Self::Desc => "DESC",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NullOrder {
+    NullsFirst,
+    NullsLast,
+}
+
+impl Default for NullOrder {
+    fn default() -> Self {
+        Self::NullsLast
+    }
+}
+
+impl std::fmt::Display for NullOrder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NullsFirst => "NULLS FIRST",
+            Self::NullsLast => "NULLS LAST",
         })
     }
 }

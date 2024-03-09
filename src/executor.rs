@@ -1,5 +1,6 @@
 use crate::{
-    planner::{self, ColumnIndex, Expression, PlanKind, PlanNode},
+    planner::{self, ColumnIndex, Expression, OrderBy, PlanKind, PlanNode},
+    serde::SerdeOptions,
     storage::{Catalog, SchemaAwareTransaction, StorageError, TableId, Transaction},
     BinaryOp, Value,
 };
@@ -99,6 +100,7 @@ enum ExecutorKind<'a> {
     SeqScan(SeqScan<'a>),
     Project(Project<'a>),
     Filter(Filter<'a>),
+    Sort(Sort<'a>),
     OneRow(OneRow),
     NoRow,
 }
@@ -146,6 +148,9 @@ impl<'a> ExecutorKind<'a> {
                 source: Self::new(txn, catalog, *source)?.into(),
                 cond,
             }),
+            PlanKind::Sort(planner::Sort { source, order_by }) => {
+                Self::Sort(Sort::new(Self::new(txn, catalog, *source)?, order_by))
+            }
             PlanKind::OneRow(one_row) => Self::OneRow(OneRow::new(one_row.columns)?),
         };
         Ok(executor)
@@ -158,6 +163,7 @@ impl Node for ExecutorKind<'_> {
             Self::SeqScan(e) => e.next_row(),
             Self::Project(e) => e.next_row(),
             Self::Filter(e) => e.next_row(),
+            Self::Sort(e) => e.next_row(),
             Self::OneRow(e) => e.next_row(),
             Self::NoRow => Err(NodeError::Finished),
         }
@@ -230,6 +236,53 @@ impl Node for Filter<'_> {
             if self.cond.eval(&row)?.as_bool() {
                 return Ok(row);
             }
+        }
+    }
+}
+
+enum Sort<'a> {
+    Collect {
+        source: Box<ExecutorKind<'a>>,
+        order_by: Vec<OrderBy>,
+    },
+    Output {
+        rows: Box<dyn Iterator<Item = Vec<Value>>>,
+    },
+}
+
+impl<'a> Sort<'a> {
+    fn new(source: ExecutorKind<'a>, order_by: Vec<OrderBy>) -> Self {
+        Self::Collect {
+            source: source.into(),
+            order_by,
+        }
+    }
+}
+
+impl Node for Sort<'_> {
+    fn next_row(&mut self) -> Output {
+        match self {
+            Self::Collect { source, order_by } => {
+                let mut rows = Vec::new();
+                for row in source {
+                    let row = row?;
+                    let mut sort_key = Vec::new();
+                    for order_by in order_by.iter() {
+                        let value = order_by.expr.eval(&row)?;
+                        SerdeOptions::new()
+                            .order(order_by.order)
+                            .null_order(order_by.null_order)
+                            .serialize_into(&value, &mut sort_key);
+                    }
+                    rows.push((row, sort_key));
+                }
+                rows.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+                *self = Self::Output {
+                    rows: Box::new(rows.into_iter().map(|(row, _)| row)),
+                };
+                self.next_row()
+            }
+            Self::Output { rows } => rows.next().into_output(),
         }
     }
 }
