@@ -244,8 +244,10 @@ impl Node for Filter<'_> {
     fn next_row(&mut self) -> Output {
         loop {
             let row = self.source.next_row()?;
-            if self.cond.eval(&row)?.as_bool() {
-                return Ok(row);
+            match self.cond.eval(&row)? {
+                Value::Boolean(true) => return Ok(row),
+                Value::Boolean(false) => continue,
+                _ => return Err(Error::TypeError.into()),
             }
         }
     }
@@ -315,7 +317,9 @@ impl<'a> Limit<'a> {
             let Some(expr) = expr else {
                 return Ok(None);
             };
-            let i = expr.eval(&[])?.as_integer().ok_or(Error::TypeError)?;
+            let Value::Integer(i) = expr.eval(&[])? else {
+                return Err(Error::TypeError);
+            };
             i.try_into()
                 .map_or_else(|_| Err(Error::OutOfRange), |i| Ok(Some(i)))
         }
@@ -375,52 +379,88 @@ impl Expression {
         let value = match self {
             Self::Constact(v) => v.clone(),
             Self::ColumnRef { column } => row[column.0].clone(),
-            Self::BinaryOp { op, lhs, rhs } => {
-                let lhs = lhs.eval(row)?;
-                if lhs == Value::Null {
-                    return Ok(Value::Null);
-                }
-                match op {
-                    BinaryOp::And if !lhs.as_bool() => return Ok(Value::Boolean(false)),
-                    BinaryOp::Or if lhs.as_bool() => return Ok(Value::Boolean(true)),
-                    _ => (),
-                }
-                let rhs = rhs.eval(row)?;
-                if rhs == Value::Null {
-                    return Ok(Value::Null);
-                }
-                match (op, lhs, rhs) {
-                    (BinaryOp::Add, Value::Integer(lhs), Value::Integer(rhs)) => {
-                        Value::Integer(lhs.checked_add(rhs).ok_or(Error::OutOfRange)?)
-                    }
-                    (BinaryOp::Sub, Value::Integer(lhs), Value::Integer(rhs)) => {
-                        Value::Integer(lhs.checked_sub(rhs).ok_or(Error::OutOfRange)?)
-                    }
-                    (BinaryOp::Mul, Value::Integer(lhs), Value::Integer(rhs)) => {
-                        Value::Integer(lhs.checked_mul(rhs).ok_or(Error::OutOfRange)?)
-                    }
-                    (BinaryOp::Div, Value::Integer(lhs), Value::Integer(rhs)) => {
-                        Value::Integer(lhs.checked_div(rhs).ok_or(Error::OutOfRange)?)
-                    }
-                    (BinaryOp::Mod, Value::Integer(lhs), Value::Integer(rhs)) => {
-                        Value::Integer(lhs.checked_rem(rhs).ok_or(Error::OutOfRange)?)
-                    }
-                    (BinaryOp::Eq, lhs, rhs) => Value::Boolean(lhs == rhs),
-                    (BinaryOp::Ne, lhs, rhs) => Value::Boolean(lhs != rhs),
-                    (BinaryOp::Lt, lhs, rhs) => Value::Boolean(lhs < rhs),
-                    (BinaryOp::Le, lhs, rhs) => Value::Boolean(lhs <= rhs),
-                    (BinaryOp::Gt, lhs, rhs) => Value::Boolean(lhs > rhs),
-                    (BinaryOp::Ge, lhs, rhs) => Value::Boolean(lhs >= rhs),
-                    (BinaryOp::And, Value::Boolean(lhs), Value::Boolean(rhs)) => {
-                        Value::Boolean(lhs && rhs)
-                    }
-                    (BinaryOp::Or, Value::Boolean(lhs), Value::Boolean(rhs)) => {
-                        Value::Boolean(lhs || rhs)
-                    }
-                    _ => return Err(Error::TypeError),
-                }
-            }
+            Self::BinaryOp { op, lhs, rhs } => eval_binary_op(*op, row, lhs, rhs)?,
         };
         Ok(value)
     }
+}
+
+fn eval_binary_op(
+    op: BinaryOp,
+    row: &[Value],
+    lhs: &Expression,
+    rhs: &Expression,
+) -> Result<Value> {
+    let lhs = lhs.eval(row)?;
+    if lhs == Value::Null {
+        return Ok(Value::Null);
+    }
+    match (op, &lhs) {
+        (BinaryOp::And, Value::Boolean(false)) => return Ok(Value::Boolean(false)),
+        (BinaryOp::Or, Value::Boolean(true)) => return Ok(Value::Boolean(true)),
+        _ => (),
+    }
+    let rhs = rhs.eval(row)?;
+    if rhs == Value::Null {
+        return Ok(Value::Null);
+    }
+    match op {
+        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
+            eval_binary_op_number(op, lhs, rhs)
+        }
+        BinaryOp::Eq => Ok(Value::Boolean(lhs == rhs)),
+        BinaryOp::Ne => Ok(Value::Boolean(lhs != rhs)),
+        BinaryOp::Lt => Ok(Value::Boolean(lhs < rhs)),
+        BinaryOp::Le => Ok(Value::Boolean(lhs <= rhs)),
+        BinaryOp::Gt => Ok(Value::Boolean(lhs > rhs)),
+        BinaryOp::Ge => Ok(Value::Boolean(lhs >= rhs)),
+        BinaryOp::And => {
+            if let (Value::Boolean(lhs), Value::Boolean(rhs)) = (lhs, rhs) {
+                Ok(Value::Boolean(lhs && rhs))
+            } else {
+                Err(Error::TypeError)
+            }
+        }
+        BinaryOp::Or => {
+            if let (Value::Boolean(lhs), Value::Boolean(rhs)) = (lhs, rhs) {
+                Ok(Value::Boolean(lhs || rhs))
+            } else {
+                Err(Error::TypeError)
+            }
+        }
+    }
+}
+
+fn eval_binary_op_number(op: BinaryOp, lhs: Value, rhs: Value) -> Result<Value> {
+    match (lhs, rhs) {
+        (Value::Integer(lhs), Value::Integer(rhs)) => eval_binary_op_integer(op, lhs, rhs),
+        (Value::Real(lhs), Value::Real(rhs)) => Ok(eval_binary_op_real(op, lhs, rhs)),
+        (Value::Real(lhs), Value::Integer(rhs)) => Ok(eval_binary_op_real(op, lhs, rhs as f64)),
+        (Value::Integer(lhs), Value::Real(rhs)) => Ok(eval_binary_op_real(op, lhs as f64, rhs)),
+        _ => Err(Error::TypeError),
+    }
+}
+
+fn eval_binary_op_integer(op: BinaryOp, lhs: i64, rhs: i64) -> Result<Value> {
+    let f = match op {
+        BinaryOp::Add => i64::checked_add,
+        BinaryOp::Sub => i64::checked_sub,
+        BinaryOp::Mul => i64::checked_mul,
+        BinaryOp::Div => i64::checked_div,
+        BinaryOp::Mod => i64::checked_rem,
+        _ => unreachable!(),
+    };
+    f(lhs, rhs).map_or_else(|| Err(Error::OutOfRange), |v| Ok(Value::Integer(v)))
+}
+
+fn eval_binary_op_real(op: BinaryOp, lhs: f64, rhs: f64) -> Value {
+    let f = match op {
+        BinaryOp::Add => std::ops::Add::add,
+        BinaryOp::Sub => std::ops::Sub::sub,
+        BinaryOp::Mul => std::ops::Mul::mul,
+        BinaryOp::Div => std::ops::Div::div,
+        BinaryOp::Mod => std::ops::Rem::rem,
+        _ => unreachable!(),
+    };
+    Value::Real(f(lhs, rhs))
 }

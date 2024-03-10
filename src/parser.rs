@@ -195,6 +195,7 @@ impl<'a> Parser<'a> {
         let name = self.expect_identifier()?;
         let ty = match self.lexer.consume()? {
             Token::Integer => Type::Integer,
+            Token::Real => Type::Real,
             Token::Boolean => Type::Boolean,
             Token::Text => Type::Text,
             token => return Err(Error::UnexpectedToken(token)),
@@ -383,6 +384,7 @@ impl<'a> Parser<'a> {
         let expr = match self.lexer.consume()? {
             Token::Null => Expression::Constant(Value::Null),
             Token::IntegerLiteral(i) => Expression::Constant(Value::Integer(i)),
+            Token::RealLiteral(f) => Expression::Constant(Value::Real(f)),
             Token::True => Expression::Constant(Value::Boolean(true)),
             Token::False => Expression::Constant(Value::Boolean(false)),
             Token::String(s) => Expression::Constant(Value::Text(s)),

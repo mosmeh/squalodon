@@ -5,8 +5,9 @@ const TAG_SIZE: usize = std::mem::size_of::<u8>();
 const NULL_FIRST_TAG: u8 = 0;
 const NULL_LAST_TAG: u8 = u8::MAX;
 const INTEGER_TAG: u8 = 1;
-const BOOLEAN_TAG: u8 = 2;
-const TEXT_TAG: u8 = 3;
+const REAL_TAG: u8 = 2;
+const BOOLEAN_TAG: u8 = 3;
+const TEXT_TAG: u8 = 4;
 
 const CHUNK_SIZE: usize = 8;
 const UNIT_SIZE: usize = CHUNK_SIZE + 1;
@@ -44,6 +45,21 @@ impl SerdeOptions {
             Value::Integer(i) => {
                 buf.push(INTEGER_TAG);
                 buf.extend_from_slice(&(*i as u64 ^ (1 << (u64::BITS - 1))).to_be_bytes());
+            }
+            Value::Real(mut r) => {
+                if r.is_nan() {
+                    r = f64::NAN;
+                } else if r == 0.0 {
+                    r = 0.0;
+                }
+                let mut v = r.to_bits();
+                if r.is_sign_positive() {
+                    v |= 1 << (u64::BITS - 1);
+                } else {
+                    v = !v;
+                }
+                buf.push(REAL_TAG);
+                buf.extend_from_slice(&v.to_be_bytes());
             }
             Value::Boolean(b) => {
                 buf.push(BOOLEAN_TAG);
@@ -97,6 +113,16 @@ impl SerdeOptions {
                 let serialized = serialized.try_into().map_err(|_| Error::InvalidEncoding)?;
                 let i = (u64::from_be_bytes(serialized) ^ (1 << (u64::BITS - 1))) as i64;
                 Ok(Value::Integer(i))
+            }
+            (REAL_TAG, serialized) => {
+                let serialized = serialized.try_into().map_err(|_| Error::InvalidEncoding)?;
+                let mut v = u64::from_be_bytes(serialized);
+                if v & (1 << (u64::BITS - 1)) != 0 {
+                    v &= !(1 << (u64::BITS - 1));
+                } else {
+                    v = !v;
+                }
+                Ok(Value::Real(f64::from_bits(v)))
             }
             (BOOLEAN_TAG, [0]) => Ok(Value::Boolean(false)),
             (BOOLEAN_TAG, [1]) => Ok(Value::Boolean(true)),

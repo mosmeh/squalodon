@@ -2,8 +2,8 @@ use std::str::Chars;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("Unknown token")]
-    UnknownToken,
+    #[error("Unknown token {0:?}")]
+    UnknownToken(String),
 
     #[error("Unexpected end of file")]
     UnexpectedEof,
@@ -11,7 +11,7 @@ pub enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq)]
 pub enum Token {
     And,
     As,
@@ -37,6 +37,7 @@ pub enum Token {
     Or,
     Order,
     Primary,
+    Real,
     Select,
     Table,
     Text,
@@ -61,6 +62,7 @@ pub enum Token {
     Ge,
 
     IntegerLiteral(i64),
+    RealLiteral(f64),
     String(String),
     Identifier(String),
 
@@ -94,6 +96,7 @@ impl Token {
             "OR" => Self::Or,
             "ORDER" => Self::Order,
             "PRIMARY" => Self::Primary,
+            "REAL" => Self::Real,
             "SELECT" => Self::Select,
             "TABLE" => Self::Table,
             "TEXT" => Self::Text,
@@ -132,6 +135,7 @@ impl std::fmt::Debug for Token {
             Self::Or => f.write_str("OR"),
             Self::Order => f.write_str("ORDER"),
             Self::Primary => f.write_str("PRIMARY"),
+            Self::Real => f.write_str("REAL"),
             Self::Select => f.write_str("SELECT"),
             Self::Table => f.write_str("TABLE"),
             Self::Text => f.write_str("TEXT"),
@@ -154,6 +158,7 @@ impl std::fmt::Debug for Token {
             Self::Le => f.write_str("<="),
             Self::Ge => f.write_str(">="),
             Self::IntegerLiteral(i) => i.fmt(f),
+            Self::RealLiteral(r) => r.fmt(f),
             Self::String(s) => s.fmt(f),
             Self::Identifier(i) => i.fmt(f),
             Self::Eof => f.write_str("EOF"),
@@ -226,9 +231,12 @@ impl<'a> LexerInner<'a> {
                 }
                 _ if ch.is_ascii_digit() => {
                     let mut buf = String::new();
-                    self.consume_while(|ch| ch.is_ascii_digit(), &mut buf);
-                    let value = buf.parse().unwrap();
-                    return Ok(Token::IntegerLiteral(value));
+                    self.consume_while(|ch| ch.is_ascii_digit() || ch == '.', &mut buf);
+                    return buf
+                        .parse()
+                        .map(Token::IntegerLiteral)
+                        .or_else(|_| buf.parse().map(Token::RealLiteral))
+                        .map_err(|_| Error::UnknownToken(buf));
                 }
                 '\'' => {
                     self.consume().unwrap();
@@ -299,10 +307,10 @@ impl<'a> LexerInner<'a> {
                         if self.consume_if_eq('=') {
                             Token::Ne
                         } else {
-                            return Err(Error::UnknownToken);
+                            return Err(Error::UnknownToken("!".to_owned()));
                         }
                     } else {
-                        return Err(Error::UnknownToken);
+                        return Err(Error::UnknownToken(ch.to_string()));
                     });
                 }
             }
