@@ -1,8 +1,8 @@
 use crate::{
+    memcomparable::MemcomparableSerde,
     planner::{self, ColumnIndex, Expression, OrderBy, PlanNode},
-    serde::SerdeOptions,
-    storage::{Catalog, SchemaAwareTransaction, StorageError, TableId, Transaction},
-    BinaryOp, Value,
+    storage::{self, StorageError, TableId, Transaction},
+    BinaryOp, KeyValueStore, Value,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -17,7 +17,7 @@ pub enum Error {
     Storage(#[from] StorageError),
 }
 
-type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 trait Node {
     fn next_row(&mut self) -> Output;
@@ -40,9 +40,9 @@ trait IntoOutput {
     fn into_output(self) -> Output;
 }
 
-impl IntoOutput for Result<Vec<Value>> {
+impl<E: Into<Error>> IntoOutput for std::result::Result<Vec<Value>, E> {
     fn into_output(self) -> Output {
-        self.map_err(NodeError::Error)
+        self.map_err(|e| NodeError::Error(e.into()))
     }
 }
 
@@ -52,21 +52,21 @@ impl IntoOutput for Option<Vec<Value>> {
     }
 }
 
-impl IntoOutput for Result<Option<Vec<Value>>> {
+impl<E: Into<Error>> IntoOutput for std::result::Result<Option<Vec<Value>>, E> {
     fn into_output(self) -> Output {
         match self {
             Ok(Some(row)) => Ok(row),
             Ok(None) => Err(NodeError::EndOfRows),
-            Err(e) => Err(NodeError::Error(e)),
+            Err(e) => Err(NodeError::Error(e.into())),
         }
     }
 }
 
-impl IntoOutput for Option<Result<Vec<Value>>> {
+impl<E: Into<Error>> IntoOutput for Option<std::result::Result<Vec<Value>, E>> {
     fn into_output(self) -> Output {
         match self {
             Some(Ok(row)) => Ok(row),
-            Some(Err(e)) => Err(NodeError::Error(e)),
+            Some(Err(e)) => Err(NodeError::Error(e.into())),
             None => Err(NodeError::EndOfRows),
         }
     }
@@ -75,12 +75,11 @@ impl IntoOutput for Option<Result<Vec<Value>>> {
 pub struct Executor<'a>(ExecutorNode<'a>);
 
 impl<'a> Executor<'a> {
-    pub fn new<T: Transaction>(
-        txn: &'a mut SchemaAwareTransaction<T>,
-        catalog: &mut Catalog,
+    pub fn new<'b: 'a, T: KeyValueStore>(
+        txn: &'a Transaction<'b, T>,
         plan: PlanNode,
     ) -> Result<Self> {
-        ExecutorNode::new(txn, catalog, plan).map(Self)
+        ExecutorNode::new(txn, plan).map(Self)
     }
 }
 
@@ -107,22 +106,14 @@ enum ExecutorNode<'a> {
 }
 
 impl<'a> ExecutorNode<'a> {
-    fn new<T: Transaction>(
-        txn: &'a mut SchemaAwareTransaction<T>,
-        catalog: &mut Catalog,
-        plan: PlanNode,
-    ) -> Result<Self> {
+    fn new<T: KeyValueStore>(txn: &'a Transaction<T>, plan: PlanNode) -> Result<Self> {
         let executor = match plan {
             PlanNode::Explain(plan) => {
                 println!("{plan}");
                 Self::NoRow
             }
             PlanNode::CreateTable(create_table) => {
-                catalog.create_table(
-                    txn.inner_mut(),
-                    create_table.0.name,
-                    create_table.0.columns,
-                )?;
+                txn.create_table(create_table.0.name, create_table.0.columns)?;
                 Self::NoRow
             }
             PlanNode::Insert(insert) => {
@@ -135,32 +126,28 @@ impl<'a> ExecutorNode<'a> {
                     insert.table,
                     &columns[insert.primary_key_column.0],
                     &columns,
-                );
+                )?;
                 Self::NoRow
             }
             PlanNode::Scan(planner::Scan::SeqScan { table, columns }) => {
                 Self::SeqScan(SeqScan::new(txn, table, columns))
             }
             PlanNode::Project(planner::Project { source, exprs }) => Self::Project(Project {
-                source: Self::new(txn, catalog, *source)?.into(),
+                source: Self::new(txn, *source)?.into(),
                 exprs,
             }),
             PlanNode::Filter(planner::Filter { source, cond }) => Self::Filter(Filter {
-                source: Self::new(txn, catalog, *source)?.into(),
+                source: Self::new(txn, *source)?.into(),
                 cond,
             }),
             PlanNode::Sort(planner::Sort { source, order_by }) => {
-                Self::Sort(Sort::new(Self::new(txn, catalog, *source)?, order_by))
+                Self::Sort(Sort::new(Self::new(txn, *source)?, order_by))
             }
             PlanNode::Limit(planner::Limit {
                 source,
                 limit,
                 offset,
-            }) => Self::Limit(Limit::new(
-                Self::new(txn, catalog, *source)?,
-                limit,
-                offset,
-            )?),
+            }) => Self::Limit(Limit::new(Self::new(txn, *source)?, limit, offset)?),
             PlanNode::OneRow(one_row) => Self::OneRow(OneRow::new(one_row.columns)?),
         };
         Ok(executor)
@@ -194,18 +181,18 @@ impl Iterator for ExecutorNode<'_> {
 }
 
 struct SeqScan<'a> {
-    iter: Box<dyn Iterator<Item = Result<Vec<Value>>> + 'a>,
+    iter: Box<dyn Iterator<Item = storage::Result<Vec<Value>>> + 'a>,
     columns: Vec<ColumnIndex>,
 }
 
 impl<'a> SeqScan<'a> {
-    fn new<T: Transaction>(
-        txn: &'a mut SchemaAwareTransaction<T>,
+    fn new<T: KeyValueStore>(
+        txn: &'a Transaction<T>,
         table: TableId,
         columns: Vec<ColumnIndex>,
     ) -> Self {
         Self {
-            iter: Box::new(txn.scan_table(table).map(|row| row.map_err(Into::into))),
+            iter: txn.scan_table(table),
             columns,
         }
     }
@@ -282,7 +269,7 @@ impl Node for Sort<'_> {
                     let mut sort_key = Vec::new();
                     for order_by in order_by.iter() {
                         let value = order_by.expr.eval(&row)?;
-                        SerdeOptions::new()
+                        MemcomparableSerde::new()
                             .order(order_by.order)
                             .null_order(order_by.null_order)
                             .serialize_into(&value, &mut sort_key);

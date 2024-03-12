@@ -2,9 +2,9 @@ mod binder;
 
 use crate::{
     parser,
-    storage::{Catalog, TableId},
+    storage::{TableId, Transaction},
     types::{Type, Value},
-    BinaryOp, NullOrder, Order, StorageError,
+    BinaryOp, KeyValueStore, NullOrder, Order, StorageError,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -21,8 +21,11 @@ pub enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-pub fn plan(catalog: &Catalog, statement: parser::Statement) -> Result<TypedPlanNode> {
-    binder::Binder::new(catalog).bind(statement)
+pub fn plan<T: KeyValueStore>(
+    txn: &Transaction<T>,
+    statement: parser::Statement,
+) -> Result<TypedPlanNode> {
+    binder::Binder::new(txn).bind(statement)
 }
 
 #[derive(Debug, Clone, Copy)]

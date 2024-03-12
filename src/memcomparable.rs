@@ -1,3 +1,9 @@
+//! Encoding and decoding of memcomparable format.
+//!
+//! See:
+//! <https://github.com/facebook/mysql-5.6/wiki/MyRocks-record-format#memcomparable-format>
+//! <https://github.com/risingwavelabs/memcomparable>
+
 use crate::{Error, NullOrder, Order, Result, Value};
 use std::borrow::Cow;
 
@@ -15,12 +21,12 @@ const CHUNK_SIZE_U8: u8 = CHUNK_SIZE as u8;
 const UNIT_SIZE_U8: u8 = UNIT_SIZE as u8;
 
 #[derive(Default)]
-pub struct SerdeOptions {
+pub struct MemcomparableSerde {
     order: Order,
     null_order: NullOrder,
 }
 
-impl SerdeOptions {
+impl MemcomparableSerde {
     pub fn new() -> Self {
         Default::default()
     }

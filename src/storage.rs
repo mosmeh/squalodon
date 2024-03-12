@@ -1,85 +1,126 @@
-mod catalog;
 mod memory;
-mod transaction;
+mod schema;
 
-pub use catalog::{Catalog, Column};
 pub use memory::Memory;
-pub use transaction::SchemaAwareTransaction;
+pub use schema::{Column, Table, TableId};
 pub use Error as StorageError;
 
-use serde::{Deserialize, Serialize};
+use crate::{memcomparable::MemcomparableSerde, Value};
+use std::sync::atomic::AtomicU64;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("Invalid encoding")]
-    InvalidEncoding,
-
-    #[error("Table already exists")]
-    TableAlreadyExists,
-
-    #[error("Unknown table")]
-    UnknownTable,
+    #[error("Unknown table {0:?}")]
+    UnknownTable(String),
 
     #[error("Bincode error: {0}")]
     Bincode(#[from] bincode::Error),
 }
 
-type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = std::result::Result<T, Error>;
 
-pub trait Storage {
-    type Transaction<'a>: Transaction + 'a
+pub trait KeyValueStore {
+    type Transaction<'a>: KeyValueTransaction + 'a
     where
         Self: 'a;
 
     fn transaction(&self) -> Self::Transaction<'_>;
 }
 
-pub trait Transaction {
-    fn scan(&self, start: &[u8], end: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])>;
-    fn insert(&mut self, key: Vec<u8>, value: Vec<u8>);
+pub trait KeyValueTransaction {
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
+    fn scan<const N: usize>(
+        &self,
+        start: [u8; N],
+        end: [u8; N],
+    ) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)>;
+    fn insert(&self, key: Vec<u8>, value: Vec<u8>);
     fn commit(self);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TableId(pub u64);
-
-const TABLE_SCHEMA_PREFIX: u8 = b't';
-const TABLE_DATA_PREFIX: u8 = b'd';
-
-enum TableKeyPrefix {
-    TableSchema(TableId),
-    TableData(TableId),
+pub struct Storage<T> {
+    kvs: T,
+    next_table_id: AtomicU64,
 }
 
-impl TableKeyPrefix {
-    const ENCODED_LEN: usize = std::mem::size_of::<u8>() + std::mem::size_of::<u64>();
+impl<T: KeyValueStore> Storage<T> {
+    pub fn new(kvs: T) -> Result<Self> {
+        let mut max_table_id = TableId::MAX_SYSTEM.0;
+        let start = TableId::CATALOG.serialize();
+        let mut end = start;
+        end[end.len() - 1] += 1;
 
-    fn serialize(&self) -> [u8; Self::ENCODED_LEN] {
-        let mut buf = [0; Self::ENCODED_LEN];
-        self.serialize_into(&mut buf);
-        buf
+        let txn = kvs.transaction();
+        for (_, value) in txn.scan(start, end) {
+            let table: Table = bincode::deserialize(&value)?;
+            max_table_id = max_table_id.max(table.id.0);
+        }
+        txn.commit();
+
+        Ok(Self {
+            kvs,
+            next_table_id: (max_table_id + 1).into(),
+        })
     }
 
-    fn serialize_into(&self, buf: &mut [u8; Self::ENCODED_LEN]) {
-        let (prefix, id) = match self {
-            Self::TableSchema(TableId(id)) => (TABLE_SCHEMA_PREFIX, id),
-            Self::TableData(TableId(id)) => (TABLE_DATA_PREFIX, id),
-        };
-        buf[0] = prefix;
-        buf[1..].copy_from_slice(&id.to_be_bytes());
+    pub fn transaction(&self) -> Transaction<T> {
+        Transaction {
+            storage: self,
+            kv_txn: self.kvs.transaction(),
+        }
+    }
+}
+
+pub struct Transaction<'a, T: KeyValueStore> {
+    storage: &'a Storage<T>,
+    kv_txn: T::Transaction<'a>,
+}
+
+impl<'a, T: KeyValueStore> Transaction<'a, T> {
+    pub fn create_table(&self, name: String, columns: Vec<Column>) -> Result<TableId> {
+        let id = self
+            .storage
+            .next_table_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id = TableId(id);
+
+        let mut key = TableId::CATALOG.serialize().to_vec();
+        key.extend_from_slice(name.as_bytes());
+
+        let table = Table { id, name, columns };
+        self.kv_txn.insert(key, bincode::serialize(&table)?);
+
+        Ok(id)
     }
 
-    fn deserialize_from(buf: &[u8]) -> Result<Self> {
-        if buf.len() != Self::ENCODED_LEN {
-            return Err(Error::InvalidEncoding);
+    pub fn table(&self, name: &str) -> Result<Table> {
+        let mut key = TableId::CATALOG.serialize().to_vec();
+        key.extend_from_slice(name.as_bytes());
+        match self.kv_txn.get(&key) {
+            Some(data) => Ok(bincode::deserialize(&data)?),
+            None => Err(Error::UnknownTable(name.to_owned())),
         }
-        let id = u64::from_be_bytes([
-            buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8],
-        ]);
-        match buf[0] {
-            TABLE_SCHEMA_PREFIX => Ok(Self::TableSchema(TableId(id))),
-            TABLE_DATA_PREFIX => Ok(Self::TableData(TableId(id))),
-            _ => Err(Error::InvalidEncoding),
-        }
+    }
+
+    pub fn scan_table(&self, table: TableId) -> Box<dyn Iterator<Item = Result<Vec<Value>>> + '_> {
+        let start = table.serialize();
+        let mut end = start;
+        end[end.len() - 1] += 1;
+        let iter = self
+            .kv_txn
+            .scan(start, end)
+            .map(|(_, v)| bincode::deserialize(&v).map_err(Into::into));
+        Box::new(iter)
+    }
+
+    pub fn update(&self, table: TableId, primary_key: &Value, columns: &[Value]) -> Result<()> {
+        let mut key = table.serialize().to_vec();
+        MemcomparableSerde::new().serialize_into(primary_key, &mut key);
+        self.kv_txn.insert(key, bincode::serialize(columns)?);
+        Ok(())
+    }
+
+    pub fn commit(self) {
+        self.kv_txn.commit();
     }
 }

@@ -1,12 +1,15 @@
-use super::Storage;
+use super::KeyValueStore;
+use crossbeam_skiplist::SkipMap;
 use std::{
-    collections::{btree_map::Entry, BTreeMap},
+    cell::RefCell,
+    collections::BTreeMap,
     sync::{Mutex, MutexGuard},
 };
 
 #[derive(Default)]
 pub struct Memory {
-    data: Mutex<BTreeMap<Vec<u8>, Vec<u8>>>,
+    data: SkipMap<Vec<u8>, Vec<u8>>,
+    txn: Mutex<()>,
 }
 
 impl Memory {
@@ -15,44 +18,45 @@ impl Memory {
     }
 }
 
-impl Storage for Memory {
+impl KeyValueStore for Memory {
     type Transaction<'a> = Transaction<'a>;
 
     fn transaction(&self) -> Transaction {
         Transaction {
-            data: self.data.lock().unwrap(),
-            undo_set: BTreeMap::new(),
+            data: &self.data,
+            undo_set: BTreeMap::new().into(),
             is_committed: false,
+            _guard: self.txn.lock().unwrap(),
         }
     }
 }
 
 pub struct Transaction<'a> {
-    data: MutexGuard<'a, BTreeMap<Vec<u8>, Vec<u8>>>,
-    undo_set: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
+    data: &'a SkipMap<Vec<u8>, Vec<u8>>,
+    undo_set: RefCell<BTreeMap<Vec<u8>, Option<Vec<u8>>>>,
     is_committed: bool,
+    _guard: MutexGuard<'a, ()>,
 }
 
-impl super::Transaction for Transaction<'_> {
-    fn scan(&self, start: &[u8], end: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
-        self.data
-            .range(start.to_vec()..end.to_vec())
-            .map(|(k, v)| (k.as_slice(), v.as_slice()))
+impl super::KeyValueTransaction for Transaction<'_> {
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.data.get(key).map(|entry| entry.value().clone())
     }
 
-    fn insert(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        match self.data.entry(key.clone()) {
-            Entry::Occupied(mut entry) => {
-                self.undo_set
-                    .entry(key)
-                    .or_insert_with(|| Some(entry.get().clone()));
-                entry.insert(value);
-            }
-            Entry::Vacant(entry) => {
-                self.undo_set.entry(key).or_insert(None);
-                entry.insert(value);
-            }
-        }
+    fn scan<const N: usize>(
+        &self,
+        start: [u8; N],
+        end: [u8; N],
+    ) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> {
+        self.data
+            .range(start.to_vec()..end.to_vec())
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+    }
+
+    fn insert(&self, key: Vec<u8>, value: Vec<u8>) {
+        let undo_value = self.data.get(&key).map(|entry| entry.value().clone());
+        self.data.insert(key.clone(), value);
+        self.undo_set.borrow_mut().entry(key).or_insert(undo_value);
     }
 
     fn commit(mut self) {
@@ -65,7 +69,7 @@ impl Drop for Transaction<'_> {
         if self.is_committed {
             return;
         }
-        for (key, value) in std::mem::take(&mut self.undo_set) {
+        for (key, value) in std::mem::take(&mut self.undo_set).into_inner() {
             match value {
                 Some(value) => {
                     self.data.insert(key, value);

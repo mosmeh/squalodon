@@ -1,20 +1,19 @@
 mod executor;
+mod memcomparable;
 mod parser;
 mod planner;
-mod serde;
 mod storage;
 mod types;
 
 pub use executor::Error as ExecutorError;
 pub use parser::{LexerError, ParserError};
 pub use planner::Error as PlannerError;
-pub use storage::{Error as StorageError, Memory, Storage};
+pub use storage::{Error as StorageError, KeyValueStore, Memory};
 pub use types::{Type, Value};
 
 use executor::Executor;
 use parser::Parser;
-use std::sync::Mutex;
-use storage::{Catalog, SchemaAwareTransaction};
+use storage::Storage;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -37,22 +36,19 @@ pub enum Error {
     Planner(#[from] PlannerError),
 
     #[error("Executor error: {0}")]
-    Executor(#[from] executor::Error),
+    Executor(#[from] ExecutorError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub struct Database<S> {
-    storage: S,
-    catalog: Mutex<Catalog>,
+    storage: Storage<S>,
 }
 
-impl<S: Storage> Database<S> {
+impl<S: KeyValueStore> Database<S> {
     pub fn new(storage: S) -> Result<Self> {
-        let catalog = Catalog::load(&storage.transaction())?;
         Ok(Self {
-            storage,
-            catalog: catalog.into(),
+            storage: Storage::new(storage)?,
         })
     }
 
@@ -60,10 +56,9 @@ impl<S: Storage> Database<S> {
         let parser = Parser::new(sql);
         for statement in parser {
             let statement = statement?;
-            let mut catalog = self.catalog.lock().unwrap();
-            let plan = planner::plan(&catalog, statement)?.into_node();
-            let mut txn = SchemaAwareTransaction::new(self.storage.transaction());
-            let executor = Executor::new(&mut txn, &mut catalog, plan)?;
+            let txn = self.storage.transaction();
+            let plan = planner::plan(&txn, statement)?.into_node();
+            let executor = Executor::new(&txn, plan)?;
             for row in executor {
                 row?;
             }
@@ -79,8 +74,8 @@ impl<S: Storage> Database<S> {
             parser.next().is_none(),
             "multiple statements are not supported"
         );
-        let mut catalog = self.catalog.lock().unwrap();
-        let plan = planner::plan(&catalog, statement)?;
+        let txn = self.storage.transaction();
+        let plan = planner::plan(&txn, statement)?;
         let columns = plan
             .columns()
             .iter()
@@ -91,10 +86,9 @@ impl<S: Storage> Database<S> {
                 }
             })
             .collect();
-        let mut txn = SchemaAwareTransaction::new(self.storage.transaction());
-        let rows = Executor::new(&mut txn, &mut catalog, plan.into_node())?
-            .map(|columns| columns.map(|columns| Row { columns }).map_err(Into::into))
-            .collect::<Result<Vec<_>>>()?;
+        let rows = Executor::new(&txn, plan.into_node())?
+            .map(|columns| columns.map(|columns| Row { columns }))
+            .collect::<executor::Result<Vec<_>>>()?;
         txn.commit();
         Ok(Rows {
             iter: rows.into_iter(),

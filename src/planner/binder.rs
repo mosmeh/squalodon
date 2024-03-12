@@ -1,18 +1,18 @@
 use super::{ColumnIndex, Error, PlanNode, Result, TypedPlanNode};
 use crate::{
     parser, planner,
-    storage::Catalog,
+    storage::Transaction,
     types::{Type, Value},
-    BinaryOp,
+    BinaryOp, KeyValueStore,
 };
 
-pub struct Binder<'a> {
-    catalog: &'a Catalog,
+pub struct Binder<'txn, 'storage, T: KeyValueStore> {
+    txn: &'txn Transaction<'storage, T>,
 }
 
-impl<'a> Binder<'a> {
-    pub fn new(catalog: &'a Catalog) -> Self {
-        Self { catalog }
+impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
+    pub fn new(txn: &'txn Transaction<'storage, T>) -> Self {
+        Self { txn }
     }
 
     pub fn bind(&mut self, statement: parser::Statement) -> Result<TypedPlanNode> {
@@ -30,9 +30,8 @@ impl<'a> Binder<'a> {
     }
 
     fn bind_insert(&self, insert: parser::Insert) -> Result<TypedPlanNode> {
-        let table_id = self.catalog.table_id(&insert.table_name)?;
+        let table = self.txn.table(&insert.table_name)?;
         let mut exprs = Vec::with_capacity(insert.column_names.len());
-        let table = self.catalog.table(table_id)?;
         let column_names: Vec<_> = if insert.column_names.is_empty() {
             table.columns.iter().map(|column| &column.name).collect()
         } else {
@@ -45,7 +44,7 @@ impl<'a> Binder<'a> {
                 let expr = insert.exprs[index].clone();
                 bind_expr(&TypedPlanNode::empty_source(), expr)?.expect_type(column.ty)?
             } else {
-                if column.is_not_null {
+                if column.is_nullable {
                     return Err(Error::TypeError);
                 }
                 planner::Expression::Constact(Value::Null)
@@ -60,7 +59,7 @@ impl<'a> Binder<'a> {
             exprs.push(expr);
         }
         Ok(TypedPlanNode::sink(PlanNode::Insert(planner::Insert {
-            table: table_id,
+            table: table.id,
             primary_key_column: primary_key_column.expect("table has no primary key"),
             exprs,
         })))
@@ -74,9 +73,9 @@ impl<'a> Binder<'a> {
         if let Some(where_clause) = select.where_clause {
             node = bind_where_clause(node, where_clause)?;
         }
-        node = bind_order_by(node, select.order_by)?;
-        node = bind_limit(node, select.limit, select.offset)?;
-        node = bind_projections(node, select.projections)?;
+        let node = bind_order_by(node, select.order_by)?;
+        let node = bind_limit(node, select.limit, select.offset)?;
+        let node = bind_projections(node, select.projections)?;
         Ok(node)
     }
 
@@ -87,11 +86,10 @@ impl<'a> Binder<'a> {
     }
 
     fn bind_base_table(&self, name: &str) -> Result<TypedPlanNode> {
-        let table_id = self.catalog.table_id(name)?;
-        let table = self.catalog.table(table_id)?;
+        let table = self.txn.table(name)?;
         Ok(TypedPlanNode {
             node: PlanNode::Scan(planner::Scan::SeqScan {
-                table: table_id,
+                table: table.id,
                 columns: (0..table.columns.len()).map(ColumnIndex).collect(),
             }),
             columns: table
@@ -230,10 +228,6 @@ fn bind_expr(source: &TypedPlanNode, expr: parser::Expression) -> Result<TypedEx
         parser::Expression::BinaryOp { op, lhs, rhs } => {
             let lhs = bind_expr(source, *lhs)?;
             let rhs = bind_expr(source, *rhs)?;
-            match (lhs.ty, rhs.ty) {
-                (Some(lhs_ty), Some(rhs_ty)) if lhs_ty != rhs_ty => return Err(Error::TypeError),
-                _ => (),
-            }
             let ty = match op {
                 BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
                     lhs.ty.or(rhs.ty)
@@ -245,7 +239,12 @@ fn bind_expr(source: &TypedPlanNode, expr: parser::Expression) -> Result<TypedEx
                 | BinaryOp::Gt
                 | BinaryOp::Ge
                 | BinaryOp::And
-                | BinaryOp::Or => Some(Type::Boolean),
+                | BinaryOp::Or => match (lhs.ty, rhs.ty) {
+                    (Some(lhs_ty), Some(rhs_ty)) if lhs_ty != rhs_ty => {
+                        return Err(Error::TypeError)
+                    }
+                    _ => Some(Type::Boolean),
+                },
             };
             let expr = planner::Expression::BinaryOp {
                 op,
@@ -263,9 +262,9 @@ struct TypedExpression {
 }
 
 impl TypedExpression {
-    fn expect_type(self, expected: Type) -> Result<planner::Expression> {
-        if let Some(ty) = self.ty {
-            if ty != expected {
+    fn expect_type<T: Into<Option<Type>>>(self, expected: T) -> Result<planner::Expression> {
+        if let (Some(actual), Some(expected)) = (self.ty, expected.into()) {
+            if actual != expected {
                 return Err(Error::TypeError);
             }
         }

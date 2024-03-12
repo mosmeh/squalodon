@@ -29,7 +29,7 @@ pub enum Statement {
     Select(Select),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CreateTable {
     pub name: String,
     pub columns: Vec<Column>,
@@ -201,7 +201,7 @@ impl<'a> Parser<'a> {
             token => return Err(Error::UnexpectedToken(token)),
         };
         let mut is_primary_key = false;
-        let mut is_not_null = false;
+        let mut is_nullable = true;
         loop {
             match self.lexer.peek()? {
                 Token::Primary => {
@@ -212,7 +212,7 @@ impl<'a> Parser<'a> {
                 Token::Not => {
                     self.lexer.consume()?;
                     self.expect(Token::Null)?;
-                    is_not_null = true;
+                    is_nullable = false;
                 }
                 _ => break,
             }
@@ -221,7 +221,7 @@ impl<'a> Parser<'a> {
             name,
             ty,
             is_primary_key,
-            is_not_null,
+            is_nullable,
         })
     }
 
