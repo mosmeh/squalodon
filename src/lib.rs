@@ -12,7 +12,7 @@ pub use storage::{Error as StorageError, KeyValueStore, Memory};
 pub use types::{Type, Value};
 
 use executor::Executor;
-use parser::Parser;
+use parser::{Parser, Statement};
 use storage::Storage;
 
 #[derive(Debug, thiserror::Error)]
@@ -55,27 +55,21 @@ impl<S: KeyValueStore> Database<S> {
     pub fn execute(&self, sql: &str) -> Result<()> {
         let parser = Parser::new(sql);
         for statement in parser {
-            let statement = statement?;
-            let txn = self.storage.transaction();
-            let plan = planner::plan(&txn, statement)?.into_node();
-            let executor = Executor::new(&txn, plan)?;
-            for row in executor {
-                row?;
-            }
-            txn.commit();
+            self.execute_statement(statement?)?;
         }
         Ok(())
     }
 
     pub fn query(&self, sql: &str) -> Result<Rows> {
-        let mut parser = Parser::new(sql);
-        let statement = parser.next().unwrap()?;
-        assert!(
-            parser.next().is_none(),
-            "multiple statements are not supported"
-        );
+        let mut statements = Parser::new(sql).collect::<parser::Result<Vec<_>>>()?;
+        let Some(last_statement) = statements.pop() else {
+            return Ok(Rows::empty());
+        };
+        for statement in statements {
+            self.execute_statement(statement)?;
+        }
         let txn = self.storage.transaction();
-        let plan = planner::plan(&txn, statement)?;
+        let plan = planner::plan(&txn, last_statement)?;
         let columns = plan
             .columns()
             .iter()
@@ -94,6 +88,17 @@ impl<S: KeyValueStore> Database<S> {
             iter: rows.into_iter(),
             columns,
         })
+    }
+
+    fn execute_statement(&self, statement: Statement) -> Result<()> {
+        let txn = self.storage.transaction();
+        let plan = planner::plan(&txn, statement)?;
+        let executor = Executor::new(&txn, plan.into_node())?;
+        for row in executor {
+            row?;
+        }
+        txn.commit();
+        Ok(())
     }
 }
 
@@ -121,6 +126,13 @@ pub struct Rows {
 impl Rows {
     pub fn columns(&self) -> &[Column] {
         &self.columns
+    }
+
+    fn empty() -> Self {
+        Self {
+            iter: Vec::new().into_iter(),
+            columns: Vec::new(),
+        }
     }
 }
 

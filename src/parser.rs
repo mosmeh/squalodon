@@ -19,7 +19,7 @@ pub enum Error {
     Lexer(#[from] LexerError),
 }
 
-type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
 pub enum Statement {
