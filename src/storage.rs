@@ -35,6 +35,7 @@ pub trait KeyValueTransaction {
         end: [u8; N],
     ) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)>;
     fn insert(&self, key: Vec<u8>, value: Vec<u8>);
+    fn remove(&self, key: Vec<u8>);
     fn commit(self);
 }
 
@@ -118,6 +119,12 @@ impl<'a, T: KeyValueStore> Transaction<'a, T> {
         MemcomparableSerde::new().serialize_into(primary_key, &mut key);
         self.kv_txn.insert(key, bincode::serialize(columns)?);
         Ok(())
+    }
+
+    pub fn delete(&self, table: TableId, primary_key: &Value) {
+        let mut key = table.serialize().to_vec();
+        MemcomparableSerde::new().serialize_into(primary_key, &mut key);
+        self.kv_txn.remove(key);
     }
 
     pub fn commit(self) {

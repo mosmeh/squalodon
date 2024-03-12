@@ -21,6 +21,8 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
             parser::Statement::CreateTable(create_table) => Ok(bind_create_table(create_table)),
             parser::Statement::Insert(insert) => self.bind_insert(insert),
             parser::Statement::Select(select) => self.bind_select(select),
+            parser::Statement::Update(update) => self.bind_update(update),
+            parser::Statement::Delete(delete) => self.bind_delete(delete),
         }
     }
 
@@ -77,6 +79,54 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
         let node = bind_limit(node, select.limit, select.offset)?;
         let node = bind_projections(node, select.projections)?;
         Ok(node)
+    }
+
+    fn bind_update(&self, update: parser::Update) -> Result<TypedPlanNode> {
+        let table = self.txn.table(&update.table_name)?;
+        let primary_key_column = table
+            .columns
+            .iter()
+            .position(|column| column.is_primary_key)
+            .map(ColumnIndex)
+            .expect("table has no primary key");
+        let mut node = self.bind_base_table(&update.table_name)?;
+        if let Some(where_clause) = update.where_clause {
+            node = bind_where_clause(node, where_clause)?;
+        }
+        let sets = update
+            .sets
+            .into_iter()
+            .map(|set| {
+                let (index, column) = node.resolve_column(&set.column_name)?;
+                let expr = bind_expr(&node, set.expr)?.expect_type(column.ty)?;
+                Ok((index, expr))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(TypedPlanNode::sink(PlanNode::Update(planner::Update {
+            source: Box::new(node.node),
+            table: table.id,
+            primary_key_column,
+            set_exprs: sets,
+        })))
+    }
+
+    fn bind_delete(&self, delete: parser::Delete) -> Result<TypedPlanNode> {
+        let table = self.txn.table(&delete.table_name)?;
+        let primary_key_column = table
+            .columns
+            .iter()
+            .position(|column| column.is_primary_key)
+            .map(ColumnIndex)
+            .expect("table has no primary key");
+        let mut node = self.bind_base_table(&delete.table_name)?;
+        if let Some(where_clause) = delete.where_clause {
+            node = bind_where_clause(node, where_clause)?;
+        }
+        Ok(TypedPlanNode::sink(PlanNode::Delete(planner::Delete {
+            source: Box::new(node.node),
+            table: table.id,
+            primary_key_column,
+        })))
     }
 
     fn bind_table_ref(&self, table_ref: parser::TableRef) -> Result<TypedPlanNode> {

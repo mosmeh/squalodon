@@ -109,6 +109,8 @@ pub enum PlanNode {
     Explain(Box<PlanNode>),
     CreateTable(CreateTable),
     Insert(Insert),
+    Update(Update),
+    Delete(Delete),
     Scan(Scan),
     Project(Project),
     Filter(Filter),
@@ -123,6 +125,8 @@ impl Explain for PlanNode {
             Self::Explain(explain) => explain.explain(f, depth),
             Self::CreateTable(create_table) => create_table.explain(f, depth),
             Self::Insert(insert) => insert.explain(f, depth),
+            Self::Update(update) => update.explain(f, depth),
+            Self::Delete(delete) => delete.explain(f, depth),
             Self::Scan(scan) => scan.explain(f, depth),
             Self::Project(project) => project.explain(f, depth),
             Self::Filter(filter) => filter.explain(f, depth),
@@ -159,7 +163,42 @@ impl Explain for Insert {
     }
 }
 
-#[derive(Debug)]
+pub struct Update {
+    pub source: Box<PlanNode>,
+    pub table: TableId,
+    pub primary_key_column: ColumnIndex,
+    pub set_exprs: Vec<(ColumnIndex, Expression)>,
+}
+
+impl Explain for Update {
+    fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
+        writeln!(f, "Update table={} set ", self.table.0)?;
+        for (i, (column, expr)) in self.set_exprs.iter().enumerate() {
+            if i == 0 {
+                write!(f, "{column} = {expr}")?;
+            } else {
+                write!(f, ", {column} = {expr}")?;
+            }
+        }
+        f.write_str("\n")?;
+        self.source.explain_child(f, depth)
+    }
+}
+
+pub struct Delete {
+    pub source: Box<PlanNode>,
+    pub table: TableId,
+    pub primary_key_column: ColumnIndex,
+}
+
+impl Explain for Delete {
+    fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
+        writeln!(f, "Delete table={}", self.table.0)?;
+        self.source.explain_child(f, depth)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Expression {
     Constact(Value),
     ColumnRef {

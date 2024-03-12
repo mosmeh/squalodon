@@ -27,6 +27,8 @@ pub enum Statement {
     CreateTable(CreateTable),
     Insert(Insert),
     Select(Select),
+    Update(Update),
+    Delete(Delete),
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +118,25 @@ pub struct OrderBy {
     pub null_order: NullOrder,
 }
 
+#[derive(Debug)]
+pub struct Update {
+    pub table_name: String,
+    pub sets: Vec<Set>,
+    pub where_clause: Option<Expression>,
+}
+
+#[derive(Debug)]
+pub struct Set {
+    pub column_name: String,
+    pub expr: Expression,
+}
+
+#[derive(Debug)]
+pub struct Delete {
+    pub table_name: String,
+    pub where_clause: Option<Expression>,
+}
+
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
 }
@@ -164,6 +185,8 @@ impl<'a> Parser<'a> {
             Token::Create => self.parse_create(),
             Token::Insert => self.parse_insert().map(Statement::Insert),
             Token::Select => self.parse_select().map(Statement::Select),
+            Token::Update => self.parse_update().map(Statement::Update),
+            Token::Delete => self.parse_delete().map(Statement::Delete),
             token => Err(Error::UnexpectedToken(token.clone())),
         }
     }
@@ -353,6 +376,51 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(order_by)
+    }
+
+    fn parse_update(&mut self) -> Result<Update> {
+        self.expect(Token::Update)?;
+        let table_name = self.expect_identifier()?;
+        self.expect(Token::Set)?;
+        let mut set = Vec::new();
+        loop {
+            set.push(self.parse_set()?);
+            if !self.lexer.consume_if_eq(Token::Comma)? {
+                break;
+            }
+        }
+        let where_clause = self
+            .lexer
+            .consume_if_eq(Token::Where)?
+            .then(|| self.parse_expr())
+            .transpose()?;
+        Ok(Update {
+            table_name,
+            sets: set,
+            where_clause,
+        })
+    }
+
+    fn parse_set(&mut self) -> Result<Set> {
+        let column_name = self.expect_identifier()?;
+        self.expect(Token::Eq)?;
+        let expr = self.parse_expr()?;
+        Ok(Set { column_name, expr })
+    }
+
+    fn parse_delete(&mut self) -> Result<Delete> {
+        self.expect(Token::Delete)?;
+        self.expect(Token::From)?;
+        let table_name = self.expect_identifier()?;
+        let where_clause = self
+            .lexer
+            .consume_if_eq(Token::Where)?
+            .then(|| self.parse_expr())
+            .transpose()?;
+        Ok(Delete {
+            table_name,
+            where_clause,
+        })
     }
 
     fn parse_expr(&mut self) -> Result<Expression> {

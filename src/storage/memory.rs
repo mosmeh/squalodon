@@ -59,6 +59,11 @@ impl super::KeyValueTransaction for Transaction<'_> {
         self.undo_set.borrow_mut().entry(key).or_insert(undo_value);
     }
 
+    fn remove(&self, key: Vec<u8>) {
+        let removed = self.data.remove(&key).map(|entry| entry.value().clone());
+        self.undo_set.borrow_mut().insert(key, removed);
+    }
+
     fn commit(mut self) {
         self.is_committed = true;
     }
