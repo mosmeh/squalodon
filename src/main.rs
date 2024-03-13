@@ -1,11 +1,24 @@
 use anyhow::Result;
+use clap::Parser;
 use rustyline::error::ReadlineError;
 use squalodon::{Database, Memory, Rows};
-use std::io::Write;
+use std::{io::Write, path::PathBuf};
 use unicode_width::UnicodeWidthStr;
 
+#[derive(Parser, Debug)]
+struct Args {
+    /// Read/process named file
+    #[arg(long)]
+    init: Option<PathBuf>,
+}
+
 fn main() -> Result<()> {
+    let args = Args::parse();
     let db = Database::new(Memory::new())?;
+    if let Some(init) = args.init {
+        let init = std::fs::read_to_string(init)?;
+        db.execute(&init)?;
+    }
     let mut rl = rustyline::DefaultEditor::new()?;
     let mut buf = String::new();
     loop {
