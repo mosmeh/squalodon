@@ -29,7 +29,13 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
 
     fn bind_explain(&mut self, statement: parser::Statement) -> Result<TypedPlanNode> {
         let plan = self.bind(statement)?;
-        Ok(TypedPlanNode::sink(PlanNode::Explain(Box::new(plan.node))))
+        Ok(TypedPlanNode {
+            node: PlanNode::Explain(Box::new(plan.node)),
+            columns: vec![planner::Column {
+                name: "plan".to_owned(),
+                ty: Type::Text.into(),
+            }],
+        })
     }
 
     fn bind_create_table(&self, create_table: parser::CreateTable) -> Result<TypedPlanNode> {

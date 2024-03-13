@@ -114,8 +114,12 @@ impl<'txn, 'storage, T: KeyValueStore> ExecutorNode<'txn, 'storage, T> {
     fn new(txn: &'txn Transaction<'storage, T>, plan: PlanNode) -> Result<Self> {
         let executor = match plan {
             PlanNode::Explain(plan) => {
-                println!("{plan}");
-                Self::Constant(Constant::one_empty_row())
+                let rows = plan
+                    .explain()
+                    .into_iter()
+                    .map(|row| vec![Value::Text(row)])
+                    .collect();
+                Self::Constant(Constant::new(rows))
             }
             PlanNode::CreateTable(create_table) => {
                 txn.create_table(&create_table.0.name, &create_table.0.columns)?;

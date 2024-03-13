@@ -6,6 +6,7 @@ use crate::{
     types::{Type, Value},
     BinaryOp, KeyValueStore, NullOrder, Order, StorageError,
 };
+use std::fmt::Write;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -98,14 +99,27 @@ pub struct Column {
 }
 
 trait Explain {
-    fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result;
+    fn visit(&self, visitor: &mut ExplainVisitor);
+}
 
-    fn explain_child(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
-        let depth = depth + 1;
-        for _ in 0..depth {
-            f.write_str("  ")?;
+#[derive(Default)]
+struct ExplainVisitor {
+    rows: Vec<String>,
+    depth: isize,
+}
+
+impl ExplainVisitor {
+    fn write_str(&mut self, s: &str) {
+        let mut row = String::new();
+        for _ in 0..(self.depth - 1) {
+            row.push_str("  ");
         }
-        self.explain(f, depth)
+        row.push_str(s);
+        self.rows.push(row);
+    }
+
+    fn write_fmt(&mut self, fmt: std::fmt::Arguments) {
+        self.write_str(&fmt.to_string());
     }
 }
 
@@ -124,44 +138,48 @@ pub enum PlanNode {
     Limit(Limit),
 }
 
-impl Explain for PlanNode {
-    fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
-        match self {
-            Self::Explain(explain) => explain.explain(f, depth),
-            Self::CreateTable(create_table) => create_table.explain(f, depth),
-            Self::DropTable(drop_table) => drop_table.explain(f, depth),
-            Self::Insert(insert) => insert.explain(f, depth),
-            Self::Update(update) => update.explain(f, depth),
-            Self::Delete(delete) => delete.explain(f, depth),
-            Self::Constant(constant) => constant.explain(f, depth),
-            Self::Scan(scan) => scan.explain(f, depth),
-            Self::Project(project) => project.explain(f, depth),
-            Self::Filter(filter) => filter.explain(f, depth),
-            Self::Sort(sort) => sort.explain(f, depth),
-            Self::Limit(limit) => limit.explain(f, depth),
-        }
+impl PlanNode {
+    pub fn explain(&self) -> Vec<String> {
+        let mut visitor = ExplainVisitor::default();
+        self.visit(&mut visitor);
+        visitor.rows
     }
 }
 
-impl std::fmt::Display for PlanNode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.explain(f, 0)
+impl Explain for PlanNode {
+    fn visit(&self, visitor: &mut ExplainVisitor) {
+        visitor.depth += 1;
+        match self {
+            Self::Explain(n) => n.visit(visitor),
+            Self::CreateTable(n) => n.visit(visitor),
+            Self::DropTable(n) => n.visit(visitor),
+            Self::Insert(n) => n.visit(visitor),
+            Self::Update(n) => n.visit(visitor),
+            Self::Delete(n) => n.visit(visitor),
+            Self::Constant(n) => n.visit(visitor),
+            Self::Scan(n) => n.visit(visitor),
+            Self::Project(n) => n.visit(visitor),
+            Self::Filter(n) => n.visit(visitor),
+            Self::Sort(n) => n.visit(visitor),
+            Self::Limit(n) => n.visit(visitor),
+        }
+        visitor.depth -= 1;
     }
 }
 
 pub struct CreateTable(pub parser::CreateTable);
 
 impl Explain for CreateTable {
-    fn explain(&self, f: &mut std::fmt::Formatter<'_>, _: usize) -> std::fmt::Result {
-        write!(f, "CreateTable {:?}", self.0.name)
+    fn visit(&self, visitor: &mut ExplainVisitor) {
+        write!(visitor, "CreateTable {:?}", self.0.name);
     }
 }
 
 pub struct DropTable(pub parser::DropTable);
 
 impl Explain for DropTable {
-    fn explain(&self, f: &mut std::fmt::Formatter<'_>, _: usize) -> std::fmt::Result {
-        write!(f, "DropTable {:?}", self.0.name)
+    fn visit(&self, visitor: &mut ExplainVisitor) {
+        write!(visitor, "DropTable {:?}", self.0.name);
     }
 }
 
@@ -172,9 +190,9 @@ pub struct Insert {
 }
 
 impl Explain for Insert {
-    fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
-        writeln!(f, "Insert table={:?}", self.table)?;
-        self.source.explain_child(f, depth)
+    fn visit(&self, visitor: &mut ExplainVisitor) {
+        write!(visitor, "Insert table={:?}", self.table);
+        self.source.visit(visitor);
     }
 }
 
@@ -185,9 +203,9 @@ pub struct Update {
 }
 
 impl Explain for Update {
-    fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
-        writeln!(f, "Update table={:?}", self.table)?;
-        self.source.explain_child(f, depth)
+    fn visit(&self, visitor: &mut ExplainVisitor) {
+        write!(visitor, "Update table={:?}", self.table);
+        self.source.visit(visitor);
     }
 }
 
@@ -198,9 +216,9 @@ pub struct Delete {
 }
 
 impl Explain for Delete {
-    fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
-        writeln!(f, "Delete table={:?}", self.table)?;
-        self.source.explain_child(f, depth)
+    fn visit(&self, visitor: &mut ExplainVisitor) {
+        write!(visitor, "Delete table={:?}", self.table);
+        self.source.visit(visitor);
     }
 }
 
@@ -244,24 +262,20 @@ impl Constant {
 }
 
 impl Explain for Constant {
-    fn explain(&self, f: &mut std::fmt::Formatter<'_>, _: usize) -> std::fmt::Result {
-        f.write_str("Constant ")?;
+    fn visit(&self, visitor: &mut ExplainVisitor) {
+        let mut f = "Constant ".to_owned();
         for (i, row) in self.rows.iter().enumerate() {
-            if i == 0 {
-                f.write_str("[")?;
-            } else {
-                f.write_str(", [")?;
-            }
+            f.push_str(if i == 0 { "[" } else { ", [" });
             for (j, value) in row.iter().enumerate() {
                 if j == 0 {
-                    write!(f, "{value:?}")?;
+                    write!(&mut f, "{value:?}").unwrap();
                 } else {
-                    write!(f, ", {value:?}")?;
+                    write!(&mut f, ", {value:?}").unwrap();
                 }
             }
-            f.write_str("]")?;
+            f.push(']');
         }
-        Ok(())
+        visitor.write_str(&f);
     }
 }
 
@@ -274,18 +288,20 @@ pub enum Scan {
 }
 
 impl Explain for Scan {
-    fn explain(&self, f: &mut std::fmt::Formatter<'_>, _: usize) -> std::fmt::Result {
+    fn visit(&self, visitor: &mut ExplainVisitor) {
         match self {
             Self::SeqScan { table, columns } => {
-                write!(f, "SeqScan table={}, columns=[", table.0)?;
+                let mut f = String::new();
+                write!(&mut f, "SeqScan table={}, columns=[", table.0).unwrap();
                 for (i, column) in columns.iter().enumerate() {
                     if i == 0 {
-                        write!(f, "{column}")?;
+                        write!(&mut f, "{column}").unwrap();
                     } else {
-                        write!(f, ", {column}")?;
+                        write!(&mut f, ", {column}").unwrap();
                     }
                 }
-                f.write_str("]")
+                f.push(']');
+                visitor.write_str(&f);
             }
         }
     }
@@ -297,17 +313,17 @@ pub struct Project {
 }
 
 impl Explain for Project {
-    fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
-        write!(f, "Project ")?;
+    fn visit(&self, visitor: &mut ExplainVisitor) {
+        let mut f = "Project ".to_owned();
         for (i, expr) in self.exprs.iter().enumerate() {
             if i == 0 {
-                write!(f, "{expr}")?;
+                write!(f, "{expr}").unwrap();
             } else {
-                write!(f, ", {expr}")?;
+                write!(f, ", {expr}").unwrap();
             }
         }
-        f.write_str("\n")?;
-        self.source.explain_child(f, depth)
+        visitor.write_str(&f);
+        self.source.visit(visitor);
     }
 }
 
@@ -317,9 +333,9 @@ pub struct Filter {
 }
 
 impl Explain for Filter {
-    fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
-        writeln!(f, "Filter {}", self.cond)?;
-        self.source.explain_child(f, depth)
+    fn visit(&self, visitor: &mut ExplainVisitor) {
+        writeln!(visitor, "Filter {}", self.cond);
+        self.source.visit(visitor);
     }
 }
 
@@ -329,17 +345,18 @@ pub struct Sort {
 }
 
 impl Explain for Sort {
-    fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
-        f.write_str("Sort by [")?;
+    fn visit(&self, visitor: &mut ExplainVisitor) {
+        let mut f = "Sort by [".to_owned();
         for (i, order_by) in self.order_by.iter().enumerate() {
             if i == 0 {
-                write!(f, "{order_by}")?;
+                write!(f, "{order_by}").unwrap();
             } else {
-                write!(f, ", {order_by}")?;
+                write!(f, ", {order_by}").unwrap();
             }
         }
-        f.write_str("]\n")?;
-        self.source.explain_child(f, depth)
+        f.push(']');
+        visitor.write_str(&f);
+        self.source.visit(visitor);
     }
 }
 
@@ -350,16 +367,16 @@ pub struct Limit {
 }
 
 impl Explain for Limit {
-    fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
-        f.write_str("Limit")?;
+    fn visit(&self, visitor: &mut ExplainVisitor) {
+        let mut f = "Limit".to_owned();
         if let Some(limit) = &self.limit {
-            write!(f, " limit={limit}")?;
+            write!(f, " limit={limit}").unwrap();
         }
         if let Some(offset) = &self.offset {
-            write!(f, " offset={offset}")?;
+            write!(f, " offset={offset}").unwrap();
         }
-        f.write_str("\n")?;
-        self.source.explain_child(f, depth)
+        visitor.write_str(&f);
+        self.source.visit(visitor);
     }
 }
 

@@ -70,7 +70,7 @@ impl<S: KeyValueStore> Database<S> {
         }
         let txn = self.storage.transaction();
         let plan = planner::plan(&txn, last_statement)?;
-        let columns = plan
+        let columns: Vec<_> = plan
             .columns()
             .iter()
             .map(|column| {
@@ -80,8 +80,14 @@ impl<S: KeyValueStore> Database<S> {
                 }
             })
             .collect();
+        let num_columns = columns.len();
         let rows = Executor::new(&txn, plan.into_node())?
-            .map(|columns| columns.map(|columns| Row { columns }))
+            .map(|columns| {
+                columns.map(|columns| {
+                    assert_eq!(columns.len(), num_columns);
+                    Row { columns }
+                })
+            })
             .collect::<executor::Result<Vec<_>>>()?;
         txn.commit();
         Ok(Rows {
@@ -93,9 +99,11 @@ impl<S: KeyValueStore> Database<S> {
     fn execute_statement(&self, statement: Statement) -> Result<()> {
         let txn = self.storage.transaction();
         let plan = planner::plan(&txn, statement)?;
+        let num_columns = plan.columns().len();
         let executor = Executor::new(&txn, plan.into_node())?;
         for row in executor {
-            row?;
+            let row = row?;
+            assert_eq!(row.len(), num_columns);
         }
         txn.commit();
         Ok(())
