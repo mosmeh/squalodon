@@ -34,6 +34,7 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
 
     fn bind_create_table(&self, create_table: parser::CreateTable) -> Result<TypedPlanNode> {
         match self.txn.table(&create_table.name) {
+            Ok(_) if create_table.if_not_exists => Ok(TypedPlanNode::empty_source()),
             Ok(_) => Err(Error::TableAlreadyExists(create_table.name.clone())),
             Err(StorageError::UnknownTable(_)) => Ok(TypedPlanNode::sink(PlanNode::CreateTable(
                 planner::CreateTable(create_table),
@@ -43,10 +44,15 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
     }
 
     fn bind_drop_table(&self, drop_table: parser::DropTable) -> Result<TypedPlanNode> {
-        self.txn.table(&drop_table.name)?;
-        Ok(TypedPlanNode::sink(PlanNode::DropTable(
-            planner::DropTable(drop_table),
-        )))
+        match self.txn.table(&drop_table.name) {
+            Ok(_) => Ok(TypedPlanNode::sink(PlanNode::DropTable(
+                planner::DropTable(drop_table),
+            ))),
+            Err(StorageError::UnknownTable(_)) if drop_table.if_exists => {
+                Ok(TypedPlanNode::empty_source())
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     fn bind_insert(&self, insert: parser::Insert) -> Result<TypedPlanNode> {

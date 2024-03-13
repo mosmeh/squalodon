@@ -35,12 +35,14 @@ pub enum Statement {
 #[derive(Debug)]
 pub struct CreateTable {
     pub name: String,
+    pub if_not_exists: bool,
     pub columns: Vec<Column>,
 }
 
 #[derive(Debug)]
 pub struct DropTable {
     pub name: String,
+    pub if_exists: bool,
 }
 
 #[derive(Debug)]
@@ -208,6 +210,15 @@ impl<'a> Parser<'a> {
 
     fn parse_create_table(&mut self) -> Result<CreateTable> {
         self.expect(Token::Table)?;
+        let if_not_exists = self
+            .lexer
+            .consume_if_eq(Token::If)?
+            .then(|| {
+                self.expect(Token::Not)?;
+                self.expect(Token::Exists)
+            })
+            .transpose()?
+            .is_some();
         let name = self.expect_identifier()?;
         self.expect(Token::LeftParen)?;
         let mut columns = Vec::new();
@@ -218,7 +229,11 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(Token::RightParen)?;
-        Ok(CreateTable { name, columns })
+        Ok(CreateTable {
+            name,
+            if_not_exists,
+            columns,
+        })
     }
 
     fn parse_drop(&mut self) -> Result<Statement> {
@@ -231,8 +246,14 @@ impl<'a> Parser<'a> {
 
     fn parse_drop_table(&mut self) -> Result<DropTable> {
         self.expect(Token::Table)?;
+        let if_exists = self
+            .lexer
+            .consume_if_eq(Token::If)?
+            .then(|| self.expect(Token::Exists))
+            .transpose()?
+            .is_some();
         let name = self.expect_identifier()?;
-        Ok(DropTable { name })
+        Ok(DropTable { name, if_exists })
     }
 
     fn parse_column_definition(&mut self) -> Result<Column> {
