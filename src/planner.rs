@@ -12,6 +12,9 @@ pub enum Error {
     #[error("Unknown column {0:?}")]
     UnknownColumn(String),
 
+    #[error("Duplicate column {0:?}")]
+    DuplicateColumn(String),
+
     #[error("Type error")]
     TypeError,
 
@@ -53,9 +56,7 @@ impl TypedPlanNode {
 
     fn empty_source() -> Self {
         Self {
-            node: PlanNode::OneRow(OneRow {
-                columns: Vec::new(),
-            }),
+            node: PlanNode::Constant(Constant::one_empty_row()),
             columns: Vec::new(),
         }
     }
@@ -111,12 +112,12 @@ pub enum PlanNode {
     Insert(Insert),
     Update(Update),
     Delete(Delete),
+    Constant(Constant),
     Scan(Scan),
     Project(Project),
     Filter(Filter),
     Sort(Sort),
     Limit(Limit),
-    OneRow(OneRow),
 }
 
 impl Explain for PlanNode {
@@ -127,12 +128,12 @@ impl Explain for PlanNode {
             Self::Insert(insert) => insert.explain(f, depth),
             Self::Update(update) => update.explain(f, depth),
             Self::Delete(delete) => delete.explain(f, depth),
+            Self::Constant(constant) => constant.explain(f, depth),
             Self::Scan(scan) => scan.explain(f, depth),
             Self::Project(project) => project.explain(f, depth),
             Self::Filter(filter) => filter.explain(f, depth),
             Self::Sort(sort) => sort.explain(f, depth),
             Self::Limit(limit) => limit.explain(f, depth),
-            Self::OneRow(one_row) => one_row.explain(f, depth),
         }
     }
 }
@@ -152,14 +153,15 @@ impl Explain for CreateTable {
 }
 
 pub struct Insert {
+    pub source: Box<PlanNode>,
     pub table: TableId,
     pub primary_key_column: ColumnIndex,
-    pub exprs: Vec<Expression>,
 }
 
 impl Explain for Insert {
-    fn explain(&self, f: &mut std::fmt::Formatter<'_>, _: usize) -> std::fmt::Result {
-        write!(f, "Insert table={} exprs={:?}", self.table.0, self.exprs)
+    fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
+        writeln!(f, "Insert table={:?}", self.table)?;
+        self.source.explain_child(f, depth)
     }
 }
 
@@ -167,20 +169,11 @@ pub struct Update {
     pub source: Box<PlanNode>,
     pub table: TableId,
     pub primary_key_column: ColumnIndex,
-    pub set_exprs: Vec<(ColumnIndex, Expression)>,
 }
 
 impl Explain for Update {
     fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
-        writeln!(f, "Update table={} set ", self.table.0)?;
-        for (i, (column, expr)) in self.set_exprs.iter().enumerate() {
-            if i == 0 {
-                write!(f, "{column} = {expr}")?;
-            } else {
-                write!(f, ", {column} = {expr}")?;
-            }
-        }
-        f.write_str("\n")?;
+        writeln!(f, "Update table={:?}", self.table)?;
         self.source.explain_child(f, depth)
     }
 }
@@ -193,7 +186,7 @@ pub struct Delete {
 
 impl Explain for Delete {
     fn explain(&self, f: &mut std::fmt::Formatter<'_>, depth: usize) -> std::fmt::Result {
-        writeln!(f, "Delete table={}", self.table.0)?;
+        writeln!(f, "Delete table={:?}", self.table)?;
         self.source.explain_child(f, depth)
     }
 }
@@ -220,6 +213,42 @@ impl std::fmt::Display for Expression {
                 write!(f, "({lhs} {op} {rhs})")
             }
         }
+    }
+}
+
+pub struct Constant {
+    pub rows: Vec<Vec<Value>>,
+}
+
+impl Constant {
+    fn new(rows: Vec<Vec<Value>>) -> Self {
+        Self { rows }
+    }
+
+    fn one_empty_row() -> Self {
+        Self::new(vec![Vec::new()])
+    }
+}
+
+impl Explain for Constant {
+    fn explain(&self, f: &mut std::fmt::Formatter<'_>, _: usize) -> std::fmt::Result {
+        f.write_str("Constant ")?;
+        for (i, row) in self.rows.iter().enumerate() {
+            if i == 0 {
+                f.write_str("[")?;
+            } else {
+                f.write_str(", [")?;
+            }
+            for (j, value) in row.iter().enumerate() {
+                if j == 0 {
+                    write!(f, "{value:?}")?;
+                } else {
+                    write!(f, ", {value:?}")?;
+                }
+            }
+            f.write_str("]")?;
+        }
+        Ok(())
     }
 }
 
@@ -330,15 +359,5 @@ pub struct OrderBy {
 impl std::fmt::Display for OrderBy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} {} {}", self.expr, self.order, self.null_order)
-    }
-}
-
-pub struct OneRow {
-    pub columns: Vec<Expression>,
-}
-
-impl Explain for OneRow {
-    fn explain(&self, f: &mut std::fmt::Formatter<'_>, _: usize) -> std::fmt::Result {
-        write!(f, "OneRow {:?}", self.columns)
     }
 }

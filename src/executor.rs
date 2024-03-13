@@ -99,15 +99,15 @@ impl<T: KeyValueStore> Iterator for Executor<'_, '_, T> {
 }
 
 enum ExecutorNode<'txn, 'storage, T: KeyValueStore> {
+    Insert(Insert<'txn, 'storage, T>),
+    Update(Update<'txn, 'storage, T>),
+    Delete(Delete<'txn, 'storage, T>),
+    Constant(Constant),
     SeqScan(SeqScan<'txn>),
     Project(Project<'txn, 'storage, T>),
     Filter(Filter<'txn, 'storage, T>),
     Sort(Sort<'txn, 'storage, T>),
     Limit(Limit<'txn, 'storage, T>),
-    Update(Update<'txn, 'storage, T>),
-    Delete(Delete<'txn, 'storage, T>),
-    OneRow(OneRow),
-    NoRow,
 }
 
 impl<'txn, 'storage, T: KeyValueStore> ExecutorNode<'txn, 'storage, T> {
@@ -115,31 +115,23 @@ impl<'txn, 'storage, T: KeyValueStore> ExecutorNode<'txn, 'storage, T> {
         let executor = match plan {
             PlanNode::Explain(plan) => {
                 println!("{plan}");
-                Self::NoRow
+                Self::Constant(Constant::one_empty_row())
             }
             PlanNode::CreateTable(create_table) => {
                 txn.create_table(create_table.0.name, create_table.0.columns)?;
-                Self::NoRow
+                Self::Constant(Constant::one_empty_row())
             }
-            PlanNode::Insert(insert) => {
-                let columns = insert
-                    .exprs
-                    .into_iter()
-                    .map(|expr| expr.eval(&[]))
-                    .collect::<Result<Vec<_>>>()?;
-                txn.update(
-                    insert.table,
-                    &columns[insert.primary_key_column.0],
-                    &columns,
-                )?;
-                Self::NoRow
-            }
+            PlanNode::Insert(insert) => Self::Insert(Insert {
+                txn,
+                source: Box::new(Self::new(txn, *insert.source)?),
+                table: insert.table,
+                primary_key_column: insert.primary_key_column,
+            }),
             PlanNode::Update(update) => Self::Update(Update {
                 txn,
                 source: Box::new(Self::new(txn, *update.source)?),
                 table: update.table,
                 primary_key_column: update.primary_key_column,
-                set_exprs: update.set_exprs,
             }),
             PlanNode::Delete(delete) => Self::Delete(Delete {
                 txn,
@@ -147,6 +139,7 @@ impl<'txn, 'storage, T: KeyValueStore> ExecutorNode<'txn, 'storage, T> {
                 table: delete.table,
                 primary_key_column: delete.primary_key_column,
             }),
+            PlanNode::Constant(planner::Constant { rows }) => Self::Constant(Constant::new(rows)),
             PlanNode::Scan(planner::Scan::SeqScan { table, columns }) => {
                 Self::SeqScan(SeqScan::new(txn, table, columns))
             }
@@ -166,7 +159,6 @@ impl<'txn, 'storage, T: KeyValueStore> ExecutorNode<'txn, 'storage, T> {
                 limit,
                 offset,
             }) => Self::Limit(Limit::new(Self::new(txn, *source)?, limit, offset)?),
-            PlanNode::OneRow(one_row) => Self::OneRow(OneRow::new(one_row.columns)?),
         };
         Ok(executor)
     }
@@ -180,10 +172,10 @@ impl<T: KeyValueStore> Node for ExecutorNode<'_, '_, T> {
             Self::Filter(e) => e.next_row(),
             Self::Sort(e) => e.next_row(),
             Self::Limit(e) => e.next_row(),
+            Self::Insert(e) => e.next_row(),
             Self::Update(e) => e.next_row(),
             Self::Delete(e) => e.next_row(),
-            Self::OneRow(e) => e.next_row(),
-            Self::NoRow => Err(NodeError::EndOfRows),
+            Self::Constant(e) => e.next_row(),
         }
     }
 }
@@ -197,6 +189,96 @@ impl<T: KeyValueStore> Iterator for ExecutorNode<'_, '_, T> {
             Err(NodeError::Error(e)) => Some(Err(e)),
             Err(NodeError::EndOfRows) => None,
         }
+    }
+}
+
+struct Insert<'txn, 'storage, T: KeyValueStore> {
+    txn: &'txn Transaction<'storage, T>,
+    source: Box<ExecutorNode<'txn, 'storage, T>>,
+    table: TableId,
+    primary_key_column: ColumnIndex,
+}
+
+impl<T: KeyValueStore> Node for Insert<'_, '_, T> {
+    fn next_row(&mut self) -> Output {
+        for row in self.source.by_ref() {
+            let row = row?;
+            let primary_key = &row[self.primary_key_column.0];
+            self.txn.update(self.table, primary_key, &row)?;
+        }
+        Err(NodeError::EndOfRows)
+    }
+}
+
+struct Update<'txn, 'storage, T: KeyValueStore> {
+    txn: &'txn Transaction<'storage, T>,
+    source: Box<ExecutorNode<'txn, 'storage, T>>,
+    table: TableId,
+    primary_key_column: ColumnIndex,
+}
+
+impl<T: KeyValueStore> Node for Update<'_, '_, T> {
+    fn next_row(&mut self) -> Output {
+        for row in self.source.by_ref() {
+            let row = row?;
+            let primary_key = &row[self.primary_key_column.0];
+            self.txn.update(self.table, primary_key, &row)?;
+        }
+        Err(NodeError::EndOfRows)
+    }
+}
+
+struct Delete<'txn, 'storage, T: KeyValueStore> {
+    txn: &'txn Transaction<'storage, T>,
+    source: Box<ExecutorNode<'txn, 'storage, T>>,
+    table: TableId,
+    primary_key_column: ColumnIndex,
+}
+
+impl<T: KeyValueStore> Node for Delete<'_, '_, T> {
+    fn next_row(&mut self) -> Output {
+        for row in self.source.by_ref() {
+            let row = row?;
+            let primary_key = &row[self.primary_key_column.0];
+            self.txn.delete(self.table, primary_key);
+        }
+        Err(NodeError::EndOfRows)
+    }
+}
+
+#[derive(Default)]
+struct Constant {
+    iter: std::vec::IntoIter<Vec<Value>>,
+}
+
+impl Constant {
+    fn new(rows: Vec<Vec<Value>>) -> Self {
+        Self {
+            iter: rows.into_iter(),
+        }
+    }
+
+    fn one_empty_row() -> Self {
+        Self {
+            iter: vec![Vec::new()].into_iter(),
+        }
+    }
+}
+
+impl Node for Constant {
+    fn next_row(&mut self) -> Output {
+        self.iter.next().into_output()
+    }
+}
+
+impl Expression {
+    fn eval(&self, row: &[Value]) -> Result<Value> {
+        let value = match self {
+            Self::Constact(v) => v.clone(),
+            Self::ColumnRef { column } => row[column.0].clone(),
+            Self::BinaryOp { op, lhs, rhs } => eval_binary_op(*op, row, lhs, rhs)?,
+        };
+        Ok(value)
     }
 }
 
@@ -357,78 +439,6 @@ impl<T: KeyValueStore> Node for Limit<'_, '_, T> {
                 None => return Ok(row),
             }
         }
-    }
-}
-
-struct Update<'txn, 'storage, T: KeyValueStore> {
-    txn: &'txn Transaction<'storage, T>,
-    source: Box<ExecutorNode<'txn, 'storage, T>>,
-    table: TableId,
-    primary_key_column: ColumnIndex,
-    set_exprs: Vec<(ColumnIndex, Expression)>,
-}
-
-impl<T: KeyValueStore> Node for Update<'_, '_, T> {
-    fn next_row(&mut self) -> Output {
-        for row in self.source.by_ref() {
-            let mut row = row?;
-            for (column, expr) in &self.set_exprs {
-                row[column.0] = expr.eval(&row)?;
-            }
-            let primary_key = &row[self.primary_key_column.0];
-            self.txn.update(self.table, primary_key, &row)?;
-        }
-        Err(NodeError::EndOfRows)
-    }
-}
-
-struct Delete<'txn, 'storage, T: KeyValueStore> {
-    txn: &'txn Transaction<'storage, T>,
-    source: Box<ExecutorNode<'txn, 'storage, T>>,
-    table: TableId,
-    primary_key_column: ColumnIndex,
-}
-
-impl<T: KeyValueStore> Node for Delete<'_, '_, T> {
-    fn next_row(&mut self) -> Output {
-        for row in self.source.by_ref() {
-            let row = row?;
-            let primary_key = &row[self.primary_key_column.0];
-            self.txn.delete(self.table, primary_key);
-        }
-        Err(NodeError::EndOfRows)
-    }
-}
-
-#[derive(Default)]
-struct OneRow {
-    row: Option<Vec<Value>>,
-}
-
-impl OneRow {
-    fn new(columns: Vec<Expression>) -> Result<Self> {
-        let row = columns
-            .into_iter()
-            .map(|expr| expr.eval(&[]))
-            .collect::<Result<_>>()?;
-        Ok(Self { row: Some(row) })
-    }
-}
-
-impl Node for OneRow {
-    fn next_row(&mut self) -> Output {
-        self.row.take().into_output()
-    }
-}
-
-impl Expression {
-    fn eval(&self, row: &[Value]) -> Result<Value> {
-        let value = match self {
-            Self::Constact(v) => v.clone(),
-            Self::ColumnRef { column } => row[column.0].clone(),
-            Self::BinaryOp { op, lhs, rhs } => eval_binary_op(*op, row, lhs, rhs)?,
-        };
-        Ok(value)
     }
 }
 

@@ -60,10 +60,14 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
             }
             exprs.push(expr);
         }
+        let node = PlanNode::Project(planner::Project {
+            source: Box::new(PlanNode::Constant(planner::Constant::one_empty_row())),
+            exprs,
+        });
         Ok(TypedPlanNode::sink(PlanNode::Insert(planner::Insert {
+            source: Box::new(node),
             table: table.id,
             primary_key_column: primary_key_column.expect("table has no primary key"),
-            exprs,
         })))
     }
 
@@ -93,20 +97,34 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
         if let Some(where_clause) = update.where_clause {
             node = bind_where_clause(node, where_clause)?;
         }
-        let sets = update
-            .sets
+        let mut exprs = vec![None; table.columns.len()];
+        for set in update.sets {
+            let (index, column) = node.resolve_column(&set.column_name)?;
+            let expr = &mut exprs[index.0];
+            match expr {
+                Some(_) => return Err(Error::DuplicateColumn(column.name.clone())),
+                None => {
+                    *expr = bind_expr(&node, set.expr)?.expect_type(column.ty)?.into();
+                }
+            }
+        }
+        let exprs = exprs
             .into_iter()
-            .map(|set| {
-                let (index, column) = node.resolve_column(&set.column_name)?;
-                let expr = bind_expr(&node, set.expr)?.expect_type(column.ty)?;
-                Ok((index, expr))
+            .enumerate()
+            .map(|(i, expr)| {
+                expr.unwrap_or(planner::Expression::ColumnRef {
+                    column: ColumnIndex(i),
+                })
             })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(TypedPlanNode::sink(PlanNode::Update(planner::Update {
+            .collect();
+        let node = PlanNode::Project(planner::Project {
             source: Box::new(node.node),
+            exprs,
+        });
+        Ok(TypedPlanNode::sink(PlanNode::Update(planner::Update {
+            source: Box::new(node),
             table: table.id,
             primary_key_column,
-            set_exprs: sets,
         })))
     }
 
