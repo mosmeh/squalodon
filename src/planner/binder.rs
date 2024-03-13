@@ -3,7 +3,7 @@ use crate::{
     parser, planner,
     storage::Transaction,
     types::{Type, Value},
-    BinaryOp, KeyValueStore,
+    BinaryOp, KeyValueStore, StorageError,
 };
 
 pub struct Binder<'txn, 'storage, T: KeyValueStore> {
@@ -18,7 +18,8 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
     pub fn bind(&mut self, statement: parser::Statement) -> Result<TypedPlanNode> {
         match statement {
             parser::Statement::Explain(statement) => self.bind_explain(*statement),
-            parser::Statement::CreateTable(create_table) => Ok(bind_create_table(create_table)),
+            parser::Statement::CreateTable(create_table) => self.bind_create_table(create_table),
+            parser::Statement::DropTable(drop_table) => self.bind_drop_table(drop_table),
             parser::Statement::Insert(insert) => self.bind_insert(insert),
             parser::Statement::Select(select) => self.bind_select(select),
             parser::Statement::Update(update) => self.bind_update(update),
@@ -29,6 +30,23 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
     fn bind_explain(&mut self, statement: parser::Statement) -> Result<TypedPlanNode> {
         let plan = self.bind(statement)?;
         Ok(TypedPlanNode::sink(PlanNode::Explain(Box::new(plan.node))))
+    }
+
+    fn bind_create_table(&self, create_table: parser::CreateTable) -> Result<TypedPlanNode> {
+        match self.txn.table(&create_table.name) {
+            Ok(_) => Err(Error::TableAlreadyExists(create_table.name.clone())),
+            Err(StorageError::UnknownTable(_)) => Ok(TypedPlanNode::sink(PlanNode::CreateTable(
+                planner::CreateTable(create_table),
+            ))),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    fn bind_drop_table(&self, drop_table: parser::DropTable) -> Result<TypedPlanNode> {
+        self.txn.table(&drop_table.name)?;
+        Ok(TypedPlanNode::sink(PlanNode::DropTable(
+            planner::DropTable(drop_table),
+        )))
     }
 
     fn bind_insert(&self, insert: parser::Insert) -> Result<TypedPlanNode> {
@@ -170,10 +188,6 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
                 .collect(),
         })
     }
-}
-
-fn bind_create_table(create_table: parser::CreateTable) -> TypedPlanNode {
-    TypedPlanNode::sink(PlanNode::CreateTable(planner::CreateTable(create_table)))
 }
 
 fn bind_where_clause(source: TypedPlanNode, expr: parser::Expression) -> Result<TypedPlanNode> {

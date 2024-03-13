@@ -25,16 +25,22 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Statement {
     Explain(Box<Statement>),
     CreateTable(CreateTable),
+    DropTable(DropTable),
     Insert(Insert),
     Select(Select),
     Update(Update),
     Delete(Delete),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CreateTable {
     pub name: String,
     pub columns: Vec<Column>,
+}
+
+#[derive(Debug)]
+pub struct DropTable {
+    pub name: String,
 }
 
 #[derive(Debug)]
@@ -183,6 +189,7 @@ impl<'a> Parser<'a> {
     fn parse_statement_inner(&mut self) -> Result<Statement> {
         match self.lexer.peek()? {
             Token::Create => self.parse_create(),
+            Token::Drop => self.parse_drop(),
             Token::Insert => self.parse_insert().map(Statement::Insert),
             Token::Select => self.parse_select().map(Statement::Select),
             Token::Update => self.parse_update().map(Statement::Update),
@@ -212,6 +219,20 @@ impl<'a> Parser<'a> {
         }
         self.expect(Token::RightParen)?;
         Ok(CreateTable { name, columns })
+    }
+
+    fn parse_drop(&mut self) -> Result<Statement> {
+        self.expect(Token::Drop)?;
+        match self.lexer.peek()? {
+            Token::Table => self.parse_drop_table().map(Statement::DropTable),
+            token => Err(Error::UnexpectedToken(token.clone())),
+        }
+    }
+
+    fn parse_drop_table(&mut self) -> Result<DropTable> {
+        self.expect(Token::Table)?;
+        let name = self.expect_identifier()?;
+        Ok(DropTable { name })
     }
 
     fn parse_column_definition(&mut self) -> Result<Column> {

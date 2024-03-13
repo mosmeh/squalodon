@@ -28,6 +28,13 @@ pub struct Table {
     pub columns: Vec<Column>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct TableRef<'a> {
+    pub id: TableId,
+    pub name: &'a str,
+    pub columns: &'a [Column],
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Column {
     pub name: String,

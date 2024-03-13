@@ -6,12 +6,16 @@ pub use schema::{Column, Table, TableId};
 pub use Error as StorageError;
 
 use crate::{memcomparable::MemcomparableSerde, Value};
+use schema::TableRef;
 use std::sync::atomic::AtomicU64;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Unknown table {0:?}")]
     UnknownTable(String),
+
+    #[error("Duplicate key {0:?}")]
+    DuplicateKey(Value),
 
     #[error("Bincode error: {0}")]
     Bincode(#[from] bincode::Error),
@@ -28,14 +32,31 @@ pub trait KeyValueStore {
 }
 
 pub trait KeyValueTransaction {
+    /// Returns None if the key does not exist.
     fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
+
+    /// Returns an iterator over the key-value pairs in the range [start, end).
     fn scan<const N: usize>(
         &self,
         start: [u8; N],
         end: [u8; N],
     ) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)>;
-    fn insert(&self, key: Vec<u8>, value: Vec<u8>);
-    fn remove(&self, key: Vec<u8>);
+
+    /// Returns true if the key was inserted, false if it already existed.
+    #[must_use]
+    fn insert(&self, key: Vec<u8>, value: Vec<u8>) -> bool;
+
+    /// Returns true if the key was updated, false if it did not exist.
+    #[must_use]
+    fn update(&self, key: Vec<u8>, value: Vec<u8>) -> bool;
+
+    /// Returns the value if the key was removed, None if it did not exist.
+    #[must_use]
+    fn remove(&self, key: Vec<u8>) -> Option<Vec<u8>>;
+
+    /// Commits the transaction.
+    ///
+    /// The transaction rolls back if it is dropped without being committed.
     fn commit(self);
 }
 
@@ -78,7 +99,7 @@ pub struct Transaction<'a, T: KeyValueStore> {
 }
 
 impl<'a, T: KeyValueStore> Transaction<'a, T> {
-    pub fn create_table(&self, name: String, columns: Vec<Column>) -> Result<TableId> {
+    pub fn create_table(&self, name: &str, columns: &[Column]) -> Result<TableId> {
         let id = self
             .storage
             .next_table_id
@@ -88,10 +109,26 @@ impl<'a, T: KeyValueStore> Transaction<'a, T> {
         let mut key = TableId::CATALOG.serialize().to_vec();
         key.extend_from_slice(name.as_bytes());
 
-        let table = Table { id, name, columns };
-        self.kv_txn.insert(key, bincode::serialize(&table)?);
+        let table = TableRef { id, name, columns };
+        let inserted = self.kv_txn.insert(key, bincode::serialize(&table)?);
+        assert!(inserted);
 
         Ok(id)
+    }
+
+    pub fn drop_table(&self, name: &str) -> Result<()> {
+        let mut key = TableId::CATALOG.serialize().to_vec();
+        key.extend_from_slice(name.as_bytes());
+        let bytes = self.kv_txn.remove(key).unwrap();
+        let table: Table = bincode::deserialize(&bytes)?;
+        assert_eq!(table.name, name);
+        let start = table.id.serialize();
+        let mut end = start;
+        end[end.len() - 1] += 1;
+        for (key, _) in self.kv_txn.scan(start, end) {
+            self.kv_txn.remove(key).unwrap();
+        }
+        Ok(())
     }
 
     pub fn table(&self, name: &str) -> Result<Table> {
@@ -114,17 +151,29 @@ impl<'a, T: KeyValueStore> Transaction<'a, T> {
         Box::new(iter)
     }
 
+    pub fn insert(&self, table: TableId, primary_key: &Value, columns: &[Value]) -> Result<()> {
+        let mut key = table.serialize().to_vec();
+        MemcomparableSerde::new().serialize_into(primary_key, &mut key);
+        if self.kv_txn.insert(key, bincode::serialize(columns)?) {
+            Ok(())
+        } else {
+            Err(Error::DuplicateKey(primary_key.clone()))
+        }
+    }
+
     pub fn update(&self, table: TableId, primary_key: &Value, columns: &[Value]) -> Result<()> {
         let mut key = table.serialize().to_vec();
         MemcomparableSerde::new().serialize_into(primary_key, &mut key);
-        self.kv_txn.insert(key, bincode::serialize(columns)?);
+        let updated = self.kv_txn.update(key, bincode::serialize(columns)?);
+        assert!(updated);
         Ok(())
     }
 
     pub fn delete(&self, table: TableId, primary_key: &Value) {
         let mut key = table.serialize().to_vec();
         MemcomparableSerde::new().serialize_into(primary_key, &mut key);
-        self.kv_txn.remove(key);
+        let deleted = self.kv_txn.remove(key).is_some();
+        assert!(deleted);
     }
 
     pub fn commit(self) {

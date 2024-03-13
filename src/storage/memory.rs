@@ -53,15 +53,34 @@ impl super::KeyValueTransaction for Transaction<'_> {
             .map(|entry| (entry.key().clone(), entry.value().clone()))
     }
 
-    fn insert(&self, key: Vec<u8>, value: Vec<u8>) {
-        let undo_value = self.data.get(&key).map(|entry| entry.value().clone());
+    fn insert(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
+        if self.data.contains_key(&key) {
+            return false;
+        }
         self.data.insert(key.clone(), value);
-        self.undo_set.borrow_mut().entry(key).or_insert(undo_value);
+        self.undo_set.borrow_mut().entry(key).or_insert(None);
+        true
     }
 
-    fn remove(&self, key: Vec<u8>) {
-        let removed = self.data.remove(&key).map(|entry| entry.value().clone());
-        self.undo_set.borrow_mut().insert(key, removed);
+    fn update(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
+        let Some(prev_value) = self.data.get(&key) else {
+            return false;
+        };
+        self.data.insert(key.clone(), value);
+        self.undo_set
+            .borrow_mut()
+            .entry(key)
+            .or_insert_with(|| Some(prev_value.value().clone()));
+        true
+    }
+
+    fn remove(&self, key: Vec<u8>) -> Option<Vec<u8>> {
+        let value = self.data.remove(&key).map(|entry| entry.value().clone());
+        self.undo_set
+            .borrow_mut()
+            .entry(key)
+            .or_insert_with(|| value.clone());
+        value
     }
 
     fn commit(mut self) {

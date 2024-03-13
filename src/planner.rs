@@ -9,6 +9,9 @@ use crate::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("Table {0:?} already exists")]
+    TableAlreadyExists(String),
+
     #[error("Unknown column {0:?}")]
     UnknownColumn(String),
 
@@ -109,6 +112,7 @@ trait Explain {
 pub enum PlanNode {
     Explain(Box<PlanNode>),
     CreateTable(CreateTable),
+    DropTable(DropTable),
     Insert(Insert),
     Update(Update),
     Delete(Delete),
@@ -125,6 +129,7 @@ impl Explain for PlanNode {
         match self {
             Self::Explain(explain) => explain.explain(f, depth),
             Self::CreateTable(create_table) => create_table.explain(f, depth),
+            Self::DropTable(drop_table) => drop_table.explain(f, depth),
             Self::Insert(insert) => insert.explain(f, depth),
             Self::Update(update) => update.explain(f, depth),
             Self::Delete(delete) => delete.explain(f, depth),
@@ -148,7 +153,15 @@ pub struct CreateTable(pub parser::CreateTable);
 
 impl Explain for CreateTable {
     fn explain(&self, f: &mut std::fmt::Formatter<'_>, _: usize) -> std::fmt::Result {
-        write!(f, "CreateTable {:?}", self.0)
+        write!(f, "CreateTable {:?}", self.0.name)
+    }
+}
+
+pub struct DropTable(pub parser::DropTable);
+
+impl Explain for DropTable {
+    fn explain(&self, f: &mut std::fmt::Formatter<'_>, _: usize) -> std::fmt::Result {
+        write!(f, "DropTable {:?}", self.0.name)
     }
 }
 

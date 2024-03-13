@@ -118,7 +118,11 @@ impl<'txn, 'storage, T: KeyValueStore> ExecutorNode<'txn, 'storage, T> {
                 Self::Constant(Constant::one_empty_row())
             }
             PlanNode::CreateTable(create_table) => {
-                txn.create_table(create_table.0.name, create_table.0.columns)?;
+                txn.create_table(&create_table.0.name, &create_table.0.columns)?;
+                Self::Constant(Constant::one_empty_row())
+            }
+            PlanNode::DropTable(drop_table) => {
+                txn.drop_table(&drop_table.0.name)?;
                 Self::Constant(Constant::one_empty_row())
             }
             PlanNode::Insert(insert) => Self::Insert(Insert {
@@ -204,7 +208,7 @@ impl<T: KeyValueStore> Node for Insert<'_, '_, T> {
         for row in self.source.by_ref() {
             let row = row?;
             let primary_key = &row[self.primary_key_column.0];
-            self.txn.update(self.table, primary_key, &row)?;
+            self.txn.insert(self.table, primary_key, &row)?;
         }
         Err(NodeError::EndOfRows)
     }
