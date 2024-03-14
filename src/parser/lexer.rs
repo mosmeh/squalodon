@@ -66,6 +66,7 @@ pub enum Token {
     Ne,
     Le,
     Ge,
+    PipePipe,
 
     IntegerLiteral(i64),
     RealLiteral(f64),
@@ -175,6 +176,7 @@ impl std::fmt::Debug for Token {
             Self::Ne => f.write_str("<>"),
             Self::Le => f.write_str("<="),
             Self::Ge => f.write_str(">="),
+            Self::PipePipe => f.write_str("||"),
             Self::IntegerLiteral(i) => i.fmt(f),
             Self::RealLiteral(r) => r.fmt(f),
             Self::String(s) => s.fmt(f),
@@ -326,6 +328,12 @@ impl<'a> LexerInner<'a> {
                             Token::Ne
                         } else {
                             return Err(Error::UnknownToken("!".to_owned()));
+                        }
+                    } else if self.consume_if_eq('|') {
+                        if self.consume_if_eq('|') {
+                            Token::PipePipe
+                        } else {
+                            return Err(Error::UnknownToken("|".to_owned()));
                         }
                     } else {
                         return Err(Error::UnknownToken(ch.to_string()));

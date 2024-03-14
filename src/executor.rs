@@ -506,6 +506,13 @@ fn eval_binary_op(
                 Err(Error::TypeError)
             }
         }
+        BinaryOp::Concat => {
+            if let (Value::Text(lhs), Value::Text(rhs)) = (lhs, rhs) {
+                Ok(Value::Text(lhs + &rhs))
+            } else {
+                Err(Error::TypeError)
+            }
+        }
     }
 }
 

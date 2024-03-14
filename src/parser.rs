@@ -78,8 +78,9 @@ impl UnaryOp {
     }
 
     fn priority(self) -> usize {
+        // https://www.sqlite.org/lang_expr.html#operators_and_parse_affecting_attributes
         match self {
-            Self::Plus | Self::Minus => 8,
+            Self::Plus | Self::Minus => 9,
             Self::Not => 3,
         }
     }
@@ -101,12 +102,15 @@ impl BinaryOp {
             Token::Ne => Self::Ne,
             Token::Le => Self::Le,
             Token::Ge => Self::Ge,
+            Token::PipePipe => Self::Concat,
             _ => return None,
         })
     }
 
     fn priority(self) -> usize {
+        // https://www.sqlite.org/lang_expr.html#operators_and_parse_affecting_attributes
         match self {
+            Self::Concat => 8,
             Self::Mul | Self::Div | Self::Mod => 7,
             Self::Add | Self::Sub => 6,
             Self::Lt | Self::Le | Self::Gt | Self::Ge => 5,

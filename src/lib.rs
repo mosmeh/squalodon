@@ -203,6 +203,7 @@ enum BinaryOp {
     Ge,
     And,
     Or,
+    Concat,
 }
 
 impl std::fmt::Display for BinaryOp {
@@ -221,6 +222,7 @@ impl std::fmt::Display for BinaryOp {
             Self::Ge => ">=",
             Self::And => "AND",
             Self::Or => "OR",
+            Self::Concat => "||",
         })
     }
 }

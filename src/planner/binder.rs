@@ -363,6 +363,10 @@ fn bind_expr(source: &TypedPlanNode, expr: parser::Expression) -> Result<TypedEx
                     }
                     _ => Some(Type::Boolean),
                 },
+                BinaryOp::Concat => match (lhs.ty, rhs.ty) {
+                    (Some(Type::Text) | None, Some(Type::Text) | None) => Some(Type::Text),
+                    _ => return Err(Error::TypeError),
+                },
             };
             let expr = planner::Expression::BinaryOp {
                 op,
