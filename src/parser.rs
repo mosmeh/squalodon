@@ -15,6 +15,9 @@ pub enum Error {
     #[error("Unexpected token {0:?}")]
     UnexpectedToken(Token),
 
+    #[error("Rows in VALUES must have the same number of columns")]
+    ValuesColumnCountMismatch,
+
     #[error("Lexer error: {0}")]
     Lexer(#[from] LexerError),
 }
@@ -27,6 +30,7 @@ pub enum Statement {
     CreateTable(CreateTable),
     DropTable(DropTable),
     Insert(Insert),
+    Values(Values),
     Select(Select),
     Update(Update),
     Delete(Delete),
@@ -49,7 +53,62 @@ pub struct DropTable {
 pub struct Insert {
     pub table_name: String,
     pub column_names: Vec<String>,
-    pub exprs: Vec<Expression>,
+    pub values: Values,
+}
+
+#[derive(Debug)]
+pub struct Values {
+    pub rows: Vec<Vec<Expression>>,
+}
+
+#[derive(Debug)]
+pub struct Select {
+    pub projections: Vec<Projection>,
+    pub from: Option<TableRef>,
+    pub where_clause: Option<Expression>,
+    pub order_by: Vec<OrderBy>,
+    pub limit: Option<Expression>,
+    pub offset: Option<Expression>,
+}
+
+#[derive(Debug)]
+pub enum Projection {
+    Wildcard,
+    Expression {
+        expr: Expression,
+        alias: Option<String>,
+    },
+}
+
+#[derive(Debug)]
+pub enum TableRef {
+    BaseTable { name: String },
+}
+
+#[derive(Debug)]
+pub struct OrderBy {
+    pub expr: Expression,
+    pub order: Order,
+    pub null_order: NullOrder,
+}
+
+#[derive(Debug)]
+pub struct Update {
+    pub table_name: String,
+    pub sets: Vec<Set>,
+    pub where_clause: Option<Expression>,
+}
+
+#[derive(Debug)]
+pub struct Set {
+    pub column_name: String,
+    pub expr: Expression,
+}
+
+#[derive(Debug)]
+pub struct Delete {
+    pub table_name: String,
+    pub where_clause: Option<Expression>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,56 +180,6 @@ impl BinaryOp {
     }
 }
 
-#[derive(Debug)]
-pub struct Select {
-    pub projections: Vec<Projection>,
-    pub from: Option<TableRef>,
-    pub where_clause: Option<Expression>,
-    pub order_by: Vec<OrderBy>,
-    pub limit: Option<Expression>,
-    pub offset: Option<Expression>,
-}
-
-#[derive(Debug)]
-pub enum Projection {
-    Wildcard,
-    Expression {
-        expr: Expression,
-        alias: Option<String>,
-    },
-}
-
-#[derive(Debug)]
-pub enum TableRef {
-    BaseTable { name: String },
-}
-
-#[derive(Debug)]
-pub struct OrderBy {
-    pub expr: Expression,
-    pub order: Order,
-    pub null_order: NullOrder,
-}
-
-#[derive(Debug)]
-pub struct Update {
-    pub table_name: String,
-    pub sets: Vec<Set>,
-    pub where_clause: Option<Expression>,
-}
-
-#[derive(Debug)]
-pub struct Set {
-    pub column_name: String,
-    pub expr: Expression,
-}
-
-#[derive(Debug)]
-pub struct Delete {
-    pub table_name: String,
-    pub where_clause: Option<Expression>,
-}
-
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
 }
@@ -219,6 +228,7 @@ impl<'a> Parser<'a> {
             Token::Create => self.parse_create(),
             Token::Drop => self.parse_drop(),
             Token::Insert => self.parse_insert().map(Statement::Insert),
+            Token::Values => self.parse_values().map(Statement::Values),
             Token::Select => self.parse_select().map(Statement::Select),
             Token::Update => self.parse_update().map(Statement::Update),
             Token::Delete => self.parse_delete().map(Statement::Delete),
@@ -319,15 +329,29 @@ impl<'a> Parser<'a> {
             column_names = self.parse_comma_separated(Self::expect_identifier)?;
             self.expect(Token::RightParen)?;
         }
-        self.expect(Token::Values)?;
-        self.expect(Token::LeftParen)?;
-        let exprs = self.parse_comma_separated(Self::parse_expr)?;
-        self.expect(Token::RightParen)?;
+        let values = self.parse_values()?;
         Ok(Insert {
             table_name,
             column_names,
-            exprs,
+            values,
         })
+    }
+
+    fn parse_values(&mut self) -> Result<Values> {
+        self.expect(Token::Values)?;
+        let mut num_columns = None;
+        let rows = self.parse_comma_separated(|parser| {
+            parser.expect(Token::LeftParen)?;
+            let exprs = parser.parse_comma_separated(Self::parse_expr)?;
+            parser.expect(Token::RightParen)?;
+            match num_columns {
+                None => num_columns = Some(exprs.len()),
+                Some(n) if n != exprs.len() => return Err(Error::ValuesColumnCountMismatch),
+                _ => (),
+            }
+            Ok(exprs)
+        })?;
+        Ok(Values { rows })
     }
 
     fn parse_select(&mut self) -> Result<Select> {

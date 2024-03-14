@@ -102,7 +102,7 @@ enum ExecutorNode<'txn, 'storage, T: KeyValueStore> {
     Insert(Insert<'txn, 'storage, T>),
     Update(Update<'txn, 'storage, T>),
     Delete(Delete<'txn, 'storage, T>),
-    Constant(Constant),
+    Values(Values),
     SeqScan(SeqScan<'txn>),
     Project(Project<'txn, 'storage, T>),
     Filter(Filter<'txn, 'storage, T>),
@@ -117,17 +117,17 @@ impl<'txn, 'storage, T: KeyValueStore> ExecutorNode<'txn, 'storage, T> {
                 let rows = plan
                     .explain()
                     .into_iter()
-                    .map(|row| vec![Value::Text(row)])
+                    .map(|row| vec![Expression::Constact(Value::Text(row))])
                     .collect();
-                Self::Constant(Constant::new(rows))
+                Self::Values(Values::new(rows))
             }
             PlanNode::CreateTable(create_table) => {
                 txn.create_table(&create_table.0.name, &create_table.0.columns)?;
-                Self::Constant(Constant::one_empty_row())
+                Self::Values(Values::one_empty_row())
             }
             PlanNode::DropTable(drop_table) => {
                 txn.drop_table(&drop_table.0.name)?;
-                Self::Constant(Constant::one_empty_row())
+                Self::Values(Values::one_empty_row())
             }
             PlanNode::Insert(insert) => Self::Insert(Insert {
                 txn,
@@ -147,7 +147,7 @@ impl<'txn, 'storage, T: KeyValueStore> ExecutorNode<'txn, 'storage, T> {
                 table: delete.table,
                 primary_key_column: delete.primary_key_column,
             }),
-            PlanNode::Constant(planner::Constant { rows }) => Self::Constant(Constant::new(rows)),
+            PlanNode::Values(planner::Values { rows }) => Self::Values(Values::new(rows)),
             PlanNode::Scan(planner::Scan::SeqScan { table, columns }) => {
                 Self::SeqScan(SeqScan::new(txn, table, columns))
             }
@@ -183,7 +183,7 @@ impl<T: KeyValueStore> Node for ExecutorNode<'_, '_, T> {
             Self::Insert(e) => e.next_row(),
             Self::Update(e) => e.next_row(),
             Self::Delete(e) => e.next_row(),
-            Self::Constant(e) => e.next_row(),
+            Self::Values(e) => e.next_row(),
         }
     }
 }
@@ -255,12 +255,12 @@ impl<T: KeyValueStore> Node for Delete<'_, '_, T> {
 }
 
 #[derive(Default)]
-struct Constant {
-    iter: std::vec::IntoIter<Vec<Value>>,
+struct Values {
+    iter: std::vec::IntoIter<Vec<Expression>>,
 }
 
-impl Constant {
-    fn new(rows: Vec<Vec<Value>>) -> Self {
+impl Values {
+    fn new(rows: Vec<Vec<Expression>>) -> Self {
         Self {
             iter: rows.into_iter(),
         }
@@ -273,21 +273,16 @@ impl Constant {
     }
 }
 
-impl Node for Constant {
+impl Node for Values {
     fn next_row(&mut self) -> Output {
-        self.iter.next().into_output()
-    }
-}
-
-impl Expression {
-    fn eval(&self, row: &[Value]) -> Result<Value> {
-        let value = match self {
-            Self::Constact(v) => v.clone(),
-            Self::ColumnRef { column } => row[column.0].clone(),
-            Self::UnaryOp { op, expr } => eval_unary_op(*op, expr)?,
-            Self::BinaryOp { op, lhs, rhs } => eval_binary_op(*op, row, lhs, rhs)?,
-        };
-        Ok(value)
+        self.iter
+            .next()
+            .map(|row| {
+                row.into_iter()
+                    .map(|expr| expr.eval(&[]))
+                    .collect::<Result<Vec<_>>>()
+            })
+            .into_output()
     }
 }
 
@@ -448,6 +443,18 @@ impl<T: KeyValueStore> Node for Limit<'_, '_, T> {
                 None => return Ok(row),
             }
         }
+    }
+}
+
+impl Expression {
+    fn eval(&self, row: &[Value]) -> Result<Value> {
+        let value = match self {
+            Self::Constact(v) => v.clone(),
+            Self::ColumnRef { column } => row[column.0].clone(),
+            Self::UnaryOp { op, expr } => eval_unary_op(*op, expr)?,
+            Self::BinaryOp { op, lhs, rhs } => eval_binary_op(*op, row, lhs, rhs)?,
+        };
+        Ok(value)
     }
 }
 

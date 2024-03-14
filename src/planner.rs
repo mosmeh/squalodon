@@ -60,7 +60,7 @@ impl TypedPlanNode {
 
     fn empty_source() -> Self {
         Self {
-            node: PlanNode::Constant(Constant::one_empty_row()),
+            node: PlanNode::Values(Values::one_empty_row()),
             columns: Vec::new(),
         }
     }
@@ -130,7 +130,7 @@ pub enum PlanNode {
     Insert(Insert),
     Update(Update),
     Delete(Delete),
-    Constant(Constant),
+    Values(Values),
     Scan(Scan),
     Project(Project),
     Filter(Filter),
@@ -156,7 +156,7 @@ impl Explain for PlanNode {
             Self::Insert(n) => n.visit(visitor),
             Self::Update(n) => n.visit(visitor),
             Self::Delete(n) => n.visit(visitor),
-            Self::Constant(n) => n.visit(visitor),
+            Self::Values(n) => n.visit(visitor),
             Self::Scan(n) => n.visit(visitor),
             Self::Project(n) => n.visit(visitor),
             Self::Filter(n) => n.visit(visitor),
@@ -252,12 +252,12 @@ impl std::fmt::Display for Expression {
     }
 }
 
-pub struct Constant {
-    pub rows: Vec<Vec<Value>>,
+pub struct Values {
+    pub rows: Vec<Vec<Expression>>,
 }
 
-impl Constant {
-    fn new(rows: Vec<Vec<Value>>) -> Self {
+impl Values {
+    fn new(rows: Vec<Vec<Expression>>) -> Self {
         Self { rows }
     }
 
@@ -266,9 +266,9 @@ impl Constant {
     }
 }
 
-impl Explain for Constant {
+impl Explain for Values {
     fn visit(&self, visitor: &mut ExplainVisitor) {
-        let mut f = "Constant ".to_owned();
+        let mut f = "Values ".to_owned();
         for (i, row) in self.rows.iter().enumerate() {
             f.push_str(if i == 0 { "[" } else { ", [" });
             for (j, value) in row.iter().enumerate() {

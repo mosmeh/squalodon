@@ -1,9 +1,7 @@
 use super::{ColumnIndex, Error, PlanNode, Result, TypedPlanNode};
 use crate::{
-    parser, planner,
-    storage::Transaction,
-    types::{Type, Value},
-    BinaryOp, KeyValueStore, StorageError, UnaryOp,
+    parser, planner, storage::Transaction, types::Type, BinaryOp, KeyValueStore, StorageError,
+    UnaryOp,
 };
 
 pub struct Binder<'txn, 'storage, T: KeyValueStore> {
@@ -21,6 +19,7 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
             parser::Statement::CreateTable(create_table) => self.bind_create_table(create_table),
             parser::Statement::DropTable(drop_table) => self.bind_drop_table(drop_table),
             parser::Statement::Insert(insert) => self.bind_insert(insert),
+            parser::Statement::Values(values) => bind_values(values),
             parser::Statement::Select(select) => self.bind_select(select),
             parser::Statement::Update(update) => self.bind_update(update),
             parser::Statement::Delete(delete) => self.bind_delete(delete),
@@ -63,37 +62,21 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
 
     fn bind_insert(&self, insert: parser::Insert) -> Result<TypedPlanNode> {
         let table = self.txn.table(&insert.table_name)?;
-        let mut exprs = Vec::with_capacity(insert.column_names.len());
-        let column_names: Vec<_> = if insert.column_names.is_empty() {
-            table.columns.iter().map(|column| &column.name).collect()
-        } else {
-            insert.column_names.iter().collect()
-        };
+        let TypedPlanNode { node, columns } = bind_values(insert.values)?;
+        if table.columns.len() != columns.len() {
+            return Err(Error::TypeError);
+        }
         let mut primary_key_column = None;
-        for column in &table.columns {
-            let index_in_values = column_names.iter().position(|name| *name == &column.name);
-            let expr = if let Some(index) = index_in_values {
-                let expr = insert.exprs[index].clone();
-                bind_expr(&TypedPlanNode::empty_source(), expr)?.expect_type(column.ty)?
-            } else {
-                if column.is_nullable {
+        for (i, (actual, expected)) in columns.iter().zip(table.columns.iter()).enumerate() {
+            if let Some(actual) = actual.ty {
+                if actual != expected.ty {
                     return Err(Error::TypeError);
                 }
-                planner::Expression::Constact(Value::Null)
-            };
-            if column.is_primary_key {
-                assert!(
-                    primary_key_column.is_none(),
-                    "composite primary key is not supported"
-                );
-                primary_key_column = Some(ColumnIndex(exprs.len()));
             }
-            exprs.push(expr);
+            if expected.is_primary_key {
+                primary_key_column = Some(ColumnIndex(i));
+            }
         }
-        let node = PlanNode::Project(planner::Project {
-            source: Box::new(PlanNode::Constant(planner::Constant::one_empty_row())),
-            exprs,
-        });
         Ok(TypedPlanNode::sink(PlanNode::Insert(planner::Insert {
             source: Box::new(node),
             table: table.id,
@@ -200,6 +183,38 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
                 .collect(),
         })
     }
+}
+
+fn bind_values(values: parser::Values) -> Result<TypedPlanNode> {
+    let mut rows = Vec::with_capacity(values.rows.len());
+    let mut columns;
+    let mut rows_iter = values.rows.into_iter();
+    {
+        let row = rows_iter.next().unwrap();
+        let mut exprs = Vec::with_capacity(row.len());
+        columns = Vec::with_capacity(row.len());
+        let row = row.into_iter().enumerate();
+        for (i, expr) in row {
+            let TypedExpression { expr, ty } = bind_expr(&TypedPlanNode::empty_source(), expr)?;
+            exprs.push(expr);
+            columns.push(planner::Column {
+                name: format!("column{}", i + 1),
+                ty,
+            });
+        }
+        rows.push(exprs);
+    }
+    for row in rows_iter {
+        assert_eq!(row.len(), columns.len());
+        let mut exprs = Vec::with_capacity(row.len());
+        for (expr, column) in row.into_iter().zip(columns.iter()) {
+            let expr = bind_expr(&TypedPlanNode::empty_source(), expr)?.expect_type(column.ty)?;
+            exprs.push(expr);
+        }
+        rows.push(exprs);
+    }
+    let node = PlanNode::Values(planner::Values { rows });
+    Ok(TypedPlanNode { node, columns })
 }
 
 fn bind_where_clause(source: TypedPlanNode, expr: parser::Expression) -> Result<TypedPlanNode> {
