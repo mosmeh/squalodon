@@ -2,7 +2,7 @@ use crate::{
     memcomparable::MemcomparableSerde,
     planner::{self, ColumnIndex, Expression, OrderBy, PlanNode},
     storage::{self, StorageError, TableId, Transaction},
-    BinaryOp, KeyValueStore, Value,
+    BinaryOp, KeyValueStore, UnaryOp, Value,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -284,6 +284,7 @@ impl Expression {
         let value = match self {
             Self::Constact(v) => v.clone(),
             Self::ColumnRef { column } => row[column.0].clone(),
+            Self::UnaryOp { op, expr } => eval_unary_op(*op, expr)?,
             Self::BinaryOp { op, lhs, rhs } => eval_binary_op(*op, row, lhs, rhs)?,
         };
         Ok(value)
@@ -447,6 +448,18 @@ impl<T: KeyValueStore> Node for Limit<'_, '_, T> {
                 None => return Ok(row),
             }
         }
+    }
+}
+
+fn eval_unary_op(op: UnaryOp, expr: &Expression) -> Result<Value> {
+    let expr = expr.eval(&[])?;
+    match (op, expr) {
+        (UnaryOp::Plus, Value::Integer(v)) => Ok(Value::Integer(v)),
+        (UnaryOp::Plus, Value::Real(v)) => Ok(Value::Real(v)),
+        (UnaryOp::Minus, Value::Integer(v)) => Ok(Value::Integer(-v)),
+        (UnaryOp::Minus, Value::Real(v)) => Ok(Value::Real(-v)),
+        (UnaryOp::Not, Value::Boolean(v)) => Ok(Value::Boolean(!v)),
+        _ => Err(Error::TypeError),
     }
 }
 

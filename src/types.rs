@@ -9,6 +9,12 @@ pub enum Type {
     Text,
 }
 
+impl Type {
+    pub fn is_numeric(self) -> bool {
+        matches!(self, Self::Integer | Self::Real)
+    }
+}
+
 impl std::fmt::Debug for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

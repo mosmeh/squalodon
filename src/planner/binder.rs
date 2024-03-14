@@ -3,7 +3,7 @@ use crate::{
     parser, planner,
     storage::Transaction,
     types::{Type, Value},
-    BinaryOp, KeyValueStore, StorageError,
+    BinaryOp, KeyValueStore, StorageError, UnaryOp,
 };
 
 pub struct Binder<'txn, 'storage, T: KeyValueStore> {
@@ -319,12 +319,36 @@ fn bind_expr(source: &TypedPlanNode, expr: parser::Expression) -> Result<TypedEx
                 ty: column.ty,
             })
         }
+        parser::Expression::UnaryOp { op, expr } => {
+            let TypedExpression { expr, ty } = bind_expr(source, *expr)?;
+            let ty = match (op, ty) {
+                (UnaryOp::Not, _) => Some(Type::Boolean),
+                (UnaryOp::Plus | UnaryOp::Minus, Some(ty)) if ty.is_numeric() => Some(ty),
+                (UnaryOp::Plus | UnaryOp::Minus, None) => None,
+                _ => return Err(Error::TypeError),
+            };
+            let expr = planner::Expression::UnaryOp {
+                op,
+                expr: expr.into(),
+            };
+            Ok(TypedExpression { expr, ty })
+        }
         parser::Expression::BinaryOp { op, lhs, rhs } => {
             let lhs = bind_expr(source, *lhs)?;
             let rhs = bind_expr(source, *rhs)?;
             let ty = match op {
                 BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
-                    lhs.ty.or(rhs.ty)
+                    match (lhs.ty, rhs.ty) {
+                        (Some(Type::Integer), Some(Type::Integer)) => Some(Type::Integer),
+                        (Some(ty), Some(Type::Real)) | (Some(Type::Real), Some(ty))
+                            if ty.is_numeric() =>
+                        {
+                            Some(Type::Real)
+                        }
+                        (None, _) => rhs.ty,
+                        (_, None) => lhs.ty,
+                        _ => return Err(Error::TypeError),
+                    }
                 }
                 BinaryOp::Eq
                 | BinaryOp::Ne

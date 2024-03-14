@@ -6,7 +6,7 @@ pub use Error as ParserError;
 use crate::{
     storage::Column,
     types::{Type, Value},
-    BinaryOp, NullOrder, Order,
+    BinaryOp, NullOrder, Order, UnaryOp,
 };
 use lexer::{Lexer, Token};
 
@@ -56,11 +56,33 @@ pub struct Insert {
 pub enum Expression {
     Constant(Value),
     ColumnRef(String),
+    UnaryOp {
+        op: UnaryOp,
+        expr: Box<Expression>,
+    },
     BinaryOp {
         op: BinaryOp,
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },
+}
+
+impl UnaryOp {
+    fn from_token(token: &Token) -> Option<Self> {
+        Some(match token {
+            Token::Plus => Self::Plus,
+            Token::Minus => Self::Minus,
+            Token::Not => Self::Not,
+            _ => return None,
+        })
+    }
+
+    fn priority(self) -> usize {
+        match self {
+            Self::Plus | Self::Minus => 8,
+            Self::Not => 3,
+        }
+    }
 }
 
 impl BinaryOp {
@@ -85,10 +107,10 @@ impl BinaryOp {
 
     fn priority(self) -> usize {
         match self {
-            Self::Mul | Self::Div | Self::Mod => 6,
-            Self::Add | Self::Sub => 5,
-            Self::Lt | Self::Le | Self::Gt | Self::Ge => 4,
-            Self::Eq | Self::Ne => 3,
+            Self::Mul | Self::Div | Self::Mod => 7,
+            Self::Add | Self::Sub => 6,
+            Self::Lt | Self::Le | Self::Gt | Self::Ge => 5,
+            Self::Eq | Self::Ne => 4,
             Self::And => 2,
             Self::Or => 1,
         }
@@ -221,13 +243,7 @@ impl<'a> Parser<'a> {
             .is_some();
         let name = self.expect_identifier()?;
         self.expect(Token::LeftParen)?;
-        let mut columns = Vec::new();
-        loop {
-            columns.push(self.parse_column_definition()?);
-            if !self.lexer.consume_if_eq(Token::Comma)? {
-                break;
-            }
-        }
+        let columns = self.parse_comma_separated(Self::parse_column_definition)?;
         self.expect(Token::RightParen)?;
         Ok(CreateTable {
             name,
@@ -296,23 +312,12 @@ impl<'a> Parser<'a> {
         let table_name = self.expect_identifier()?;
         let mut column_names = Vec::new();
         if self.lexer.consume_if_eq(Token::LeftParen)? {
-            loop {
-                column_names.push(self.expect_identifier()?);
-                if !self.lexer.consume_if_eq(Token::Comma)? {
-                    break;
-                }
-            }
+            column_names = self.parse_comma_separated(Self::expect_identifier)?;
             self.expect(Token::RightParen)?;
         }
         self.expect(Token::Values)?;
         self.expect(Token::LeftParen)?;
-        let mut exprs = Vec::new();
-        loop {
-            exprs.push(self.parse_expr()?);
-            if !self.lexer.consume_if_eq(Token::Comma)? {
-                break;
-            }
-        }
+        let exprs = self.parse_comma_separated(Self::parse_expr)?;
         self.expect(Token::RightParen)?;
         Ok(Insert {
             table_name,
@@ -323,13 +328,7 @@ impl<'a> Parser<'a> {
 
     fn parse_select(&mut self) -> Result<Select> {
         self.expect(Token::Select)?;
-        let mut projections = Vec::new();
-        loop {
-            projections.push(self.parse_projection()?);
-            if !self.lexer.consume_if_eq(Token::Comma)? {
-                break;
-            }
-        }
+        let projections = self.parse_comma_separated(Self::parse_projection)?;
         let from = self
             .lexer
             .consume_if_eq(Token::From)?
@@ -386,20 +385,19 @@ impl<'a> Parser<'a> {
     fn parse_order_by(&mut self) -> Result<Vec<OrderBy>> {
         self.expect(Token::Order)?;
         self.expect(Token::By)?;
-        let mut order_by = Vec::new();
-        loop {
-            let expr = self.parse_expr()?;
+        self.parse_comma_separated(|parser| {
+            let expr = parser.parse_expr()?;
 
-            let order = if self.lexer.consume_if_eq(Token::Asc)? {
+            let order = if parser.lexer.consume_if_eq(Token::Asc)? {
                 Order::Asc
-            } else if self.lexer.consume_if_eq(Token::Desc)? {
+            } else if parser.lexer.consume_if_eq(Token::Desc)? {
                 Order::Desc
             } else {
                 Default::default()
             };
 
-            let null_order = if self.lexer.consume_if_eq(Token::Nulls)? {
-                match self.lexer.consume()? {
+            let null_order = if parser.lexer.consume_if_eq(Token::Nulls)? {
+                match parser.lexer.consume()? {
                     Token::First => NullOrder::NullsFirst,
                     Token::Last => NullOrder::NullsLast,
                     token => return Err(Error::UnexpectedToken(token)),
@@ -408,29 +406,19 @@ impl<'a> Parser<'a> {
                 Default::default()
             };
 
-            order_by.push(OrderBy {
+            Ok(OrderBy {
                 expr,
                 order,
                 null_order,
-            });
-            if !self.lexer.consume_if_eq(Token::Comma)? {
-                break;
-            }
-        }
-        Ok(order_by)
+            })
+        })
     }
 
     fn parse_update(&mut self) -> Result<Update> {
         self.expect(Token::Update)?;
         let table_name = self.expect_identifier()?;
         self.expect(Token::Set)?;
-        let mut set = Vec::new();
-        loop {
-            set.push(self.parse_set()?);
-            if !self.lexer.consume_if_eq(Token::Comma)? {
-                break;
-            }
-        }
+        let sets = self.parse_comma_separated(Self::parse_set)?;
         let where_clause = self
             .lexer
             .consume_if_eq(Token::Where)?
@@ -438,7 +426,7 @@ impl<'a> Parser<'a> {
             .transpose()?;
         Ok(Update {
             table_name,
-            sets: set,
+            sets,
             where_clause,
         })
     }
@@ -470,7 +458,17 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_sub_expr(&mut self, min_priority: usize) -> Result<Expression> {
-        let mut expr = self.parse_atom()?;
+        let mut expr = match UnaryOp::from_token(self.lexer.peek()?) {
+            Some(op) => {
+                self.lexer.consume()?;
+                let expr = self.parse_sub_expr(op.priority())?;
+                Expression::UnaryOp {
+                    op,
+                    expr: expr.into(),
+                }
+            }
+            None => self.parse_atom()?,
+        };
         loop {
             let Some(op) = BinaryOp::from_token(self.lexer.peek()?) else {
                 break;
@@ -507,6 +505,20 @@ impl<'a> Parser<'a> {
             token => return Err(Error::UnexpectedToken(token)),
         };
         Ok(expr)
+    }
+
+    fn parse_comma_separated<T, F>(&mut self, mut f: F) -> Result<Vec<T>>
+    where
+        F: FnMut(&mut Self) -> Result<T>,
+    {
+        let mut items = Vec::new();
+        loop {
+            items.push(f(self)?);
+            if !self.lexer.consume_if_eq(Token::Comma)? {
+                break;
+            }
+        }
+        Ok(items)
     }
 
     fn expect(&mut self, expected: Token) -> Result<()> {

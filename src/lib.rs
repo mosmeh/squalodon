@@ -172,6 +172,23 @@ impl Row {
 }
 
 #[derive(Debug, Clone, Copy)]
+enum UnaryOp {
+    Plus,
+    Minus,
+    Not,
+}
+
+impl std::fmt::Display for UnaryOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Plus => "+",
+            Self::Minus => "-",
+            Self::Not => "NOT",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 enum BinaryOp {
     Add,
     Sub,

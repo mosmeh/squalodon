@@ -4,7 +4,7 @@ use crate::{
     parser,
     storage::{TableId, Transaction},
     types::{Type, Value},
-    BinaryOp, KeyValueStore, NullOrder, Order, StorageError,
+    BinaryOp, KeyValueStore, NullOrder, Order, StorageError, UnaryOp,
 };
 use std::fmt::Write;
 
@@ -228,6 +228,10 @@ pub enum Expression {
     ColumnRef {
         column: ColumnIndex,
     },
+    UnaryOp {
+        op: UnaryOp,
+        expr: Box<Expression>,
+    },
     BinaryOp {
         op: BinaryOp,
         lhs: Box<Expression>,
@@ -240,6 +244,7 @@ impl std::fmt::Display for Expression {
         match self {
             Self::Constact(value) => write!(f, "{value:?}"),
             Self::ColumnRef { column } => write!(f, "{column}"),
+            Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
             Self::BinaryOp { op, lhs, rhs } => {
                 write!(f, "({lhs} {op} {rhs})")
             }
