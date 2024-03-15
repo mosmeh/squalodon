@@ -303,6 +303,7 @@ impl<'a> Parser<'a> {
                     self.lexer.consume()?;
                     self.expect(Token::Key)?;
                     is_primary_key = true;
+                    is_nullable = false;
                 }
                 Token::Not => {
                     self.lexer.consume()?;

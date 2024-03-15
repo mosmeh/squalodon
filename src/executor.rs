@@ -122,11 +122,11 @@ impl<'txn, 'storage, T: KeyValueStore> ExecutorNode<'txn, 'storage, T> {
                 Self::Values(Values::new(rows))
             }
             PlanNode::CreateTable(create_table) => {
-                txn.create_table(&create_table.0.name, &create_table.0.columns)?;
+                txn.create_table(&create_table.name, &create_table.columns)?;
                 Self::Values(Values::one_empty_row())
             }
             PlanNode::DropTable(drop_table) => {
-                txn.drop_table(&drop_table.0.name)?;
+                txn.drop_table(&drop_table.name)?;
                 Self::Values(Values::one_empty_row())
             }
             PlanNode::Insert(insert) => Self::Insert(Insert {

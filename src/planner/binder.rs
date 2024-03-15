@@ -3,6 +3,7 @@ use crate::{
     parser, planner, storage::Transaction, types::Type, BinaryOp, KeyValueStore, StorageError,
     UnaryOp,
 };
+use std::collections::HashSet;
 
 pub struct Binder<'txn, 'storage, T: KeyValueStore> {
     txn: &'txn Transaction<'storage, T>,
@@ -13,7 +14,7 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
         Self { txn }
     }
 
-    pub fn bind(&mut self, statement: parser::Statement) -> Result<TypedPlanNode> {
+    pub fn bind(&self, statement: parser::Statement) -> Result<TypedPlanNode> {
         match statement {
             parser::Statement::Explain(statement) => self.bind_explain(*statement),
             parser::Statement::CreateTable(create_table) => self.bind_create_table(create_table),
@@ -26,7 +27,7 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
         }
     }
 
-    fn bind_explain(&mut self, statement: parser::Statement) -> Result<TypedPlanNode> {
+    fn bind_explain(&self, statement: parser::Statement) -> Result<TypedPlanNode> {
         let plan = self.bind(statement)?;
         Ok(TypedPlanNode {
             node: PlanNode::Explain(Box::new(plan.node)),
@@ -38,20 +39,31 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
     }
 
     fn bind_create_table(&self, create_table: parser::CreateTable) -> Result<TypedPlanNode> {
-        match self.txn.table(&create_table.name) {
-            Ok(_) if create_table.if_not_exists => Ok(TypedPlanNode::empty_source()),
-            Ok(_) => Err(Error::TableAlreadyExists(create_table.name.clone())),
-            Err(StorageError::UnknownTable(_)) => Ok(TypedPlanNode::sink(PlanNode::CreateTable(
-                planner::CreateTable(create_table),
-            ))),
-            Err(err) => Err(err.into()),
+        let mut column_names = HashSet::new();
+        for column in &create_table.columns {
+            if !column_names.insert(column.name.as_str()) {
+                return Err(Error::DuplicateColumn(column.name.clone()));
+            }
         }
+        match self.txn.table(&create_table.name) {
+            Ok(_) if create_table.if_not_exists => return Ok(TypedPlanNode::empty_source()),
+            Ok(_) => return Err(Error::TableAlreadyExists(create_table.name.clone())),
+            Err(StorageError::UnknownTable(_)) => (),
+            Err(err) => return Err(err.into()),
+        };
+        let create_table = planner::CreateTable {
+            name: create_table.name,
+            columns: create_table.columns,
+        };
+        Ok(TypedPlanNode::sink(PlanNode::CreateTable(create_table)))
     }
 
     fn bind_drop_table(&self, drop_table: parser::DropTable) -> Result<TypedPlanNode> {
         match self.txn.table(&drop_table.name) {
             Ok(_) => Ok(TypedPlanNode::sink(PlanNode::DropTable(
-                planner::DropTable(drop_table),
+                planner::DropTable {
+                    name: drop_table.name,
+                },
             ))),
             Err(StorageError::UnknownTable(_)) if drop_table.if_exists => {
                 Ok(TypedPlanNode::empty_source())
@@ -74,6 +86,10 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
                 }
             }
             if expected.is_primary_key {
+                assert!(
+                    primary_key_column.is_none(),
+                    "table has multiple primary keys"
+                );
                 primary_key_column = Some(ColumnIndex(i));
             }
         }
@@ -84,7 +100,7 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
         })))
     }
 
-    fn bind_select(&mut self, select: parser::Select) -> Result<TypedPlanNode> {
+    fn bind_select(&self, select: parser::Select) -> Result<TypedPlanNode> {
         let mut node = match select.from {
             Some(table_ref) => self.bind_table_ref(table_ref)?,
             None => TypedPlanNode::empty_source(),

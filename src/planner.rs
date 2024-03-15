@@ -2,7 +2,7 @@ mod binder;
 
 use crate::{
     parser,
-    storage::{TableId, Transaction},
+    storage::{self, TableId, Transaction},
     types::{Type, Value},
     BinaryOp, KeyValueStore, NullOrder, Order, StorageError, UnaryOp,
 };
@@ -65,6 +65,7 @@ impl TypedPlanNode {
         }
     }
 
+    /// Creates a node that does not produce any rows.
     fn sink(node: PlanNode) -> Self {
         Self {
             node,
@@ -167,19 +168,24 @@ impl Explain for PlanNode {
     }
 }
 
-pub struct CreateTable(pub parser::CreateTable);
+pub struct CreateTable {
+    pub name: String,
+    pub columns: Vec<storage::Column>,
+}
 
 impl Explain for CreateTable {
     fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "CreateTable {:?}", self.0.name);
+        write!(visitor, "CreateTable {:?}", self.name);
     }
 }
 
-pub struct DropTable(pub parser::DropTable);
+pub struct DropTable {
+    pub name: String,
+}
 
 impl Explain for DropTable {
     fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "DropTable {:?}", self.0.name);
+        write!(visitor, "DropTable {:?}", self.name);
     }
 }
 
