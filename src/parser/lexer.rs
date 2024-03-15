@@ -11,179 +11,112 @@ pub enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Clone, PartialEq)]
-pub enum Token {
-    And,
-    As,
-    Asc,
-    Boolean,
-    By,
-    Create,
-    Delete,
-    Desc,
-    Drop,
-    Exists,
-    Explain,
-    False,
-    First,
-    From,
-    If,
-    Insert,
-    Integer,
-    Into,
-    Key,
-    Last,
-    Limit,
-    Not,
-    Null,
-    Nulls,
-    Offset,
-    Or,
-    Order,
-    Primary,
-    Real,
-    Select,
-    Set,
-    Table,
-    Text,
-    True,
-    Update,
-    Values,
-    Where,
+macro_rules! keywords {
+    ($($v:ident)*) => {
+        #[derive(Clone, PartialEq)]
+        pub enum Token {
+            $($v,)*
+            Percent,
+            LeftParen,
+            RightParen,
+            Asterisk,
+            Plus,
+            Comma,
+            Minus,
+            Slash,
+            Semicolon,
+            Lt,
+            Eq,
+            Gt,
+            Ne,
+            Le,
+            Ge,
+            PipePipe,
+            IntegerLiteral(i64),
+            RealLiteral(f64),
+            String(String),
+            Identifier(String),
+            Eof,
+        }
 
-    Percent,
-    LeftParen,
-    RightParen,
-    Asterisk,
-    Plus,
-    Comma,
-    Minus,
-    Slash,
-    Semicolon,
-    Lt,
-    Eq,
-    Gt,
-    Ne,
-    Le,
-    Ge,
-    PipePipe,
+        impl Token {
+            fn parse_keyword(s: &str) -> Option<Self> {
+                match () {
+                    $(_ if s.eq_ignore_ascii_case(stringify!($v)) => Some(Self::$v),)*
+                    _ => None,
+                }
+            }
+        }
 
-    IntegerLiteral(i64),
-    RealLiteral(f64),
-    String(String),
-    Identifier(String),
-
-    Eof,
-}
-
-impl Token {
-    fn parse_keyword(s: &str) -> Option<Self> {
-        Some(match s.to_ascii_uppercase().as_str() {
-            "AND" => Self::And,
-            "AS" => Self::As,
-            "ASC" => Self::Asc,
-            "BOOLEAN" => Self::Boolean,
-            "BY" => Self::By,
-            "CREATE" => Self::Create,
-            "DELETE" => Self::Delete,
-            "DESC" => Self::Desc,
-            "DROP" => Self::Drop,
-            "EXISTS" => Self::Exists,
-            "EXPLAIN" => Self::Explain,
-            "FALSE" => Self::False,
-            "FIRST" => Self::First,
-            "FROM" => Self::From,
-            "IF" => Self::If,
-            "INSERT" => Self::Insert,
-            "INTEGER" => Self::Integer,
-            "INTO" => Self::Into,
-            "KEY" => Self::Key,
-            "LAST" => Self::Last,
-            "LIMIT" => Self::Limit,
-            "NOT" => Self::Not,
-            "NULL" => Self::Null,
-            "NULLS" => Self::Nulls,
-            "OFFSET" => Self::Offset,
-            "OR" => Self::Or,
-            "ORDER" => Self::Order,
-            "PRIMARY" => Self::Primary,
-            "REAL" => Self::Real,
-            "SELECT" => Self::Select,
-            "SET" => Self::Set,
-            "TABLE" => Self::Table,
-            "TEXT" => Self::Text,
-            "TRUE" => Self::True,
-            "UPDATE" => Self::Update,
-            "VALUES" => Self::Values,
-            "WHERE" => Self::Where,
-            _ => return None,
-        })
-    }
-}
-
-impl std::fmt::Debug for Token {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::And => f.write_str("AND"),
-            Self::As => f.write_str("AS"),
-            Self::Asc => f.write_str("ASC"),
-            Self::Boolean => f.write_str("BOOLEAN"),
-            Self::By => f.write_str("BY"),
-            Self::Create => f.write_str("CREATE"),
-            Self::Delete => f.write_str("DELETE"),
-            Self::Desc => f.write_str("DESC"),
-            Self::Drop => f.write_str("DROP"),
-            Self::Exists => f.write_str("EXISTS"),
-            Self::Explain => f.write_str("EXPLAIN"),
-            Self::False => f.write_str("FALSE"),
-            Self::First => f.write_str("FIRST"),
-            Self::From => f.write_str("FROM"),
-            Self::If => f.write_str("IF"),
-            Self::Insert => f.write_str("INSERT"),
-            Self::Integer => f.write_str("INTEGER"),
-            Self::Into => f.write_str("INTO"),
-            Self::Key => f.write_str("KEY"),
-            Self::Last => f.write_str("LAST"),
-            Self::Limit => f.write_str("LIMIT"),
-            Self::Not => f.write_str("NOT"),
-            Self::Null => f.write_str("NULL"),
-            Self::Nulls => f.write_str("NULLS"),
-            Self::Offset => f.write_str("OFFSET"),
-            Self::Or => f.write_str("OR"),
-            Self::Order => f.write_str("ORDER"),
-            Self::Primary => f.write_str("PRIMARY"),
-            Self::Real => f.write_str("REAL"),
-            Self::Select => f.write_str("SELECT"),
-            Self::Set => f.write_str("SET"),
-            Self::Table => f.write_str("TABLE"),
-            Self::Text => f.write_str("TEXT"),
-            Self::True => f.write_str("TRUE"),
-            Self::Update => f.write_str("UPDATE"),
-            Self::Values => f.write_str("VALUES"),
-            Self::Where => f.write_str("WHERE"),
-            Self::Percent => f.write_str("%"),
-            Self::LeftParen => f.write_str("("),
-            Self::RightParen => f.write_str(")"),
-            Self::Asterisk => f.write_str("*"),
-            Self::Plus => f.write_str("+"),
-            Self::Comma => f.write_str(","),
-            Self::Minus => f.write_str("-"),
-            Self::Slash => f.write_str("/"),
-            Self::Semicolon => f.write_str(";"),
-            Self::Lt => f.write_str("<"),
-            Self::Eq => f.write_str("="),
-            Self::Gt => f.write_str(">"),
-            Self::Ne => f.write_str("<>"),
-            Self::Le => f.write_str("<="),
-            Self::Ge => f.write_str(">="),
-            Self::PipePipe => f.write_str("||"),
-            Self::IntegerLiteral(i) => i.fmt(f),
-            Self::RealLiteral(r) => r.fmt(f),
-            Self::String(s) => s.fmt(f),
-            Self::Identifier(i) => i.fmt(f),
-            Self::Eof => f.write_str("EOF"),
+        impl std::fmt::Debug for Token {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    $(Self::$v => f.write_str(&stringify!($v).to_ascii_uppercase()),)*
+                    Self::Percent => f.write_str("%"),
+                    Self::LeftParen => f.write_str("("),
+                    Self::RightParen => f.write_str(")"),
+                    Self::Asterisk => f.write_str("*"),
+                    Self::Plus => f.write_str("+"),
+                    Self::Comma => f.write_str(","),
+                    Self::Minus => f.write_str("-"),
+                    Self::Slash => f.write_str("/"),
+                    Self::Semicolon => f.write_str(";"),
+                    Self::Lt => f.write_str("<"),
+                    Self::Eq => f.write_str("="),
+                    Self::Gt => f.write_str(">"),
+                    Self::Ne => f.write_str("<>"),
+                    Self::Le => f.write_str("<="),
+                    Self::Ge => f.write_str(">="),
+                    Self::PipePipe => f.write_str("||"),
+                    Self::IntegerLiteral(i) => i.fmt(f),
+                    Self::RealLiteral(r) => r.fmt(f),
+                    Self::String(s) => s.fmt(f),
+                    Self::Identifier(i) => i.fmt(f),
+                    Self::Eof => f.write_str("EOF"),
+                }
+            }
         }
     }
+}
+
+keywords! {
+    And
+    As
+    Asc
+    Boolean
+    By
+    Create
+    Delete
+    Desc
+    Drop
+    Exists
+    Explain
+    False
+    First
+    From
+    If
+    Insert
+    Integer
+    Into
+    Key
+    Last
+    Limit
+    Not
+    Null
+    Nulls
+    Offset
+    Or
+    Order
+    Primary
+    Real
+    Select
+    Set
+    Table
+    Text
+    True
+    Update
+    Values
+    Where
 }
 
 pub struct Lexer<'a> {
