@@ -1,12 +1,18 @@
 use anyhow::Result;
 use clap::Parser;
 use rustyline::error::ReadlineError;
-use squalodon::{storage::Memory, Database, Rows};
+use squalodon::{
+    storage::{KeyValueStore, Memory},
+    Database, Rows,
+};
 use std::{io::Write, path::PathBuf};
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Parser, Debug)]
 struct Args {
+    /// Filename of the database
+    filename: Option<PathBuf>,
+
     /// Read/process named file
     #[arg(long)]
     init: Option<PathBuf>,
@@ -14,7 +20,20 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let db = Database::new(Memory::new())?;
+    match &args.filename {
+        #[cfg(feature = "rocksdb")]
+        Some(filename) => {
+            let db = rocksdb::TransactionDB::open_default(filename)?;
+            run(args, squalodon::storage::RocksDB::new(db))
+        }
+        #[cfg(not(feature = "rocksdb"))]
+        Some(_) => anyhow::bail!("RocksDB support is not enabled"),
+        None => run(args, Memory::new()),
+    }
+}
+
+fn run<S: KeyValueStore>(args: Args, storage: S) -> Result<()> {
+    let db = Database::new(storage)?;
     let mut conn = db.connect();
     if let Some(init) = args.init {
         let init = std::fs::read_to_string(init)?;
