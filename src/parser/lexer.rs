@@ -280,8 +280,14 @@ impl<'a> LexerInner<'a> {
                 }
                 _ if ch.is_alphabetic() => {
                     let mut buf = String::new();
-                    self.consume_while(char::is_alphanumeric, &mut buf);
-                    return Ok(Token::parse_keyword(&buf).unwrap_or(Token::Identifier(buf)));
+                    self.consume_while(
+                        |ch| ch.is_alphanumeric() || matches!(ch, '$' | '_'),
+                        &mut buf,
+                    );
+                    return Ok(Token::parse_keyword(&buf).unwrap_or_else(|| {
+                        buf.make_ascii_lowercase();
+                        Token::Identifier(buf)
+                    }));
                 }
                 _ => {
                     return Ok(if self.consume_if_eq('*') {
