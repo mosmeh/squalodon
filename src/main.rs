@@ -15,9 +15,10 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
     let db = Database::new(Memory::new())?;
+    let mut conn = db.connect();
     if let Some(init) = args.init {
         let init = std::fs::read_to_string(init)?;
-        db.execute(&init)?;
+        conn.execute(&init)?;
     }
     let mut rl = rustyline::DefaultEditor::new()?;
     let mut buf = String::new();
@@ -37,7 +38,7 @@ fn main() -> Result<()> {
             continue;
         }
         rl.add_history_entry(&buf)?;
-        let result = db.query(&buf);
+        let result = conn.query(&buf);
         buf.clear();
         match result {
             Ok(rows) => write_table(&mut std::io::stdout().lock(), rows)?,

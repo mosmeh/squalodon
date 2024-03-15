@@ -34,6 +34,7 @@ pub enum Statement {
     Select(Select),
     Update(Update),
     Delete(Delete),
+    Transaction(TransactionControl),
 }
 
 #[derive(Debug)]
@@ -180,6 +181,13 @@ impl BinaryOp {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum TransactionControl {
+    Begin,
+    Commit,
+    Rollback,
+}
+
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
 }
@@ -217,10 +225,28 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_statement(&mut self) -> Result<Statement> {
-        if self.lexer.consume_if_eq(Token::Explain)? {
-            return Ok(Statement::Explain(Box::new(self.parse_statement_inner()?)));
+        match self.lexer.peek()? {
+            Token::Explain => {
+                self.lexer.consume()?;
+                Ok(Statement::Explain(Box::new(self.parse_statement_inner()?)))
+            }
+            Token::Begin => {
+                self.lexer.consume()?;
+                self.lexer.consume_if_eq(Token::Transaction)?;
+                Ok(Statement::Transaction(TransactionControl::Begin))
+            }
+            Token::Commit => {
+                self.lexer.consume()?;
+                self.lexer.consume_if_eq(Token::Transaction)?;
+                Ok(Statement::Transaction(TransactionControl::Commit))
+            }
+            Token::Rollback => {
+                self.lexer.consume()?;
+                self.lexer.consume_if_eq(Token::Transaction)?;
+                Ok(Statement::Transaction(TransactionControl::Rollback))
+            }
+            _ => self.parse_statement_inner(),
         }
-        self.parse_statement_inner()
     }
 
     fn parse_statement_inner(&mut self) -> Result<Statement> {

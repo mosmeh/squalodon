@@ -83,8 +83,10 @@ keywords! {
     And
     As
     Asc
+    Begin
     Boolean
     By
+    Commit
     Create
     Delete
     Desc
@@ -109,10 +111,12 @@ keywords! {
     Order
     Primary
     Real
+    Rollback
     Select
     Set
     Table
     Text
+    Transaction
     True
     Update
     Values

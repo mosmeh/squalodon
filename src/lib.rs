@@ -14,8 +14,8 @@ pub use types::{Type, Value};
 pub(crate) use storage::Error as StorageError;
 
 use executor::Executor;
-use parser::{Parser, Statement};
-use storage::{KeyValueStore, Storage};
+use parser::{Parser, Statement, TransactionControl};
+use storage::{KeyValueStore, Storage, Transaction};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -27,6 +27,15 @@ pub enum Error {
 
     #[error("Invalid encoding")]
     InvalidEncoding,
+
+    #[error("Cannot begin a transaction within a transaction")]
+    NestedTransaction,
+
+    #[error("No active transaction")]
+    NoActiveTransaction,
+
+    #[error("The current transaction has been aborted. Commands are ignored until end of transaction block.")]
+    TransactionAborted,
 
     #[error("Parser error: {0}")]
     Parse(#[from] ParserError),
@@ -54,7 +63,33 @@ impl<S: KeyValueStore> Database<S> {
         })
     }
 
-    pub fn execute(&self, sql: &str) -> Result<()> {
+    pub fn connect(&self) -> Connection<S> {
+        Connection {
+            db: self,
+            txn_status: TransactionState::Inactive,
+        }
+    }
+}
+
+enum TransactionState<'a, S: KeyValueStore> {
+    /// We are in an explicit transaction started with BEGIN.
+    Active(Transaction<'a, S>),
+
+    /// The explicit transaction has been aborted and waiting for
+    /// COMMIT or ROLLBACK.
+    Aborted,
+
+    /// There is no active explicit transaction. We are in auto-commit mode.
+    Inactive,
+}
+
+pub struct Connection<'a, S: KeyValueStore> {
+    db: &'a Database<S>,
+    txn_status: TransactionState<'a, S>,
+}
+
+impl<S: KeyValueStore> Connection<'_, S> {
+    pub fn execute(&mut self, sql: &str) -> Result<()> {
         let parser = Parser::new(sql);
         for statement in parser {
             self.execute_statement(statement?)?;
@@ -62,7 +97,7 @@ impl<S: KeyValueStore> Database<S> {
         Ok(())
     }
 
-    pub fn query(&self, sql: &str) -> Result<Rows> {
+    pub fn query(&mut self, sql: &str) -> Result<Rows> {
         let mut statements = Parser::new(sql).collect::<parser::Result<Vec<_>>>()?;
         let Some(last_statement) = statements.pop() else {
             return Ok(Rows::empty());
@@ -70,46 +105,99 @@ impl<S: KeyValueStore> Database<S> {
         for statement in statements {
             self.execute_statement(statement)?;
         }
-        let txn = self.storage.transaction();
-        let plan = planner::plan(&txn, last_statement)?;
-        let columns: Vec<_> = plan
-            .columns()
-            .iter()
-            .map(|column| {
-                Column {
-                    name: column.name.clone(),
-                    ty: column.ty.unwrap_or(Type::Integer), // Arbitrarily choose integer
-                }
-            })
-            .collect();
-        let num_columns = columns.len();
-        let rows = Executor::new(&txn, plan.into_node())?
-            .map(|columns| {
-                columns.map(|columns| {
-                    assert_eq!(columns.len(), num_columns);
-                    Row { columns }
-                })
-            })
-            .collect::<executor::Result<Vec<_>>>()?;
-        txn.commit();
-        Ok(Rows {
-            iter: rows.into_iter(),
-            columns,
-        })
+        self.execute_statement(last_statement)
     }
 
-    fn execute_statement(&self, statement: Statement) -> Result<()> {
-        let txn = self.storage.transaction();
-        let plan = planner::plan(&txn, statement)?;
-        let num_columns = plan.columns().len();
-        let executor = Executor::new(&txn, plan.into_node())?;
-        for row in executor {
-            let row = row?;
-            assert_eq!(row.len(), num_columns);
+    fn execute_statement(&mut self, statement: Statement) -> Result<Rows> {
+        if let Statement::Transaction(txn_control) = statement {
+            self.handle_transaction_control(txn_control)?;
+            return Ok(Rows::empty());
         }
-        txn.commit();
-        Ok(())
+        let mut implicit_txn = None;
+        let txn = match &self.txn_status {
+            TransactionState::Active(txn) => txn,
+            TransactionState::Aborted => return Err(Error::TransactionAborted),
+            TransactionState::Inactive => implicit_txn.insert(self.db.storage.transaction()),
+        };
+        let plan = planner::plan(txn, statement)?;
+        match execute_plan(txn, plan) {
+            Ok(rows) => {
+                if let Some(txn) = implicit_txn {
+                    txn.commit(); // Auto commit
+                }
+                Ok(rows)
+            }
+            Err(e) => {
+                if implicit_txn.is_none() {
+                    self.txn_status = TransactionState::Aborted;
+                }
+                Err(e)
+            }
+        }
     }
+
+    fn handle_transaction_control(&mut self, txn_control: TransactionControl) -> Result<()> {
+        match (&self.txn_status, txn_control) {
+            (TransactionState::Active(_), TransactionControl::Begin) => {
+                Err(Error::NestedTransaction)
+            }
+            (TransactionState::Active(_), TransactionControl::Commit) => {
+                match std::mem::replace(&mut self.txn_status, TransactionState::Inactive) {
+                    TransactionState::Active(txn) => txn.commit(),
+                    _ => unreachable!(),
+                }
+                Ok(())
+            }
+            (TransactionState::Active(_), TransactionControl::Rollback)
+            | (
+                TransactionState::Aborted,
+                TransactionControl::Commit | TransactionControl::Rollback,
+            ) => {
+                self.txn_status = TransactionState::Inactive;
+                Ok(())
+            }
+            (TransactionState::Aborted, TransactionControl::Begin) => {
+                Err(Error::TransactionAborted)
+            }
+            (TransactionState::Inactive, TransactionControl::Begin) => {
+                self.txn_status = TransactionState::Active(self.db.storage.transaction());
+                Ok(())
+            }
+            (
+                TransactionState::Inactive,
+                TransactionControl::Commit | TransactionControl::Rollback,
+            ) => Err(Error::NoActiveTransaction),
+        }
+    }
+}
+
+fn execute_plan<S: KeyValueStore>(
+    txn: &Transaction<S>,
+    plan: planner::TypedPlanNode,
+) -> Result<Rows> {
+    let columns: Vec<_> = plan
+        .columns()
+        .iter()
+        .map(|column| {
+            Column {
+                name: column.name.clone(),
+                ty: column.ty.unwrap_or(Type::Integer), // Arbitrarily choose integer
+            }
+        })
+        .collect();
+    let num_columns = plan.columns().len();
+    let rows = Executor::new(txn, plan.into_node())?
+        .map(|columns| {
+            columns.map(|columns| {
+                assert_eq!(columns.len(), num_columns);
+                Row { columns }
+            })
+        })
+        .collect::<executor::Result<Vec<_>>>()?;
+    Ok(Rows {
+        iter: rows.into_iter(),
+        columns,
+    })
 }
 
 #[derive(Debug, Clone)]

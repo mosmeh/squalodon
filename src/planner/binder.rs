@@ -24,6 +24,7 @@ impl<'txn, 'storage, T: KeyValueStore> Binder<'txn, 'storage, T> {
             parser::Statement::Select(select) => self.bind_select(select),
             parser::Statement::Update(update) => self.bind_update(update),
             parser::Statement::Delete(delete) => self.bind_delete(delete),
+            parser::Statement::Transaction(_) => unreachable!(),
         }
     }
 
