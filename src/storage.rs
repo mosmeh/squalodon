@@ -2,12 +2,18 @@ mod memory;
 mod schema;
 
 pub use memory::Memory;
-pub use schema::{Column, Table, TableId};
-pub use Error as StorageError;
+pub(crate) use schema::{Column, Table, TableId};
 
 use crate::{memcomparable::MemcomparableSerde, Value};
 use schema::TableRef;
 use std::sync::atomic::AtomicU64;
+
+#[cfg(feature = "rocksdb")]
+mod rocks;
+#[cfg(feature = "rocksdb")]
+pub use rocks::RocksDB;
+#[cfg(feature = "rocksdb")]
+pub use rocksdb;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -21,7 +27,7 @@ pub enum Error {
     Bincode(#[from] bincode::Error),
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub(crate) type Result<T> = std::result::Result<T, Error>;
 
 pub trait KeyValueStore {
     type Transaction<'a>: KeyValueTransaction + 'a
@@ -60,7 +66,7 @@ pub trait KeyValueTransaction {
     fn commit(self);
 }
 
-pub struct Storage<T> {
+pub(crate) struct Storage<T> {
     kvs: T,
     next_table_id: AtomicU64,
 }
@@ -93,7 +99,7 @@ impl<T: KeyValueStore> Storage<T> {
     }
 }
 
-pub struct Transaction<'a, T: KeyValueStore> {
+pub(crate) struct Transaction<'a, T: KeyValueStore> {
     storage: &'a Storage<T>,
     kv_txn: T::Transaction<'a>,
 }

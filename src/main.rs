@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use rustyline::error::ReadlineError;
-use squalodon::{Database, Memory, Rows};
+use squalodon::{storage::Memory, Database, Rows};
 use std::{io::Write, path::PathBuf};
 use unicode_width::UnicodeWidthStr;
 

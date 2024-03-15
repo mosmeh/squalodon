@@ -1,19 +1,21 @@
+pub mod storage;
+
 mod executor;
 mod memcomparable;
 mod parser;
 mod planner;
-mod storage;
 mod types;
 
 pub use executor::Error as ExecutorError;
 pub use parser::{LexerError, ParserError};
 pub use planner::Error as PlannerError;
-pub use storage::{Error as StorageError, KeyValueStore, Memory};
 pub use types::{Type, Value};
+
+pub(crate) use storage::Error as StorageError;
 
 use executor::Executor;
 use parser::{Parser, Statement};
-use storage::Storage;
+use storage::{KeyValueStore, Storage};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

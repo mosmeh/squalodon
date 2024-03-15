@@ -1,8 +1,8 @@
 use crate::{
     memcomparable::MemcomparableSerde,
     planner::{self, ColumnIndex, Expression, OrderBy, PlanNode},
-    storage::{self, StorageError, TableId, Transaction},
-    BinaryOp, KeyValueStore, UnaryOp, Value,
+    storage::{self, TableId, Transaction},
+    BinaryOp, KeyValueStore, StorageError, UnaryOp, Value,
 };
 
 #[derive(Debug, thiserror::Error)]
