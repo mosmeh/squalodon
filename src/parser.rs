@@ -1,17 +1,16 @@
 mod lexer;
 
-pub use lexer::Error as LexerError;
-pub use Error as ParserError;
+pub use lexer::LexerError;
 
 use crate::{
-    storage::Column,
+    catalog::Column,
     types::{Type, Value},
     BinaryOp, NullOrder, Order, UnaryOp,
 };
 use lexer::{Lexer, Token};
 
 #[derive(thiserror::Error, Debug)]
-pub enum Error {
+pub enum ParserError {
     #[error("Unexpected token {0:?}")]
     UnexpectedToken(Token),
 
@@ -22,7 +21,7 @@ pub enum Error {
     Lexer(#[from] LexerError),
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type ParserResult<T> = std::result::Result<T, ParserError>;
 
 #[derive(Debug)]
 pub enum Statement {
@@ -84,6 +83,7 @@ pub enum Projection {
 #[derive(Debug)]
 pub enum TableRef {
     BaseTable { name: String },
+    Function { name: String, args: Vec<Expression> },
 }
 
 #[derive(Debug)]
@@ -193,7 +193,7 @@ pub struct Parser<'a> {
 }
 
 impl Iterator for Parser<'_> {
-    type Item = Result<Statement>;
+    type Item = ParserResult<Statement>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -224,7 +224,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_statement(&mut self) -> Result<Statement> {
+    fn parse_statement(&mut self) -> ParserResult<Statement> {
         match self.lexer.peek()? {
             Token::Explain => {
                 self.lexer.consume()?;
@@ -249,7 +249,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_statement_inner(&mut self) -> Result<Statement> {
+    fn parse_statement_inner(&mut self) -> ParserResult<Statement> {
         match self.lexer.peek()? {
             Token::Create => self.parse_create(),
             Token::Drop => self.parse_drop(),
@@ -258,19 +258,19 @@ impl<'a> Parser<'a> {
             Token::Select => self.parse_select().map(Statement::Select),
             Token::Update => self.parse_update().map(Statement::Update),
             Token::Delete => self.parse_delete().map(Statement::Delete),
-            token => Err(Error::UnexpectedToken(token.clone())),
+            token => Err(ParserError::UnexpectedToken(token.clone())),
         }
     }
 
-    fn parse_create(&mut self) -> Result<Statement> {
+    fn parse_create(&mut self) -> ParserResult<Statement> {
         self.expect(Token::Create)?;
         match self.lexer.peek()? {
             Token::Table => self.parse_create_table().map(Statement::CreateTable),
-            token => Err(Error::UnexpectedToken(token.clone())),
+            token => Err(ParserError::UnexpectedToken(token.clone())),
         }
     }
 
-    fn parse_create_table(&mut self) -> Result<CreateTable> {
+    fn parse_create_table(&mut self) -> ParserResult<CreateTable> {
         self.expect(Token::Table)?;
         let if_not_exists = self
             .lexer
@@ -292,15 +292,15 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_drop(&mut self) -> Result<Statement> {
+    fn parse_drop(&mut self) -> ParserResult<Statement> {
         self.expect(Token::Drop)?;
         match self.lexer.peek()? {
             Token::Table => self.parse_drop_table().map(Statement::DropTable),
-            token => Err(Error::UnexpectedToken(token.clone())),
+            token => Err(ParserError::UnexpectedToken(token.clone())),
         }
     }
 
-    fn parse_drop_table(&mut self) -> Result<DropTable> {
+    fn parse_drop_table(&mut self) -> ParserResult<DropTable> {
         self.expect(Token::Table)?;
         let if_exists = self
             .lexer
@@ -312,14 +312,14 @@ impl<'a> Parser<'a> {
         Ok(DropTable { name, if_exists })
     }
 
-    fn parse_column_definition(&mut self) -> Result<Column> {
+    fn parse_column_definition(&mut self) -> ParserResult<Column> {
         let name = self.expect_identifier()?;
         let ty = match self.lexer.consume()? {
             Token::Integer => Type::Integer,
             Token::Real => Type::Real,
             Token::Boolean => Type::Boolean,
             Token::Text => Type::Text,
-            token => return Err(Error::UnexpectedToken(token)),
+            token => return Err(ParserError::UnexpectedToken(token)),
         };
         let mut is_primary_key = false;
         let mut is_nullable = true;
@@ -347,7 +347,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_insert(&mut self) -> Result<Insert> {
+    fn parse_insert(&mut self) -> ParserResult<Insert> {
         self.expect(Token::Insert)?;
         self.expect(Token::Into)?;
         let table_name = self.expect_identifier()?;
@@ -364,7 +364,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_values(&mut self) -> Result<Values> {
+    fn parse_values(&mut self) -> ParserResult<Values> {
         self.expect(Token::Values)?;
         let mut num_columns = None;
         let rows = self.parse_comma_separated(|parser| {
@@ -373,7 +373,7 @@ impl<'a> Parser<'a> {
             parser.expect(Token::RightParen)?;
             match num_columns {
                 None => num_columns = Some(exprs.len()),
-                Some(n) if n != exprs.len() => return Err(Error::ValuesColumnCountMismatch),
+                Some(n) if n != exprs.len() => return Err(ParserError::ValuesColumnCountMismatch),
                 _ => (),
             }
             Ok(exprs)
@@ -381,7 +381,7 @@ impl<'a> Parser<'a> {
         Ok(Values { rows })
     }
 
-    fn parse_select(&mut self) -> Result<Select> {
+    fn parse_select(&mut self) -> ParserResult<Select> {
         self.expect(Token::Select)?;
         let projections = self.parse_comma_separated(Self::parse_projection)?;
         let from = self
@@ -418,7 +418,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_projection(&mut self) -> Result<Projection> {
+    fn parse_projection(&mut self) -> ParserResult<Projection> {
         if self.lexer.consume_if_eq(Token::Asterisk)? {
             Ok(Projection::Wildcard)
         } else {
@@ -432,12 +432,17 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_table_ref(&mut self) -> Result<TableRef> {
+    fn parse_table_ref(&mut self) -> ParserResult<TableRef> {
         let name = self.expect_identifier()?;
-        Ok(TableRef::BaseTable { name })
+        if *self.lexer.peek()? == Token::LeftParen {
+            let args = self.parse_args()?;
+            Ok(TableRef::Function { name, args })
+        } else {
+            Ok(TableRef::BaseTable { name })
+        }
     }
 
-    fn parse_order_by(&mut self) -> Result<Vec<OrderBy>> {
+    fn parse_order_by(&mut self) -> ParserResult<Vec<OrderBy>> {
         self.expect(Token::Order)?;
         self.expect(Token::By)?;
         self.parse_comma_separated(|parser| {
@@ -455,7 +460,7 @@ impl<'a> Parser<'a> {
                 match parser.lexer.consume()? {
                     Token::First => NullOrder::NullsFirst,
                     Token::Last => NullOrder::NullsLast,
-                    token => return Err(Error::UnexpectedToken(token)),
+                    token => return Err(ParserError::UnexpectedToken(token)),
                 }
             } else {
                 Default::default()
@@ -469,7 +474,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_update(&mut self) -> Result<Update> {
+    fn parse_update(&mut self) -> ParserResult<Update> {
         self.expect(Token::Update)?;
         let table_name = self.expect_identifier()?;
         self.expect(Token::Set)?;
@@ -486,14 +491,14 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_set(&mut self) -> Result<Set> {
+    fn parse_set(&mut self) -> ParserResult<Set> {
         let column_name = self.expect_identifier()?;
         self.expect(Token::Eq)?;
         let expr = self.parse_expr()?;
         Ok(Set { column_name, expr })
     }
 
-    fn parse_delete(&mut self) -> Result<Delete> {
+    fn parse_delete(&mut self) -> ParserResult<Delete> {
         self.expect(Token::Delete)?;
         self.expect(Token::From)?;
         let table_name = self.expect_identifier()?;
@@ -508,11 +513,11 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_expr(&mut self) -> Result<Expression> {
+    fn parse_expr(&mut self) -> ParserResult<Expression> {
         self.parse_sub_expr(0)
     }
 
-    fn parse_sub_expr(&mut self, min_priority: usize) -> Result<Expression> {
+    fn parse_sub_expr(&mut self, min_priority: usize) -> ParserResult<Expression> {
         let mut expr = match UnaryOp::from_token(self.lexer.peek()?) {
             Some(op) => {
                 self.lexer.consume()?;
@@ -543,7 +548,7 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    fn parse_atom(&mut self) -> Result<Expression> {
+    fn parse_atom(&mut self) -> ParserResult<Expression> {
         let expr = match self.lexer.consume()? {
             Token::Null => Expression::Constant(Value::Null),
             Token::IntegerLiteral(i) => Expression::Constant(Value::Integer(i)),
@@ -557,14 +562,14 @@ impl<'a> Parser<'a> {
                 self.expect(Token::RightParen)?;
                 expr
             }
-            token => return Err(Error::UnexpectedToken(token)),
+            token => return Err(ParserError::UnexpectedToken(token)),
         };
         Ok(expr)
     }
 
-    fn parse_comma_separated<T, F>(&mut self, mut f: F) -> Result<Vec<T>>
+    fn parse_comma_separated<T, F>(&mut self, mut f: F) -> ParserResult<Vec<T>>
     where
-        F: FnMut(&mut Self) -> Result<T>,
+        F: FnMut(&mut Self) -> ParserResult<T>,
     {
         let mut items = Vec::new();
         loop {
@@ -576,22 +581,32 @@ impl<'a> Parser<'a> {
         Ok(items)
     }
 
-    fn expect(&mut self, expected: Token) -> Result<()> {
+    fn parse_args(&mut self) -> ParserResult<Vec<Expression>> {
+        self.expect(Token::LeftParen)?;
+        if self.lexer.consume_if_eq(Token::RightParen)? {
+            return Ok(Vec::new());
+        }
+        let args = self.parse_comma_separated(Self::parse_expr)?;
+        self.expect(Token::RightParen)?;
+        Ok(args)
+    }
+
+    fn expect(&mut self, expected: Token) -> ParserResult<()> {
         self.expect_one_of(&[expected])
     }
 
-    fn expect_one_of(&mut self, expected: &[Token]) -> Result<()> {
+    fn expect_one_of(&mut self, expected: &[Token]) -> ParserResult<()> {
         let actual = self.lexer.consume()?;
         if !expected.contains(&actual) {
-            return Err(Error::UnexpectedToken(actual));
+            return Err(ParserError::UnexpectedToken(actual));
         }
         Ok(())
     }
 
-    fn expect_identifier(&mut self) -> Result<String> {
+    fn expect_identifier(&mut self) -> ParserResult<String> {
         match self.lexer.consume()? {
             Token::Identifier(ident) => Ok(ident),
-            token => Err(Error::UnexpectedToken(token)),
+            token => Err(ParserError::UnexpectedToken(token)),
         }
     }
 }

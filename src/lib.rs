@@ -1,69 +1,71 @@
 pub mod storage;
 
+mod catalog;
 mod executor;
 mod memcomparable;
 mod parser;
 mod planner;
 mod types;
 
-pub use executor::Error as ExecutorError;
+pub use catalog::CatalogError;
+pub use executor::ExecutorError;
 pub use parser::{LexerError, ParserError};
-pub use planner::Error as PlannerError;
-pub use types::{Type, Value};
+pub use planner::PlannerError;
+pub(crate) use storage::StorageError;
+pub use types::{TryFromValueError, Type, Value};
 
-pub(crate) use storage::Error as StorageError;
-
-use executor::Executor;
-use parser::{Parser, Statement, TransactionControl};
+use catalog::{Catalog, CatalogRef};
+use executor::{Executor, ExecutorResult};
+use parser::{Parser, ParserResult, Statement, TransactionControl};
 use storage::{KeyValueStore, Storage, Transaction};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("Incompatible type")]
-    IncompatibleType,
-
-    #[error("Out of range")]
-    OutOfRange,
-
-    #[error("Invalid encoding")]
-    InvalidEncoding,
-
-    #[error("Cannot begin a transaction within a transaction")]
-    NestedTransaction,
-
-    #[error("No active transaction")]
-    NoActiveTransaction,
-
-    #[error("The current transaction has been aborted. Commands are ignored until end of transaction block.")]
-    TransactionAborted,
-
     #[error("Parser error: {0}")]
     Parse(#[from] ParserError),
 
     #[error("Storage error: {0}")]
     Storage(#[from] StorageError),
 
+    #[error("Catalog error: {0}")]
+    Catalog(#[from] CatalogError),
+
     #[error("Planner error: {0}")]
     Planner(#[from] PlannerError),
 
     #[error("Executor error: {0}")]
     Executor(#[from] ExecutorError),
+
+    #[error("Transaction error: {0}")]
+    Transaction(#[from] TransactionError),
+
+    #[error("Invalid encoding")]
+    InvalidEncoding,
+
+    #[error("Column index out of range")]
+    ColumnIndexOutOfRange,
+
+    #[error(transparent)]
+    TryFromValue(#[from] TryFromValueError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub struct Database<S> {
-    storage: Storage<S>,
+pub struct Database<T: KeyValueStore> {
+    storage: Storage<T>,
+    catalog: Catalog<T>,
 }
 
-impl<S: KeyValueStore> Database<S> {
-    pub fn new(storage: S) -> Result<Self> {
+impl<T: KeyValueStore> Database<T> {
+    pub fn new(storage: T) -> Result<Self> {
+        let catalog = Catalog::load(&storage)?;
         Ok(Self {
-            storage: Storage::new(storage)?,
+            storage: Storage::new(storage),
+            catalog,
         })
     }
 
-    pub fn connect(&self) -> Connection<S> {
+    pub fn connect(&self) -> Connection<T> {
         Connection {
             db: self,
             txn_status: TransactionState::Inactive,
@@ -71,9 +73,9 @@ impl<S: KeyValueStore> Database<S> {
     }
 }
 
-enum TransactionState<'a, S: KeyValueStore> {
+enum TransactionState<'a, T: KeyValueStore> {
     /// We are in an explicit transaction started with BEGIN.
-    Active(Transaction<'a, S>),
+    Active(Transaction<'a, T>),
 
     /// The explicit transaction has been aborted and waiting for
     /// COMMIT or ROLLBACK.
@@ -83,12 +85,39 @@ enum TransactionState<'a, S: KeyValueStore> {
     Inactive,
 }
 
-pub struct Connection<'a, S: KeyValueStore> {
-    db: &'a Database<S>,
-    txn_status: TransactionState<'a, S>,
+#[derive(Debug, thiserror::Error)]
+pub enum TransactionError {
+    #[error("Cannot begin a transaction within a transaction")]
+    NestedTransaction,
+
+    #[error("No active transaction")]
+    NoActiveTransaction,
+
+    #[error("The current transaction has been aborted. Commands are ignored until end of transaction block.")]
+    TransactionAborted,
 }
 
-impl<S: KeyValueStore> Connection<'_, S> {
+struct QueryContext<'txn, 'db, T: KeyValueStore> {
+    txn: &'txn Transaction<'db, T>,
+    catalog: &'db Catalog<T>,
+}
+
+impl<'txn, 'db, T: KeyValueStore> QueryContext<'txn, 'db, T> {
+    fn transaction(&self) -> &'txn Transaction<'db, T> {
+        self.txn
+    }
+
+    fn catalog(&self) -> CatalogRef<'txn, 'db, T> {
+        self.catalog.with(self.txn)
+    }
+}
+
+pub struct Connection<'a, T: KeyValueStore> {
+    db: &'a Database<T>,
+    txn_status: TransactionState<'a, T>,
+}
+
+impl<'db, T: KeyValueStore> Connection<'db, T> {
     pub fn execute(&mut self, sql: &str) -> Result<()> {
         let parser = Parser::new(sql);
         for statement in parser {
@@ -98,7 +127,7 @@ impl<S: KeyValueStore> Connection<'_, S> {
     }
 
     pub fn query(&mut self, sql: &str) -> Result<Rows> {
-        let mut statements = Parser::new(sql).collect::<parser::Result<Vec<_>>>()?;
+        let mut statements = Parser::new(sql).collect::<ParserResult<Vec<_>>>()?;
         let Some(last_statement) = statements.pop() else {
             return Ok(Rows::empty());
         };
@@ -116,11 +145,15 @@ impl<S: KeyValueStore> Connection<'_, S> {
         let mut implicit_txn = None;
         let txn = match &self.txn_status {
             TransactionState::Active(txn) => txn,
-            TransactionState::Aborted => return Err(Error::TransactionAborted),
+            TransactionState::Aborted => return Err(TransactionError::TransactionAborted.into()),
             TransactionState::Inactive => implicit_txn.insert(self.db.storage.transaction()),
         };
-        let plan = planner::plan(txn, statement)?;
-        match execute_plan(txn, plan) {
+        let ctx = QueryContext {
+            txn,
+            catalog: &self.db.catalog,
+        };
+        let plan = planner::plan(&ctx, statement)?;
+        match execute_plan(&ctx, plan) {
             Ok(rows) => {
                 if let Some(txn) = implicit_txn {
                     txn.commit(); // Auto commit
@@ -136,10 +169,13 @@ impl<S: KeyValueStore> Connection<'_, S> {
         }
     }
 
-    fn handle_transaction_control(&mut self, txn_control: TransactionControl) -> Result<()> {
+    fn handle_transaction_control(
+        &mut self,
+        txn_control: TransactionControl,
+    ) -> std::result::Result<(), TransactionError> {
         match (&self.txn_status, txn_control) {
             (TransactionState::Active(_), TransactionControl::Begin) => {
-                Err(Error::NestedTransaction)
+                Err(TransactionError::NestedTransaction)
             }
             (TransactionState::Active(_), TransactionControl::Commit) => {
                 match std::mem::replace(&mut self.txn_status, TransactionState::Inactive) {
@@ -157,7 +193,7 @@ impl<S: KeyValueStore> Connection<'_, S> {
                 Ok(())
             }
             (TransactionState::Aborted, TransactionControl::Begin) => {
-                Err(Error::TransactionAborted)
+                Err(TransactionError::TransactionAborted)
             }
             (TransactionState::Inactive, TransactionControl::Begin) => {
                 self.txn_status = TransactionState::Active(self.db.storage.transaction());
@@ -166,14 +202,14 @@ impl<S: KeyValueStore> Connection<'_, S> {
             (
                 TransactionState::Inactive,
                 TransactionControl::Commit | TransactionControl::Rollback,
-            ) => Err(Error::NoActiveTransaction),
+            ) => Err(TransactionError::NoActiveTransaction),
         }
     }
 }
 
-fn execute_plan<S: KeyValueStore>(
-    txn: &Transaction<S>,
-    plan: planner::TypedPlanNode,
+fn execute_plan<T: KeyValueStore>(
+    ctx: &QueryContext<'_, '_, T>,
+    plan: planner::TypedPlanNode<T>,
 ) -> Result<Rows> {
     let columns: Vec<_> = plan
         .columns()
@@ -186,14 +222,14 @@ fn execute_plan<S: KeyValueStore>(
         })
         .collect();
     let num_columns = plan.columns().len();
-    let rows = Executor::new(txn, plan.into_node())?
+    let rows = Executor::new(ctx, plan.into_node())?
         .map(|columns| {
             columns.map(|columns| {
                 assert_eq!(columns.len(), num_columns);
                 Row { columns }
             })
         })
-        .collect::<executor::Result<Vec<_>>>()?;
+        .collect::<ExecutorResult<Vec<_>>>()?;
     Ok(Rows {
         iter: rows.into_iter(),
         columns,
@@ -247,13 +283,16 @@ pub struct Row {
 }
 
 impl Row {
-    pub fn get<T: TryFrom<Value>>(&self, column: usize) -> Result<T> {
+    pub fn get<T>(&self, column: usize) -> Result<T>
+    where
+        T: TryFrom<Value, Error = TryFromValueError>,
+    {
         self.columns
             .get(column)
-            .ok_or(Error::OutOfRange)?
+            .ok_or(Error::ColumnIndexOutOfRange)?
             .clone()
             .try_into()
-            .map_err(|_| Error::IncompatibleType)
+            .map_err(Into::into)
     }
 
     pub fn columns(&self) -> &[Value] {

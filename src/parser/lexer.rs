@@ -1,7 +1,7 @@
 use std::str::Chars;
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum LexerError {
     #[error("Unknown token {0:?}")]
     UnknownToken(String),
 
@@ -9,7 +9,7 @@ pub enum Error {
     UnexpectedEof,
 }
 
-type Result<T> = std::result::Result<T, Error>;
+type LexerResult<T> = std::result::Result<T, LexerError>;
 
 macro_rules! keywords {
     ($($v:ident)*) => {
@@ -136,7 +136,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn consume(&mut self) -> Result<Token> {
+    pub fn consume(&mut self) -> LexerResult<Token> {
         if let Some(peeked) = self.peeked.take() {
             Ok(peeked)
         } else {
@@ -144,7 +144,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn consume_if<F>(&mut self, f: F) -> Result<Option<Token>>
+    pub fn consume_if<F>(&mut self, f: F) -> LexerResult<Option<Token>>
     where
         F: Fn(&Token) -> bool,
     {
@@ -155,11 +155,11 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    pub fn consume_if_eq(&mut self, token: Token) -> Result<bool> {
+    pub fn consume_if_eq(&mut self, token: Token) -> LexerResult<bool> {
         Ok(self.consume_if(|t| *t == token)?.is_some())
     }
 
-    pub fn peek(&mut self) -> Result<&Token> {
+    pub fn peek(&mut self) -> LexerResult<&Token> {
         if self.peeked.is_none() {
             self.peeked = Some(self.consume()?);
         }
@@ -180,7 +180,7 @@ impl<'a> LexerInner<'a> {
         }
     }
 
-    fn consume_token(&mut self) -> Result<Token> {
+    fn consume_token(&mut self) -> LexerResult<Token> {
         while let Some(ch) = self.peek() {
             match ch {
                 _ if ch.is_control() | ch.is_whitespace() => {
@@ -193,7 +193,7 @@ impl<'a> LexerInner<'a> {
                         .parse()
                         .map(Token::IntegerLiteral)
                         .or_else(|_| buf.parse().map(Token::RealLiteral))
-                        .map_err(|_| Error::UnknownToken(buf));
+                        .map_err(|_| LexerError::UnknownToken(buf));
                 }
                 '\'' => {
                     self.consume().unwrap();
@@ -202,7 +202,7 @@ impl<'a> LexerInner<'a> {
                     return if self.consume_if_eq('\'') {
                         Ok(Token::String(buf))
                     } else {
-                        Err(Error::UnexpectedEof)
+                        Err(LexerError::UnexpectedEof)
                     };
                 }
                 '"' => {
@@ -212,7 +212,7 @@ impl<'a> LexerInner<'a> {
                     return if self.consume_if_eq('"') {
                         Ok(Token::Identifier(buf))
                     } else {
-                        Err(Error::UnexpectedEof)
+                        Err(LexerError::UnexpectedEof)
                     };
                 }
                 _ if ch.is_alphabetic() => {
@@ -270,16 +270,16 @@ impl<'a> LexerInner<'a> {
                         if self.consume_if_eq('=') {
                             Token::Ne
                         } else {
-                            return Err(Error::UnknownToken("!".to_owned()));
+                            return Err(LexerError::UnknownToken("!".to_owned()));
                         }
                     } else if self.consume_if_eq('|') {
                         if self.consume_if_eq('|') {
                             Token::PipePipe
                         } else {
-                            return Err(Error::UnknownToken("|".to_owned()));
+                            return Err(LexerError::UnknownToken("|".to_owned()));
                         }
                     } else {
-                        return Err(Error::UnknownToken(ch.to_string()));
+                        return Err(LexerError::UnknownToken(ch.to_string()));
                     });
                 }
             }

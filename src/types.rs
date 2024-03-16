@@ -1,4 +1,3 @@
-use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,15 +112,24 @@ impl From<&str> for Value {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum TryFromValueError {
+    #[error("Incompatible type")]
+    IncompatibleType,
+
+    #[error("Out of range")]
+    OutOfRange,
+}
+
 macro_rules! impl_try_from_value {
     ($ty:ty, $variant:ident) => {
         impl TryFrom<Value> for $ty {
-            type Error = Error;
+            type Error = TryFromValueError;
 
-            fn try_from(value: Value) -> Result<Self> {
+            fn try_from(value: Value) -> Result<Self, TryFromValueError> {
                 match value {
-                    Value::$variant(v) => v.try_into().map_err(|_| Error::OutOfRange),
-                    _ => Err(Error::IncompatibleType),
+                    Value::$variant(v) => v.try_into().map_err(|_| TryFromValueError::OutOfRange),
+                    _ => Err(TryFromValueError::IncompatibleType),
                 }
             }
         }

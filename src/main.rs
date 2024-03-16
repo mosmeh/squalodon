@@ -32,7 +32,7 @@ fn main() -> Result<()> {
     }
 }
 
-fn run<S: KeyValueStore>(args: Args, storage: S) -> Result<()> {
+fn run<T: KeyValueStore>(args: Args, storage: T) -> Result<()> {
     let db = Database::new(storage)?;
     let mut conn = db.connect();
     if let Some(init) = args.init {

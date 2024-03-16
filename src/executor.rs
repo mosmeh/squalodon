@@ -1,12 +1,13 @@
 use crate::{
+    catalog::{TableFnPtr, TableId},
     memcomparable::MemcomparableSerde,
     planner::{self, ColumnIndex, Expression, OrderBy, PlanNode},
-    storage::{self, TableId, Transaction},
-    BinaryOp, KeyValueStore, StorageError, UnaryOp, Value,
+    storage::{self, Transaction},
+    BinaryOp, CatalogError, KeyValueStore, QueryContext, StorageError, UnaryOp, Value,
 };
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum ExecutorError {
     #[error("Out of range")]
     OutOfRange,
 
@@ -15,9 +16,12 @@ pub enum Error {
 
     #[error("Storage error: {0}")]
     Storage(#[from] StorageError),
+
+    #[error("Catalog error: {0}")]
+    Catalog(#[from] CatalogError),
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type ExecutorResult<T> = std::result::Result<T, ExecutorError>;
 
 trait Node {
     fn next_row(&mut self) -> Output;
@@ -26,7 +30,7 @@ trait Node {
 #[derive(Debug, thiserror::Error)]
 enum NodeError {
     #[error(transparent)]
-    Error(#[from] Error),
+    Error(#[from] ExecutorError),
 
     // HACK: This is not a real error, but treating it as one allows us to use
     // the ? operator to exit early when reaching the end of the rows.
@@ -34,8 +38,8 @@ enum NodeError {
     EndOfRows,
 }
 
-impl From<storage::Error> for NodeError {
-    fn from(e: storage::Error) -> Self {
+impl From<storage::StorageError> for NodeError {
+    fn from(e: storage::StorageError) -> Self {
         Self::Error(e.into())
     }
 }
@@ -46,7 +50,7 @@ trait IntoOutput {
     fn into_output(self) -> Output;
 }
 
-impl<E: Into<Error>> IntoOutput for std::result::Result<Vec<Value>, E> {
+impl<E: Into<ExecutorError>> IntoOutput for std::result::Result<Vec<Value>, E> {
     fn into_output(self) -> Output {
         self.map_err(|e| NodeError::Error(e.into()))
     }
@@ -58,7 +62,7 @@ impl IntoOutput for Option<Vec<Value>> {
     }
 }
 
-impl<E: Into<Error>> IntoOutput for std::result::Result<Option<Vec<Value>>, E> {
+impl<E: Into<ExecutorError>> IntoOutput for std::result::Result<Option<Vec<Value>>, E> {
     fn into_output(self) -> Output {
         match self {
             Ok(Some(row)) => Ok(row),
@@ -68,7 +72,7 @@ impl<E: Into<Error>> IntoOutput for std::result::Result<Option<Vec<Value>>, E> {
     }
 }
 
-impl<E: Into<Error>> IntoOutput for Option<std::result::Result<Vec<Value>, E>> {
+impl<E: Into<ExecutorError>> IntoOutput for Option<std::result::Result<Vec<Value>, E>> {
     fn into_output(self) -> Output {
         match self {
             Some(Ok(row)) => Ok(row),
@@ -78,16 +82,16 @@ impl<E: Into<Error>> IntoOutput for Option<std::result::Result<Vec<Value>, E>> {
     }
 }
 
-pub struct Executor<'txn, 'storage, T: KeyValueStore>(ExecutorNode<'txn, 'storage, T>);
+pub struct Executor<'txn, 'db, T: KeyValueStore>(ExecutorNode<'txn, 'db, T>);
 
-impl<'txn, 'storage, T: KeyValueStore> Executor<'txn, 'storage, T> {
-    pub fn new(txn: &'txn Transaction<'storage, T>, plan: PlanNode) -> Result<Self> {
-        ExecutorNode::new(txn, plan).map(Self)
+impl<'txn, 'db, T: KeyValueStore> Executor<'txn, 'db, T> {
+    pub fn new(ctx: &'txn QueryContext<'txn, 'db, T>, plan: PlanNode<T>) -> ExecutorResult<Self> {
+        ExecutorNode::new(ctx, plan).map(Self)
     }
 }
 
 impl<T: KeyValueStore> Iterator for Executor<'_, '_, T> {
-    type Item = Result<Vec<Value>>;
+    type Item = ExecutorResult<Vec<Value>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.0.next_row() {
@@ -98,20 +102,21 @@ impl<T: KeyValueStore> Iterator for Executor<'_, '_, T> {
     }
 }
 
-enum ExecutorNode<'txn, 'storage, T: KeyValueStore> {
-    Insert(Insert<'txn, 'storage, T>),
-    Update(Update<'txn, 'storage, T>),
-    Delete(Delete<'txn, 'storage, T>),
+enum ExecutorNode<'txn, 'db, T: KeyValueStore> {
+    Insert(Insert<'txn, 'db, T>),
+    Update(Update<'txn, 'db, T>),
+    Delete(Delete<'txn, 'db, T>),
     Values(Values),
     SeqScan(SeqScan<'txn>),
-    Project(Project<'txn, 'storage, T>),
-    Filter(Filter<'txn, 'storage, T>),
-    Sort(Sort<'txn, 'storage, T>),
-    Limit(Limit<'txn, 'storage, T>),
+    FunctionScan(FunctionScan<'txn, 'db, T>),
+    Project(Project<'txn, 'db, T>),
+    Filter(Filter<'txn, 'db, T>),
+    Sort(Sort<'txn, 'db, T>),
+    Limit(Limit<'txn, 'db, T>),
 }
 
-impl<'txn, 'storage, T: KeyValueStore> ExecutorNode<'txn, 'storage, T> {
-    fn new(txn: &'txn Transaction<'storage, T>, plan: PlanNode) -> Result<Self> {
+impl<'txn, 'db, T: KeyValueStore> ExecutorNode<'txn, 'db, T> {
+    fn new(ctx: &'txn QueryContext<'txn, 'db, T>, plan: PlanNode<T>) -> ExecutorResult<Self> {
         let executor = match plan {
             PlanNode::Explain(plan) => {
                 let rows = plan
@@ -122,51 +127,56 @@ impl<'txn, 'storage, T: KeyValueStore> ExecutorNode<'txn, 'storage, T> {
                 Self::Values(Values::new(rows))
             }
             PlanNode::CreateTable(create_table) => {
-                txn.create_table(&create_table.name, &create_table.columns)?;
+                ctx.catalog()
+                    .create_table(&create_table.name, &create_table.columns)?;
                 Self::Values(Values::one_empty_row())
             }
             PlanNode::DropTable(drop_table) => {
-                txn.drop_table(&drop_table.name)?;
+                ctx.catalog().drop_table(&drop_table.name)?;
                 Self::Values(Values::one_empty_row())
             }
             PlanNode::Insert(insert) => Self::Insert(Insert {
-                txn,
-                source: Box::new(Self::new(txn, *insert.source)?),
+                txn: ctx.transaction(),
+                source: Box::new(Self::new(ctx, *insert.source)?),
                 table: insert.table,
                 primary_key_column: insert.primary_key_column,
             }),
             PlanNode::Update(update) => Self::Update(Update {
-                txn,
-                source: Box::new(Self::new(txn, *update.source)?),
+                txn: ctx.transaction(),
+                source: Box::new(Self::new(ctx, *update.source)?),
                 table: update.table,
                 primary_key_column: update.primary_key_column,
             }),
             PlanNode::Delete(delete) => Self::Delete(Delete {
-                txn,
-                source: Box::new(Self::new(txn, *delete.source)?),
+                txn: ctx.transaction(),
+                source: Box::new(Self::new(ctx, *delete.source)?),
                 table: delete.table,
                 primary_key_column: delete.primary_key_column,
             }),
             PlanNode::Values(planner::Values { rows }) => Self::Values(Values::new(rows)),
             PlanNode::Scan(planner::Scan::SeqScan { table, columns }) => {
-                Self::SeqScan(SeqScan::new(txn, table, columns))
+                Self::SeqScan(SeqScan::new(ctx.transaction(), table, columns))
+            }
+            PlanNode::Scan(planner::Scan::FunctionScan { source, fn_ptr }) => {
+                let source = Self::new(ctx, *source)?;
+                Self::FunctionScan(FunctionScan::new(ctx, source, fn_ptr))
             }
             PlanNode::Project(planner::Project { source, exprs }) => Self::Project(Project {
-                source: Self::new(txn, *source)?.into(),
+                source: Self::new(ctx, *source)?.into(),
                 exprs,
             }),
             PlanNode::Filter(planner::Filter { source, cond }) => Self::Filter(Filter {
-                source: Self::new(txn, *source)?.into(),
+                source: Self::new(ctx, *source)?.into(),
                 cond,
             }),
             PlanNode::Sort(planner::Sort { source, order_by }) => {
-                Self::Sort(Sort::new(Self::new(txn, *source)?, order_by))
+                Self::Sort(Sort::new(Self::new(ctx, *source)?, order_by))
             }
             PlanNode::Limit(planner::Limit {
                 source,
                 limit,
                 offset,
-            }) => Self::Limit(Limit::new(Self::new(txn, *source)?, limit, offset)?),
+            }) => Self::Limit(Limit::new(Self::new(ctx, *source)?, limit, offset)?),
         };
         Ok(executor)
     }
@@ -176,6 +186,7 @@ impl<T: KeyValueStore> Node for ExecutorNode<'_, '_, T> {
     fn next_row(&mut self) -> Output {
         match self {
             Self::SeqScan(e) => e.next_row(),
+            Self::FunctionScan(e) => e.next_row(),
             Self::Project(e) => e.next_row(),
             Self::Filter(e) => e.next_row(),
             Self::Sort(e) => e.next_row(),
@@ -189,7 +200,7 @@ impl<T: KeyValueStore> Node for ExecutorNode<'_, '_, T> {
 }
 
 impl<T: KeyValueStore> Iterator for ExecutorNode<'_, '_, T> {
-    type Item = Result<Vec<Value>>;
+    type Item = ExecutorResult<Vec<Value>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.next_row() {
@@ -200,9 +211,9 @@ impl<T: KeyValueStore> Iterator for ExecutorNode<'_, '_, T> {
     }
 }
 
-struct Insert<'txn, 'storage, T: KeyValueStore> {
-    txn: &'txn Transaction<'storage, T>,
-    source: Box<ExecutorNode<'txn, 'storage, T>>,
+struct Insert<'txn, 'db, T: KeyValueStore> {
+    txn: &'txn Transaction<'db, T>,
+    source: Box<ExecutorNode<'txn, 'db, T>>,
     table: TableId,
     primary_key_column: ColumnIndex,
 }
@@ -218,9 +229,9 @@ impl<T: KeyValueStore> Node for Insert<'_, '_, T> {
     }
 }
 
-struct Update<'txn, 'storage, T: KeyValueStore> {
-    txn: &'txn Transaction<'storage, T>,
-    source: Box<ExecutorNode<'txn, 'storage, T>>,
+struct Update<'txn, 'db, T: KeyValueStore> {
+    txn: &'txn Transaction<'db, T>,
+    source: Box<ExecutorNode<'txn, 'db, T>>,
     table: TableId,
     primary_key_column: ColumnIndex,
 }
@@ -236,9 +247,9 @@ impl<T: KeyValueStore> Node for Update<'_, '_, T> {
     }
 }
 
-struct Delete<'txn, 'storage, T: KeyValueStore> {
-    txn: &'txn Transaction<'storage, T>,
-    source: Box<ExecutorNode<'txn, 'storage, T>>,
+struct Delete<'txn, 'db, T: KeyValueStore> {
+    txn: &'txn Transaction<'db, T>,
+    source: Box<ExecutorNode<'txn, 'db, T>>,
     table: TableId,
     primary_key_column: ColumnIndex,
 }
@@ -280,14 +291,14 @@ impl Node for Values {
             .map(|row| {
                 row.into_iter()
                     .map(|expr| expr.eval(&[]))
-                    .collect::<Result<Vec<_>>>()
+                    .collect::<ExecutorResult<Vec<_>>>()
             })
             .into_output()
     }
 }
 
 struct SeqScan<'a> {
-    iter: Box<dyn Iterator<Item = storage::Result<Vec<Value>>> + 'a>,
+    iter: Box<dyn Iterator<Item = storage::StorageResult<Vec<Value>>> + 'a>,
     columns: Vec<ColumnIndex>,
 }
 
@@ -312,8 +323,48 @@ impl Node for SeqScan<'_> {
     }
 }
 
-struct Project<'txn, 'storage, T: KeyValueStore> {
-    source: Box<ExecutorNode<'txn, 'storage, T>>,
+struct FunctionScan<'txn, 'db, T: KeyValueStore> {
+    ctx: &'txn QueryContext<'txn, 'db, T>,
+    source: Box<ExecutorNode<'txn, 'db, T>>,
+    fn_ptr: TableFnPtr<T>,
+    rows: Option<Box<dyn Iterator<Item = Vec<Value>>>>,
+}
+
+impl<'txn, 'db, T: KeyValueStore> FunctionScan<'txn, 'db, T> {
+    fn new(
+        ctx: &'txn QueryContext<'txn, 'db, T>,
+        source: ExecutorNode<'txn, 'db, T>,
+        fn_ptr: TableFnPtr<T>,
+    ) -> Self {
+        Self {
+            ctx,
+            source: source.into(),
+            fn_ptr,
+            rows: None,
+        }
+    }
+}
+
+impl<T: KeyValueStore> Node for FunctionScan<'_, '_, T> {
+    fn next_row(&mut self) -> Output {
+        loop {
+            match &mut self.rows {
+                Some(rows) => match rows.next() {
+                    Some(row) => return Ok(row),
+                    None => self.rows = None,
+                },
+                None => {
+                    let row = self.source.next_row()?;
+                    let rows = (self.fn_ptr)(self.ctx, &row)?;
+                    self.rows = Some(rows);
+                }
+            }
+        }
+    }
+}
+
+struct Project<'txn, 'db, T: KeyValueStore> {
+    source: Box<ExecutorNode<'txn, 'db, T>>,
     exprs: Vec<Expression>,
 }
 
@@ -323,13 +374,13 @@ impl<T: KeyValueStore> Node for Project<'_, '_, T> {
         self.exprs
             .iter()
             .map(|expr| expr.eval(&row))
-            .collect::<Result<Vec<_>>>()
+            .collect::<ExecutorResult<Vec<_>>>()
             .into_output()
     }
 }
 
-struct Filter<'txn, 'storage, T: KeyValueStore> {
-    source: Box<ExecutorNode<'txn, 'storage, T>>,
+struct Filter<'txn, 'db, T: KeyValueStore> {
+    source: Box<ExecutorNode<'txn, 'db, T>>,
     cond: Expression,
 }
 
@@ -340,15 +391,15 @@ impl<T: KeyValueStore> Node for Filter<'_, '_, T> {
             match self.cond.eval(&row)? {
                 Value::Boolean(true) => return Ok(row),
                 Value::Boolean(false) => continue,
-                _ => return Err(Error::TypeError.into()),
+                _ => return Err(ExecutorError::TypeError.into()),
             }
         }
     }
 }
 
-enum Sort<'txn, 'storage, T: KeyValueStore> {
+enum Sort<'txn, 'db, T: KeyValueStore> {
     Collect {
-        source: Box<ExecutorNode<'txn, 'storage, T>>,
+        source: Box<ExecutorNode<'txn, 'db, T>>,
         order_by: Vec<OrderBy>,
     },
     Output {
@@ -356,8 +407,8 @@ enum Sort<'txn, 'storage, T: KeyValueStore> {
     },
 }
 
-impl<'txn, 'storage, T: KeyValueStore> Sort<'txn, 'storage, T> {
-    fn new(source: ExecutorNode<'txn, 'storage, T>, order_by: Vec<OrderBy>) -> Self {
+impl<'txn, 'db, T: KeyValueStore> Sort<'txn, 'db, T> {
+    fn new(source: ExecutorNode<'txn, 'db, T>, order_by: Vec<OrderBy>) -> Self {
         Self::Collect {
             source: source.into(),
             order_by,
@@ -393,28 +444,28 @@ impl<T: KeyValueStore> Node for Sort<'_, '_, T> {
     }
 }
 
-struct Limit<'txn, 'storage, T: KeyValueStore> {
-    source: Box<ExecutorNode<'txn, 'storage, T>>,
+struct Limit<'txn, 'db, T: KeyValueStore> {
+    source: Box<ExecutorNode<'txn, 'db, T>>,
     limit: Option<usize>,
     offset: usize,
     cursor: usize,
 }
 
-impl<'txn, 'storage, T: KeyValueStore> Limit<'txn, 'storage, T> {
+impl<'txn, 'db, T: KeyValueStore> Limit<'txn, 'db, T> {
     fn new(
-        source: ExecutorNode<'txn, 'storage, T>,
+        source: ExecutorNode<'txn, 'db, T>,
         limit: Option<Expression>,
         offset: Option<Expression>,
-    ) -> Result<Self> {
-        fn eval(expr: Option<Expression>) -> Result<Option<usize>> {
+    ) -> ExecutorResult<Self> {
+        fn eval(expr: Option<Expression>) -> ExecutorResult<Option<usize>> {
             let Some(expr) = expr else {
                 return Ok(None);
             };
             let Value::Integer(i) = expr.eval(&[])? else {
-                return Err(Error::TypeError);
+                return Err(ExecutorError::TypeError);
             };
             i.try_into()
-                .map_or_else(|_| Err(Error::OutOfRange), |i| Ok(Some(i)))
+                .map_or_else(|_| Err(ExecutorError::OutOfRange), |i| Ok(Some(i)))
         }
 
         Ok(Self {
@@ -447,7 +498,7 @@ impl<T: KeyValueStore> Node for Limit<'_, '_, T> {
 }
 
 impl Expression {
-    fn eval(&self, row: &[Value]) -> Result<Value> {
+    fn eval(&self, row: &[Value]) -> ExecutorResult<Value> {
         let value = match self {
             Self::Constact(v) => v.clone(),
             Self::ColumnRef { column } => row[column.0].clone(),
@@ -458,7 +509,7 @@ impl Expression {
     }
 }
 
-fn eval_unary_op(op: UnaryOp, expr: &Expression) -> Result<Value> {
+fn eval_unary_op(op: UnaryOp, expr: &Expression) -> ExecutorResult<Value> {
     let expr = expr.eval(&[])?;
     match (op, expr) {
         (UnaryOp::Plus, Value::Integer(v)) => Ok(Value::Integer(v)),
@@ -466,7 +517,7 @@ fn eval_unary_op(op: UnaryOp, expr: &Expression) -> Result<Value> {
         (UnaryOp::Minus, Value::Integer(v)) => Ok(Value::Integer(-v)),
         (UnaryOp::Minus, Value::Real(v)) => Ok(Value::Real(-v)),
         (UnaryOp::Not, Value::Boolean(v)) => Ok(Value::Boolean(!v)),
-        _ => Err(Error::TypeError),
+        _ => Err(ExecutorError::TypeError),
     }
 }
 
@@ -475,7 +526,7 @@ fn eval_binary_op(
     row: &[Value],
     lhs: &Expression,
     rhs: &Expression,
-) -> Result<Value> {
+) -> ExecutorResult<Value> {
     let lhs = lhs.eval(row)?;
     if lhs == Value::Null {
         return Ok(Value::Null);
@@ -503,37 +554,37 @@ fn eval_binary_op(
             if let (Value::Boolean(lhs), Value::Boolean(rhs)) = (lhs, rhs) {
                 Ok(Value::Boolean(lhs && rhs))
             } else {
-                Err(Error::TypeError)
+                Err(ExecutorError::TypeError)
             }
         }
         BinaryOp::Or => {
             if let (Value::Boolean(lhs), Value::Boolean(rhs)) = (lhs, rhs) {
                 Ok(Value::Boolean(lhs || rhs))
             } else {
-                Err(Error::TypeError)
+                Err(ExecutorError::TypeError)
             }
         }
         BinaryOp::Concat => {
             if let (Value::Text(lhs), Value::Text(rhs)) = (lhs, rhs) {
                 Ok(Value::Text(lhs + &rhs))
             } else {
-                Err(Error::TypeError)
+                Err(ExecutorError::TypeError)
             }
         }
     }
 }
 
-fn eval_binary_op_number(op: BinaryOp, lhs: Value, rhs: Value) -> Result<Value> {
+fn eval_binary_op_number(op: BinaryOp, lhs: Value, rhs: Value) -> ExecutorResult<Value> {
     match (lhs, rhs) {
         (Value::Integer(lhs), Value::Integer(rhs)) => eval_binary_op_integer(op, lhs, rhs),
         (Value::Real(lhs), Value::Real(rhs)) => Ok(eval_binary_op_real(op, lhs, rhs)),
         (Value::Real(lhs), Value::Integer(rhs)) => Ok(eval_binary_op_real(op, lhs, rhs as f64)),
         (Value::Integer(lhs), Value::Real(rhs)) => Ok(eval_binary_op_real(op, lhs as f64, rhs)),
-        _ => Err(Error::TypeError),
+        _ => Err(ExecutorError::TypeError),
     }
 }
 
-fn eval_binary_op_integer(op: BinaryOp, lhs: i64, rhs: i64) -> Result<Value> {
+fn eval_binary_op_integer(op: BinaryOp, lhs: i64, rhs: i64) -> ExecutorResult<Value> {
     let f = match op {
         BinaryOp::Add => i64::checked_add,
         BinaryOp::Sub => i64::checked_sub,
@@ -542,7 +593,7 @@ fn eval_binary_op_integer(op: BinaryOp, lhs: i64, rhs: i64) -> Result<Value> {
         BinaryOp::Mod => i64::checked_rem,
         _ => unreachable!(),
     };
-    f(lhs, rhs).map_or_else(|| Err(Error::OutOfRange), |v| Ok(Value::Integer(v)))
+    f(lhs, rhs).map_or_else(|| Err(ExecutorError::OutOfRange), |v| Ok(Value::Integer(v)))
 }
 
 fn eval_binary_op_real(op: BinaryOp, lhs: f64, rhs: f64) -> Value {
