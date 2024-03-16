@@ -6,13 +6,6 @@ pub use memory::Memory;
 
 use crate::{catalog::TableId, memcomparable::MemcomparableSerde, Value};
 
-#[cfg(feature = "rocksdb")]
-mod rocks;
-#[cfg(feature = "rocksdb")]
-pub use rocks::RocksDB;
-#[cfg(feature = "rocksdb")]
-pub use rocksdb;
-
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
     #[error("Unknown table {0:?}")]

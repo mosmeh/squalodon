@@ -1,3 +1,6 @@
+#[cfg(feature = "rocksdb")]
+mod rocks;
+
 use anyhow::Result;
 use clap::Parser;
 use rustyline::error::ReadlineError;
@@ -24,7 +27,7 @@ fn main() -> Result<()> {
         #[cfg(feature = "rocksdb")]
         Some(filename) => {
             let db = rocksdb::TransactionDB::open_default(filename)?;
-            run(args, squalodon::storage::RocksDB::new(db))
+            run(args, rocks::RocksDB::new(db))
         }
         #[cfg(not(feature = "rocksdb"))]
         Some(_) => anyhow::bail!("RocksDB support is not enabled"),

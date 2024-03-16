@@ -1,5 +1,5 @@
-use super::{KeyValueStore, KeyValueTransaction};
 use rocksdb::{Direction, IteratorMode, TransactionDB};
+use squalodon::storage::{KeyValueStore, KeyValueTransaction};
 
 pub struct RocksDB {
     db: TransactionDB,

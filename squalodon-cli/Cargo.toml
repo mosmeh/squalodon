@@ -1,0 +1,15 @@
+[package]
+name = "squalodon-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.81"
+clap = { version = "4.5.3", features = ["derive"] }
+rocksdb = { version = "0.22.0", optional = true }
+rustyline = "14.0.0"
+squalodon = { path = "../squalodon" }
+unicode-width = "0.1.11"
+
+[features]
+rocksdb = ["dep:rocksdb"]
