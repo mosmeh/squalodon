@@ -25,6 +25,12 @@ impl<'txn, 'db, T: KeyValueStore> Binder<'txn, 'db, T> {
             parser::Statement::ShowTables => {
                 self.rewrite_to("SELECT * FROM squalodon_tables() ORDER BY name")
             }
+            parser::Statement::Describe(name) => self.rewrite_to(&format!(
+                "SELECT column_name, type, is_nullable, is_primary_key
+                FROM squalodon_columns()
+                WHERE table_name = {}",
+                parser::quote(&name, '\'')
+            )),
             parser::Statement::CreateTable(create_table) => self.bind_create_table(create_table),
             parser::Statement::DropTable(drop_table) => self.bind_drop_table(drop_table),
             parser::Statement::Values(values) => bind_values(values),

@@ -90,6 +90,7 @@ keywords! {
     Create
     Delete
     Desc
+    Describe
     Drop
     Exists
     Explain
@@ -189,43 +190,27 @@ impl<'a> LexerInner<'a> {
                     self.consume().unwrap();
                 }
                 _ if ch.is_ascii_digit() => {
-                    let mut buf = String::new();
-                    self.consume_while(|ch| ch.is_ascii_digit() || ch == '.', &mut buf);
-                    return buf
+                    let literal = self.consume_while(|ch| ch.is_ascii_digit() || ch == '.');
+                    return literal
                         .parse()
                         .map(Token::IntegerLiteral)
-                        .or_else(|_| buf.parse().map(Token::RealLiteral))
-                        .map_err(|_| LexerError::UnknownToken(buf));
+                        .or_else(|_| literal.parse().map(Token::RealLiteral))
+                        .map_err(|_| LexerError::UnknownToken(literal));
                 }
                 '\'' => {
-                    self.consume().unwrap();
-                    let mut buf = String::new();
-                    self.consume_while(|ch| ch != '\'', &mut buf);
-                    return if self.consume_if_eq('\'') {
-                        Ok(Token::String(buf))
-                    } else {
-                        Err(LexerError::UnexpectedEof)
-                    };
+                    let s = self.consume_string('\'')?;
+                    return Ok(Token::String(s));
                 }
                 '"' => {
-                    self.consume().unwrap();
-                    let mut buf = String::new();
-                    self.consume_while(|ch| ch != '"', &mut buf);
-                    return if self.consume_if_eq('"') {
-                        Ok(Token::Identifier(buf))
-                    } else {
-                        Err(LexerError::UnexpectedEof)
-                    };
+                    let ident = self.consume_string('"')?;
+                    return Ok(Token::Identifier(ident));
                 }
                 _ if ch.is_alphabetic() => {
-                    let mut buf = String::new();
-                    self.consume_while(
-                        |ch| ch.is_alphanumeric() || matches!(ch, '$' | '_'),
-                        &mut buf,
-                    );
-                    return Ok(Token::parse_keyword(&buf).unwrap_or_else(|| {
-                        buf.make_ascii_lowercase();
-                        Token::Identifier(buf)
+                    let mut s =
+                        self.consume_while(|ch| ch.is_alphanumeric() || matches!(ch, '$' | '_'));
+                    return Ok(Token::parse_keyword(&s).unwrap_or_else(|| {
+                        s.make_ascii_lowercase();
+                        Token::Identifier(s)
                     }));
                 }
                 _ => {
@@ -242,7 +227,7 @@ impl<'a> LexerInner<'a> {
                     } else if self.consume_if_eq('-') {
                         if self.consume_if_eq('-') {
                             // Comment
-                            self.consume_while(|ch| ch != '\n', &mut String::new());
+                            self.consume_while(|ch| ch != '\n');
                             continue;
                         }
                         Token::Minus
@@ -289,6 +274,24 @@ impl<'a> LexerInner<'a> {
         Ok(Token::Eof)
     }
 
+    fn consume_string(&mut self, quote: char) -> LexerResult<String> {
+        let ch = self.consume().unwrap();
+        assert_eq!(ch, quote);
+        let mut s = String::new();
+        while let Some(ch) = self.consume() {
+            if ch != quote {
+                s.push(ch);
+                continue;
+            }
+            if self.consume_if_eq(quote) {
+                s.push(quote);
+            } else {
+                return Ok(s);
+            }
+        }
+        Err(LexerError::UnexpectedEof)
+    }
+
     fn consume(&mut self) -> Option<char> {
         self.peeked.take().or_else(|| self.chars.next())
     }
@@ -309,13 +312,15 @@ impl<'a> LexerInner<'a> {
         self.consume_if(|c| c == ch).is_some()
     }
 
-    fn consume_while<F>(&mut self, f: F, buf: &mut String)
+    fn consume_while<F>(&mut self, f: F) -> String
     where
         F: Fn(char) -> bool,
     {
+        let mut s = String::new();
         while let Some(ch) = self.consume_if(&f) {
-            buf.push(ch);
+            s.push(ch);
         }
+        s
     }
 
     fn peek(&mut self) -> Option<char> {
@@ -324,4 +329,17 @@ impl<'a> LexerInner<'a> {
         }
         self.peeked
     }
+}
+
+pub fn quote(s: &str, quote: char) -> String {
+    let mut quoted = String::new();
+    quoted.push(quote);
+    for ch in s.chars() {
+        if ch == quote {
+            quoted.push(quote);
+        }
+        quoted.push(ch);
+    }
+    quoted.push(quote);
+    quoted
 }

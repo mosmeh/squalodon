@@ -1,6 +1,6 @@
 mod lexer;
 
-pub use lexer::LexerError;
+pub use lexer::{quote, LexerError};
 
 use crate::{
     catalog::Column,
@@ -27,6 +27,7 @@ pub enum Statement {
     Explain(Box<Statement>),
     Transaction(TransactionControl),
     ShowTables,
+    Describe(String),
     CreateTable(CreateTable),
     DropTable(DropTable),
     Values(Values),
@@ -353,6 +354,11 @@ impl<'a> Parser<'a> {
                 self.lexer.consume()?;
                 self.expect(Token::Tables)?;
                 Ok(Statement::ShowTables)
+            }
+            Token::Describe => {
+                self.lexer.consume()?;
+                let name = self.expect_identifier()?;
+                Ok(Statement::Describe(name))
             }
             Token::Create => self.parse_create(),
             Token::Drop => self.parse_drop(),
