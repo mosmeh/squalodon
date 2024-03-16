@@ -4,7 +4,10 @@
 //! <https://github.com/facebook/mysql-5.6/wiki/MyRocks-record-format#memcomparable-format>
 //! <https://github.com/risingwavelabs/memcomparable>
 
-use crate::{Error, NullOrder, Order, Result, Value};
+use crate::{
+    parser::{NullOrder, Order},
+    Error, Result, Value,
+};
 use std::borrow::Cow;
 
 const TAG_SIZE: usize = std::mem::size_of::<u8>();

@@ -2,9 +2,10 @@ mod binder;
 
 use crate::{
     catalog::{self, TableFnPtr, TableId},
-    parser,
+    connection::QueryContext,
+    parser::{self, BinaryOp, NullOrder, Order, UnaryOp},
     types::{Type, Value},
-    BinaryOp, CatalogError, KeyValueStore, NullOrder, Order, QueryContext, StorageError, UnaryOp,
+    CatalogError, KeyValueStore, StorageError,
 };
 use std::fmt::Write;
 

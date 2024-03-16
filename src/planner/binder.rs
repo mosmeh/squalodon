@@ -1,7 +1,11 @@
 use super::{ColumnIndex, PlanNode, PlannerError, PlannerResult, TypedPlanNode, Values};
 use crate::{
-    parser, planner, storage::Blackhole, types::Type, BinaryOp, CatalogError, KeyValueStore,
-    QueryContext, UnaryOp,
+    connection::QueryContext,
+    parser::{self, BinaryOp, UnaryOp},
+    planner,
+    storage::Blackhole,
+    types::Type,
+    CatalogError, KeyValueStore,
 };
 use std::collections::HashSet;
 

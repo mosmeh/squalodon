@@ -1,9 +1,11 @@
 use crate::{
     catalog::{TableFnPtr, TableId},
+    connection::QueryContext,
     memcomparable::MemcomparableSerde,
+    parser::{BinaryOp, UnaryOp},
     planner::{self, ColumnIndex, Expression, OrderBy, PlanNode},
     storage::{self, Transaction},
-    BinaryOp, CatalogError, KeyValueStore, QueryContext, StorageError, UnaryOp, Value,
+    CatalogError, KeyValueStore, StorageError, Value,
 };
 
 #[derive(Debug, thiserror::Error)]

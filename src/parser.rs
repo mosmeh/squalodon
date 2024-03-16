@@ -5,7 +5,6 @@ pub use lexer::LexerError;
 use crate::{
     catalog::Column,
     types::{Type, Value},
-    BinaryOp, NullOrder, Order, UnaryOp,
 };
 use lexer::{Lexer, Token};
 
@@ -127,6 +126,23 @@ pub enum Expression {
     },
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum UnaryOp {
+    Plus,
+    Minus,
+    Not,
+}
+
+impl std::fmt::Display for UnaryOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Plus => "+",
+            Self::Minus => "-",
+            Self::Not => "NOT",
+        })
+    }
+}
+
 impl UnaryOp {
     fn from_token(token: &Token) -> Option<Self> {
         Some(match token {
@@ -143,6 +159,45 @@ impl UnaryOp {
             Self::Plus | Self::Minus => 9,
             Self::Not => 3,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
+    Concat,
+}
+
+impl std::fmt::Display for BinaryOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Add => "+",
+            Self::Sub => "-",
+            Self::Mul => "*",
+            Self::Div => "/",
+            Self::Mod => "%",
+            Self::Eq => "=",
+            Self::Ne => "<>",
+            Self::Lt => "<",
+            Self::Le => "<=",
+            Self::Gt => ">",
+            Self::Ge => ">=",
+            Self::And => "AND",
+            Self::Or => "OR",
+            Self::Concat => "||",
+        })
     }
 }
 
@@ -178,6 +233,48 @@ impl BinaryOp {
             Self::And => 2,
             Self::Or => 1,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Order {
+    Asc,
+    Desc,
+}
+
+impl Default for Order {
+    fn default() -> Self {
+        Self::Asc
+    }
+}
+
+impl std::fmt::Display for Order {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Asc => "ASC",
+            Self::Desc => "DESC",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NullOrder {
+    NullsFirst,
+    NullsLast,
+}
+
+impl Default for NullOrder {
+    fn default() -> Self {
+        Self::NullsLast
+    }
+}
+
+impl std::fmt::Display for NullOrder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NullsFirst => "NULLS FIRST",
+            Self::NullsLast => "NULLS LAST",
+        })
     }
 }
 
