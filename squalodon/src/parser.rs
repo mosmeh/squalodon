@@ -25,14 +25,22 @@ pub type ParserResult<T> = std::result::Result<T, ParserError>;
 #[derive(Debug)]
 pub enum Statement {
     Explain(Box<Statement>),
+    Transaction(TransactionControl),
+    ShowTables,
     CreateTable(CreateTable),
     DropTable(DropTable),
-    Insert(Insert),
     Values(Values),
     Select(Select),
+    Insert(Insert),
     Update(Update),
     Delete(Delete),
-    Transaction(TransactionControl),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum TransactionControl {
+    Begin,
+    Commit,
+    Rollback,
 }
 
 #[derive(Debug)]
@@ -46,13 +54,6 @@ pub struct CreateTable {
 pub struct DropTable {
     pub name: String,
     pub if_exists: bool,
-}
-
-#[derive(Debug)]
-pub struct Insert {
-    pub table_name: String,
-    pub column_names: Vec<String>,
-    pub values: Values,
 }
 
 #[derive(Debug)]
@@ -90,6 +91,13 @@ pub struct OrderBy {
     pub expr: Expression,
     pub order: Order,
     pub null_order: NullOrder,
+}
+
+#[derive(Debug)]
+pub struct Insert {
+    pub table_name: String,
+    pub column_names: Vec<String>,
+    pub values: Values,
 }
 
 #[derive(Debug)]
@@ -278,13 +286,6 @@ impl std::fmt::Display for NullOrder {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum TransactionControl {
-    Begin,
-    Commit,
-    Rollback,
-}
-
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
 }
@@ -323,10 +324,6 @@ impl<'a> Parser<'a> {
 
     fn parse_statement(&mut self) -> ParserResult<Statement> {
         match self.lexer.peek()? {
-            Token::Explain => {
-                self.lexer.consume()?;
-                Ok(Statement::Explain(Box::new(self.parse_statement_inner()?)))
-            }
             Token::Begin => {
                 self.lexer.consume()?;
                 self.lexer.consume_if_eq(Token::Transaction)?;
@@ -348,11 +345,20 @@ impl<'a> Parser<'a> {
 
     fn parse_statement_inner(&mut self) -> ParserResult<Statement> {
         match self.lexer.peek()? {
+            Token::Explain => {
+                self.lexer.consume()?;
+                Ok(Statement::Explain(Box::new(self.parse_statement_inner()?)))
+            }
+            Token::Show => {
+                self.lexer.consume()?;
+                self.expect(Token::Tables)?;
+                Ok(Statement::ShowTables)
+            }
             Token::Create => self.parse_create(),
             Token::Drop => self.parse_drop(),
-            Token::Insert => self.parse_insert().map(Statement::Insert),
             Token::Values => self.parse_values().map(Statement::Values),
             Token::Select => self.parse_select().map(Statement::Select),
+            Token::Insert => self.parse_insert().map(Statement::Insert),
             Token::Update => self.parse_update().map(Statement::Update),
             Token::Delete => self.parse_delete().map(Statement::Delete),
             token => Err(ParserError::UnexpectedToken(token.clone())),
@@ -441,23 +447,6 @@ impl<'a> Parser<'a> {
             ty,
             is_primary_key,
             is_nullable,
-        })
-    }
-
-    fn parse_insert(&mut self) -> ParserResult<Insert> {
-        self.expect(Token::Insert)?;
-        self.expect(Token::Into)?;
-        let table_name = self.expect_identifier()?;
-        let mut column_names = Vec::new();
-        if self.lexer.consume_if_eq(Token::LeftParen)? {
-            column_names = self.parse_comma_separated(Self::expect_identifier)?;
-            self.expect(Token::RightParen)?;
-        }
-        let values = self.parse_values()?;
-        Ok(Insert {
-            table_name,
-            column_names,
-            values,
         })
     }
 
@@ -568,6 +557,23 @@ impl<'a> Parser<'a> {
                 order,
                 null_order,
             })
+        })
+    }
+
+    fn parse_insert(&mut self) -> ParserResult<Insert> {
+        self.expect(Token::Insert)?;
+        self.expect(Token::Into)?;
+        let table_name = self.expect_identifier()?;
+        let mut column_names = Vec::new();
+        if self.lexer.consume_if_eq(Token::LeftParen)? {
+            column_names = self.parse_comma_separated(Self::expect_identifier)?;
+            self.expect(Token::RightParen)?;
+        }
+        let values = self.parse_values()?;
+        Ok(Insert {
+            table_name,
+            column_names,
+            values,
         })
     }
 

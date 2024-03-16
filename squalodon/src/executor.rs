@@ -105,9 +105,6 @@ impl<T: KeyValueStore> Iterator for Executor<'_, '_, T> {
 }
 
 enum ExecutorNode<'txn, 'db, T: KeyValueStore> {
-    Insert(Insert<'txn, 'db, T>),
-    Update(Update<'txn, 'db, T>),
-    Delete(Delete<'txn, 'db, T>),
     Values(Values),
     SeqScan(SeqScan<'txn>),
     FunctionScan(FunctionScan<'txn, 'db, T>),
@@ -115,6 +112,9 @@ enum ExecutorNode<'txn, 'db, T: KeyValueStore> {
     Filter(Filter<'txn, 'db, T>),
     Sort(Sort<'txn, 'db, T>),
     Limit(Limit<'txn, 'db, T>),
+    Insert(Insert<'txn, 'db, T>),
+    Update(Update<'txn, 'db, T>),
+    Delete(Delete<'txn, 'db, T>),
 }
 
 impl<'txn, 'db, T: KeyValueStore> ExecutorNode<'txn, 'db, T> {
@@ -137,24 +137,6 @@ impl<'txn, 'db, T: KeyValueStore> ExecutorNode<'txn, 'db, T> {
                 ctx.catalog().drop_table(&drop_table.name)?;
                 Self::Values(Values::one_empty_row())
             }
-            PlanNode::Insert(insert) => Self::Insert(Insert {
-                txn: ctx.transaction(),
-                source: Box::new(Self::new(ctx, *insert.source)?),
-                table: insert.table,
-                primary_key_column: insert.primary_key_column,
-            }),
-            PlanNode::Update(update) => Self::Update(Update {
-                txn: ctx.transaction(),
-                source: Box::new(Self::new(ctx, *update.source)?),
-                table: update.table,
-                primary_key_column: update.primary_key_column,
-            }),
-            PlanNode::Delete(delete) => Self::Delete(Delete {
-                txn: ctx.transaction(),
-                source: Box::new(Self::new(ctx, *delete.source)?),
-                table: delete.table,
-                primary_key_column: delete.primary_key_column,
-            }),
             PlanNode::Values(planner::Values { rows }) => Self::Values(Values::new(rows)),
             PlanNode::Scan(planner::Scan::SeqScan { table, columns }) => {
                 Self::SeqScan(SeqScan::new(ctx.transaction(), table, columns))
@@ -179,6 +161,24 @@ impl<'txn, 'db, T: KeyValueStore> ExecutorNode<'txn, 'db, T> {
                 limit,
                 offset,
             }) => Self::Limit(Limit::new(Self::new(ctx, *source)?, limit, offset)?),
+            PlanNode::Insert(insert) => Self::Insert(Insert {
+                txn: ctx.transaction(),
+                source: Box::new(Self::new(ctx, *insert.source)?),
+                table: insert.table,
+                primary_key_column: insert.primary_key_column,
+            }),
+            PlanNode::Update(update) => Self::Update(Update {
+                txn: ctx.transaction(),
+                source: Box::new(Self::new(ctx, *update.source)?),
+                table: update.table,
+                primary_key_column: update.primary_key_column,
+            }),
+            PlanNode::Delete(delete) => Self::Delete(Delete {
+                txn: ctx.transaction(),
+                source: Box::new(Self::new(ctx, *delete.source)?),
+                table: delete.table,
+                primary_key_column: delete.primary_key_column,
+            }),
         };
         Ok(executor)
     }
@@ -187,6 +187,7 @@ impl<'txn, 'db, T: KeyValueStore> ExecutorNode<'txn, 'db, T> {
 impl<T: KeyValueStore> Node for ExecutorNode<'_, '_, T> {
     fn next_row(&mut self) -> Output {
         match self {
+            Self::Values(e) => e.next_row(),
             Self::SeqScan(e) => e.next_row(),
             Self::FunctionScan(e) => e.next_row(),
             Self::Project(e) => e.next_row(),
@@ -196,7 +197,6 @@ impl<T: KeyValueStore> Node for ExecutorNode<'_, '_, T> {
             Self::Insert(e) => e.next_row(),
             Self::Update(e) => e.next_row(),
             Self::Delete(e) => e.next_row(),
-            Self::Values(e) => e.next_row(),
         }
     }
 }
@@ -210,60 +210,6 @@ impl<T: KeyValueStore> Iterator for ExecutorNode<'_, '_, T> {
             Err(NodeError::Error(e)) => Some(Err(e)),
             Err(NodeError::EndOfRows) => None,
         }
-    }
-}
-
-struct Insert<'txn, 'db, T: KeyValueStore> {
-    txn: &'txn Transaction<'db, T>,
-    source: Box<ExecutorNode<'txn, 'db, T>>,
-    table: TableId,
-    primary_key_column: ColumnIndex,
-}
-
-impl<T: KeyValueStore> Node for Insert<'_, '_, T> {
-    fn next_row(&mut self) -> Output {
-        for row in self.source.by_ref() {
-            let row = row?;
-            let primary_key = &row[self.primary_key_column.0];
-            self.txn.insert(self.table, primary_key, &row)?;
-        }
-        Err(NodeError::EndOfRows)
-    }
-}
-
-struct Update<'txn, 'db, T: KeyValueStore> {
-    txn: &'txn Transaction<'db, T>,
-    source: Box<ExecutorNode<'txn, 'db, T>>,
-    table: TableId,
-    primary_key_column: ColumnIndex,
-}
-
-impl<T: KeyValueStore> Node for Update<'_, '_, T> {
-    fn next_row(&mut self) -> Output {
-        for row in self.source.by_ref() {
-            let row = row?;
-            let primary_key = &row[self.primary_key_column.0];
-            self.txn.update(self.table, primary_key, &row)?;
-        }
-        Err(NodeError::EndOfRows)
-    }
-}
-
-struct Delete<'txn, 'db, T: KeyValueStore> {
-    txn: &'txn Transaction<'db, T>,
-    source: Box<ExecutorNode<'txn, 'db, T>>,
-    table: TableId,
-    primary_key_column: ColumnIndex,
-}
-
-impl<T: KeyValueStore> Node for Delete<'_, '_, T> {
-    fn next_row(&mut self) -> Output {
-        for row in self.source.by_ref() {
-            let row = row?;
-            let primary_key = &row[self.primary_key_column.0];
-            self.txn.delete(self.table, primary_key);
-        }
-        Err(NodeError::EndOfRows)
     }
 }
 
@@ -496,6 +442,60 @@ impl<T: KeyValueStore> Node for Limit<'_, '_, T> {
                 None => return Ok(row),
             }
         }
+    }
+}
+
+struct Insert<'txn, 'db, T: KeyValueStore> {
+    txn: &'txn Transaction<'db, T>,
+    source: Box<ExecutorNode<'txn, 'db, T>>,
+    table: TableId,
+    primary_key_column: ColumnIndex,
+}
+
+impl<T: KeyValueStore> Node for Insert<'_, '_, T> {
+    fn next_row(&mut self) -> Output {
+        for row in self.source.by_ref() {
+            let row = row?;
+            let primary_key = &row[self.primary_key_column.0];
+            self.txn.insert(self.table, primary_key, &row)?;
+        }
+        Err(NodeError::EndOfRows)
+    }
+}
+
+struct Update<'txn, 'db, T: KeyValueStore> {
+    txn: &'txn Transaction<'db, T>,
+    source: Box<ExecutorNode<'txn, 'db, T>>,
+    table: TableId,
+    primary_key_column: ColumnIndex,
+}
+
+impl<T: KeyValueStore> Node for Update<'_, '_, T> {
+    fn next_row(&mut self) -> Output {
+        for row in self.source.by_ref() {
+            let row = row?;
+            let primary_key = &row[self.primary_key_column.0];
+            self.txn.update(self.table, primary_key, &row)?;
+        }
+        Err(NodeError::EndOfRows)
+    }
+}
+
+struct Delete<'txn, 'db, T: KeyValueStore> {
+    txn: &'txn Transaction<'db, T>,
+    source: Box<ExecutorNode<'txn, 'db, T>>,
+    table: TableId,
+    primary_key_column: ColumnIndex,
+}
+
+impl<T: KeyValueStore> Node for Delete<'_, '_, T> {
+    fn next_row(&mut self) -> Output {
+        for row in self.source.by_ref() {
+            let row = row?;
+            let primary_key = &row[self.primary_key_column.0];
+            self.txn.delete(self.table, primary_key);
+        }
+        Err(NodeError::EndOfRows)
     }
 }
 

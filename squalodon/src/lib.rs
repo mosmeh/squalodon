@@ -1,5 +1,6 @@
 pub mod storage;
 
+mod builtin;
 mod catalog;
 mod connection;
 mod executor;

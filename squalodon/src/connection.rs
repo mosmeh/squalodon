@@ -1,6 +1,6 @@
 use crate::{
     catalog::{Catalog, CatalogRef},
-    executor::{Executor, ExecutorResult},
+    executor::Executor,
     parser::{Parser, ParserResult, Statement, TransactionControl},
     planner::{plan, TypedPlanNode},
     rows::{Column, Row, Rows},
@@ -114,8 +114,8 @@ fn execute_plan<T: KeyValueStore>(
     ctx: &QueryContext<'_, '_, T>,
     plan: TypedPlanNode<T>,
 ) -> Result<Rows> {
-    let columns: Vec<_> = plan
-        .columns()
+    let TypedPlanNode { node, columns } = plan;
+    let columns: Vec<_> = columns
         .iter()
         .map(|column| {
             Column {
@@ -124,15 +124,18 @@ fn execute_plan<T: KeyValueStore>(
             }
         })
         .collect();
-    let num_columns = plan.columns().len();
-    let rows = Executor::new(ctx, plan.into_node())?
-        .map(|columns| {
-            columns.map(|columns| {
-                assert_eq!(columns.len(), num_columns);
-                Row { columns }
-            })
-        })
-        .collect::<ExecutorResult<Vec<_>>>()?;
+    let executor = Executor::new(ctx, node)?;
+    let mut rows = Vec::new();
+    for row in executor {
+        let row = row?;
+        assert_eq!(row.len(), columns.len());
+        for (value, column) in row.iter().zip(&columns) {
+            if let Some(ty) = value.ty() {
+                assert_eq!(column.ty, ty);
+            }
+        }
+        rows.push(Row { columns: row });
+    }
     Ok(Rows {
         iter: rows.into_iter(),
         columns,

@@ -1,4 +1,5 @@
 use crate::{
+    builtin,
     connection::QueryContext,
     executor::ExecutorResult,
     planner,
@@ -117,7 +118,7 @@ impl<T: KeyValueStore> Catalog<T> {
 
         Ok(Self {
             next_table_id: (max_table_id + 1).into(),
-            table_functions: HashMap::new(),
+            table_functions: builtin::load_table_functions().collect(),
         })
     }
 
@@ -135,6 +136,29 @@ pub struct CatalogRef<'txn, 'db, T: KeyValueStore + 'db> {
 }
 
 impl<'txn, 'db, T: KeyValueStore> CatalogRef<'txn, 'db, T> {
+    pub fn table(&self, name: &str) -> CatalogResult<Table> {
+        let mut key = TableId::CATALOG.serialize().to_vec();
+        key.extend_from_slice(name.as_bytes());
+        match self.txn.get(&key) {
+            Some(data) => Ok(bincode::deserialize(&data)?),
+            None => Err(CatalogError::UnknownEntry(
+                CatalogEntryKind::Table,
+                name.to_owned(),
+            )),
+        }
+    }
+
+    pub fn tables(&self) -> Box<dyn Iterator<Item = CatalogResult<Table>> + '_> {
+        let start = TableId::CATALOG.serialize();
+        let mut end = start;
+        end[end.len() - 1] += 1;
+        let iter = self
+            .txn
+            .scan(start, end)
+            .map(|(_, v)| bincode::deserialize(&v).map_err(Into::into));
+        Box::new(iter)
+    }
+
     pub fn create_table(&self, name: &str, columns: &[Column]) -> CatalogResult<TableId> {
         let id = self
             .catalog
@@ -165,18 +189,6 @@ impl<'txn, 'db, T: KeyValueStore> CatalogRef<'txn, 'db, T> {
             self.txn.remove(key).unwrap();
         }
         Ok(())
-    }
-
-    pub fn table(&self, name: &str) -> CatalogResult<Table> {
-        let mut key = TableId::CATALOG.serialize().to_vec();
-        key.extend_from_slice(name.as_bytes());
-        match self.txn.get(&key) {
-            Some(data) => Ok(bincode::deserialize(&data)?),
-            None => Err(CatalogError::UnknownEntry(
-                CatalogEntryKind::Table,
-                name.to_owned(),
-            )),
-        }
     }
 
     pub fn table_function(&self, name: &str) -> CatalogResult<TableFunction<T>> {

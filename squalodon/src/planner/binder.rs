@@ -21,25 +21,32 @@ impl<'txn, 'db, T: KeyValueStore> Binder<'txn, 'db, T> {
     pub fn bind(&self, statement: parser::Statement) -> PlannerResult<TypedPlanNode<T>> {
         match statement {
             parser::Statement::Explain(statement) => self.bind_explain(*statement),
+            parser::Statement::Transaction(_) => unreachable!("handled before binding"),
+            parser::Statement::ShowTables => {
+                self.rewrite_to("SELECT * FROM squalodon_tables() ORDER BY name")
+            }
             parser::Statement::CreateTable(create_table) => self.bind_create_table(create_table),
             parser::Statement::DropTable(drop_table) => self.bind_drop_table(drop_table),
-            parser::Statement::Insert(insert) => self.bind_insert(insert),
             parser::Statement::Values(values) => bind_values(values),
             parser::Statement::Select(select) => self.bind_select(select),
+            parser::Statement::Insert(insert) => self.bind_insert(insert),
             parser::Statement::Update(update) => self.bind_update(update),
             parser::Statement::Delete(delete) => self.bind_delete(delete),
-            parser::Statement::Transaction(_) => unreachable!(),
         }
+    }
+
+    fn rewrite_to(&self, sql: &str) -> PlannerResult<TypedPlanNode<T>> {
+        let mut parser = parser::Parser::new(sql);
+        let statement = parser.next().unwrap().unwrap();
+        assert!(parser.next().is_none());
+        self.bind(statement)
     }
 
     fn bind_explain(&self, statement: parser::Statement) -> PlannerResult<TypedPlanNode<T>> {
         let plan = self.bind(statement)?;
         Ok(TypedPlanNode {
             node: PlanNode::Explain(Box::new(plan.node)),
-            columns: vec![planner::Column {
-                name: "plan".to_owned(),
-                ty: Type::Text.into(),
-            }],
+            columns: vec![planner::Column::new("plan", Type::Text)],
         })
     }
 
@@ -80,6 +87,20 @@ impl<'txn, 'db, T: KeyValueStore> Binder<'txn, 'db, T> {
         }
     }
 
+    fn bind_select(&self, select: parser::Select) -> PlannerResult<TypedPlanNode<T>> {
+        let mut node = match select.from {
+            Some(table_ref) => self.bind_table_ref(table_ref)?,
+            None => TypedPlanNode::empty_source(),
+        };
+        if let Some(where_clause) = select.where_clause {
+            node = bind_where_clause(node, where_clause)?;
+        }
+        let node = bind_order_by(node, select.order_by)?;
+        let node = bind_limit(node, select.limit, select.offset)?;
+        let node = bind_projections(node, select.projections)?;
+        Ok(node)
+    }
+
     fn bind_insert(&self, insert: parser::Insert) -> PlannerResult<TypedPlanNode<T>> {
         let table = self.ctx.catalog().table(&insert.table_name)?;
         let TypedPlanNode { node, columns } = bind_values(insert.values)?;
@@ -106,20 +127,6 @@ impl<'txn, 'db, T: KeyValueStore> Binder<'txn, 'db, T> {
             table: table.id,
             primary_key_column: primary_key_column.expect("table has no primary key"),
         })))
-    }
-
-    fn bind_select(&self, select: parser::Select) -> PlannerResult<TypedPlanNode<T>> {
-        let mut node = match select.from {
-            Some(table_ref) => self.bind_table_ref(table_ref)?,
-            None => TypedPlanNode::empty_source(),
-        };
-        if let Some(where_clause) = select.where_clause {
-            node = bind_where_clause(node, where_clause)?;
-        }
-        let node = bind_order_by(node, select.order_by)?;
-        let node = bind_limit(node, select.limit, select.offset)?;
-        let node = bind_projections(node, select.projections)?;
-        Ok(node)
     }
 
     fn bind_update(&self, update: parser::Update) -> PlannerResult<TypedPlanNode<T>> {

@@ -49,19 +49,11 @@ impl std::fmt::Display for ColumnIndex {
 }
 
 pub struct TypedPlanNode<T: KeyValueStore> {
-    node: PlanNode<T>,
-    columns: Vec<Column>,
+    pub node: PlanNode<T>,
+    pub columns: Vec<Column>,
 }
 
 impl<T: KeyValueStore> TypedPlanNode<T> {
-    pub fn into_node(self) -> PlanNode<T> {
-        self.node
-    }
-
-    pub fn columns(&self) -> &[Column] {
-        &self.columns
-    }
-
     fn empty_source() -> Self {
         Self {
             node: PlanNode::Values(Values::one_empty_row()),
@@ -103,6 +95,15 @@ pub struct Column {
     pub ty: Option<Type>,
 }
 
+impl Column {
+    pub fn new(name: &str, ty: Type) -> Self {
+        Self {
+            name: name.to_owned(),
+            ty: Some(ty),
+        }
+    }
+}
+
 impl From<catalog::Column> for Column {
     fn from(c: catalog::Column) -> Self {
         Self {
@@ -141,15 +142,15 @@ pub enum PlanNode<T: KeyValueStore> {
     Explain(Box<PlanNode<T>>),
     CreateTable(CreateTable),
     DropTable(DropTable),
-    Insert(Insert<T>),
-    Update(Update<T>),
-    Delete(Delete<T>),
     Values(Values),
     Scan(Scan<T>),
     Project(Project<T>),
     Filter(Filter<T>),
     Sort(Sort<T>),
     Limit(Limit<T>),
+    Insert(Insert<T>),
+    Update(Update<T>),
+    Delete(Delete<T>),
 }
 
 impl<T: KeyValueStore> PlanNode<T> {
@@ -167,15 +168,15 @@ impl<T: KeyValueStore> Explain for PlanNode<T> {
             Self::Explain(n) => n.visit(visitor),
             Self::CreateTable(n) => n.visit(visitor),
             Self::DropTable(n) => n.visit(visitor),
-            Self::Insert(n) => n.visit(visitor),
-            Self::Update(n) => n.visit(visitor),
-            Self::Delete(n) => n.visit(visitor),
             Self::Values(n) => n.visit(visitor),
             Self::Scan(n) => n.visit(visitor),
             Self::Project(n) => n.visit(visitor),
             Self::Filter(n) => n.visit(visitor),
             Self::Sort(n) => n.visit(visitor),
             Self::Limit(n) => n.visit(visitor),
+            Self::Insert(n) => n.visit(visitor),
+            Self::Update(n) => n.visit(visitor),
+            Self::Delete(n) => n.visit(visitor),
         }
         visitor.depth -= 1;
     }
@@ -202,75 +203,6 @@ impl Explain for DropTable {
     }
 }
 
-pub struct Insert<T: KeyValueStore> {
-    pub source: Box<PlanNode<T>>,
-    pub table: TableId,
-    pub primary_key_column: ColumnIndex,
-}
-
-impl<T: KeyValueStore> Explain for Insert<T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Insert table={:?}", self.table);
-        self.source.visit(visitor);
-    }
-}
-
-pub struct Update<T: KeyValueStore> {
-    pub source: Box<PlanNode<T>>,
-    pub table: TableId,
-    pub primary_key_column: ColumnIndex,
-}
-
-impl<T: KeyValueStore> Explain for Update<T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Update table={:?}", self.table);
-        self.source.visit(visitor);
-    }
-}
-
-pub struct Delete<T: KeyValueStore> {
-    pub source: Box<PlanNode<T>>,
-    pub table: TableId,
-    pub primary_key_column: ColumnIndex,
-}
-
-impl<T: KeyValueStore> Explain for Delete<T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Delete table={:?}", self.table);
-        self.source.visit(visitor);
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum Expression {
-    Constact(Value),
-    ColumnRef {
-        column: ColumnIndex,
-    },
-    UnaryOp {
-        op: UnaryOp,
-        expr: Box<Expression>,
-    },
-    BinaryOp {
-        op: BinaryOp,
-        lhs: Box<Expression>,
-        rhs: Box<Expression>,
-    },
-}
-
-impl std::fmt::Display for Expression {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Constact(value) => write!(f, "{value:?}"),
-            Self::ColumnRef { column } => write!(f, "{column}"),
-            Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
-            Self::BinaryOp { op, lhs, rhs } => {
-                write!(f, "({lhs} {op} {rhs})")
-            }
-        }
-    }
-}
-
 pub struct Values {
     pub rows: Vec<Vec<Expression>>,
 }
@@ -289,7 +221,7 @@ impl Explain for Values {
     fn visit(&self, visitor: &mut ExplainVisitor) {
         let mut f = "Values ".to_owned();
         for (i, row) in self.rows.iter().enumerate() {
-            f.push_str(if i == 0 { "[" } else { ", [" });
+            f.push_str(if i == 0 { "(" } else { ", (" });
             for (j, value) in row.iter().enumerate() {
                 if j == 0 {
                     write!(&mut f, "{value:?}").unwrap();
@@ -297,7 +229,7 @@ impl Explain for Values {
                     write!(&mut f, ", {value:?}").unwrap();
                 }
             }
-            f.push(']');
+            f.push(')');
         }
         visitor.write_str(&f);
     }
@@ -420,5 +352,74 @@ pub struct OrderBy {
 impl std::fmt::Display for OrderBy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} {} {}", self.expr, self.order, self.null_order)
+    }
+}
+
+pub struct Insert<T: KeyValueStore> {
+    pub source: Box<PlanNode<T>>,
+    pub table: TableId,
+    pub primary_key_column: ColumnIndex,
+}
+
+impl<T: KeyValueStore> Explain for Insert<T> {
+    fn visit(&self, visitor: &mut ExplainVisitor) {
+        write!(visitor, "Insert table={:?}", self.table);
+        self.source.visit(visitor);
+    }
+}
+
+pub struct Update<T: KeyValueStore> {
+    pub source: Box<PlanNode<T>>,
+    pub table: TableId,
+    pub primary_key_column: ColumnIndex,
+}
+
+impl<T: KeyValueStore> Explain for Update<T> {
+    fn visit(&self, visitor: &mut ExplainVisitor) {
+        write!(visitor, "Update table={:?}", self.table);
+        self.source.visit(visitor);
+    }
+}
+
+pub struct Delete<T: KeyValueStore> {
+    pub source: Box<PlanNode<T>>,
+    pub table: TableId,
+    pub primary_key_column: ColumnIndex,
+}
+
+impl<T: KeyValueStore> Explain for Delete<T> {
+    fn visit(&self, visitor: &mut ExplainVisitor) {
+        write!(visitor, "Delete table={:?}", self.table);
+        self.source.visit(visitor);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Expression {
+    Constact(Value),
+    ColumnRef {
+        column: ColumnIndex,
+    },
+    UnaryOp {
+        op: UnaryOp,
+        expr: Box<Expression>,
+    },
+    BinaryOp {
+        op: BinaryOp,
+        lhs: Box<Expression>,
+        rhs: Box<Expression>,
+    },
+}
+
+impl std::fmt::Display for Expression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Constact(value) => write!(f, "{value:?}"),
+            Self::ColumnRef { column } => write!(f, "{column}"),
+            Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
+            Self::BinaryOp { op, lhs, rhs } => {
+                write!(f, "({lhs} {op} {rhs})")
+            }
+        }
     }
 }

@@ -114,7 +114,9 @@ keywords! {
     Rollback
     Select
     Set
+    Show
     Table
+    Tables
     Text
     Transaction
     True
