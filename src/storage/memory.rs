@@ -6,6 +6,7 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
+/// In-memory storage engine.
 #[derive(Default)]
 pub struct Memory {
     data: SkipMap<Vec<u8>, Vec<u8>>,

@@ -1,6 +1,8 @@
+mod blackhole;
 mod memory;
 mod schema;
 
+pub use blackhole::Blackhole;
 pub use memory::Memory;
 pub(crate) use schema::{Column, Table, TableId};
 
