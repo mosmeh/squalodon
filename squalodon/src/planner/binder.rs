@@ -5,7 +5,7 @@ use crate::{
     parser::{self, BinaryOp, UnaryOp},
     planner,
     rows::ColumnIndex,
-    storage::{Blackhole, Table},
+    storage::Table,
     types::Type,
     CatalogError, Storage,
 };
@@ -245,8 +245,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         let table_function = catalog.table_function(&name)?;
         let mut exprs = Vec::with_capacity(args.len());
         for (expr, column) in args.into_iter().zip(table_function.result_columns.iter()) {
-            let expr = bind_expr(&TypedPlanNode::<Blackhole>::empty_source(), expr)?
-                .expect_type(column.ty)?;
+            let expr = bind_expr(&TypedPlanNode::blackhole(), expr)?.expect_type(column.ty)?;
             exprs.push(expr);
         }
         let node = PlanNode::Project(planner::Project {
@@ -279,8 +278,7 @@ fn bind_values<'txn, 'db, T: Storage>(
         columns = Vec::with_capacity(row.len());
         let row = row.into_iter().enumerate();
         for (i, expr) in row {
-            let TypedExpression { expr, ty } =
-                bind_expr(&TypedPlanNode::<Blackhole>::empty_source(), expr)?;
+            let TypedExpression { expr, ty } = bind_expr(&TypedPlanNode::blackhole(), expr)?;
             exprs.push(expr);
             columns.push(planner::Column {
                 name: format!("column{}", i + 1),
@@ -293,8 +291,7 @@ fn bind_values<'txn, 'db, T: Storage>(
         assert_eq!(row.len(), columns.len());
         let mut exprs = Vec::with_capacity(row.len());
         for (expr, column) in row.into_iter().zip(columns.iter()) {
-            let expr = bind_expr(&TypedPlanNode::<Blackhole>::empty_source(), expr)?
-                .expect_type(column.ty)?;
+            let expr = bind_expr(&TypedPlanNode::blackhole(), expr)?.expect_type(column.ty)?;
             exprs.push(expr);
         }
         rows.push(exprs);
@@ -393,14 +390,11 @@ fn bind_limit<'txn, 'db, T: Storage>(
     limit: Option<parser::Expression>,
     offset: Option<parser::Expression>,
 ) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
-    fn bind<T: Storage>(
-        source: &TypedPlanNode<T>,
-        expr: Option<parser::Expression>,
-    ) -> PlannerResult<Option<planner::Expression>> {
+    fn bind(expr: Option<parser::Expression>) -> PlannerResult<Option<planner::Expression>> {
         let Some(expr) = expr else {
             return Ok(None);
         };
-        let expr = bind_expr(source, expr)?.expect_type(Type::Integer)?;
+        let expr = bind_expr(&TypedPlanNode::blackhole(), expr)?.expect_type(Type::Integer)?;
         Ok(Some(expr))
     }
 
@@ -408,8 +402,8 @@ fn bind_limit<'txn, 'db, T: Storage>(
         return Ok(source);
     }
 
-    let limit = bind(&source, limit)?;
-    let offset = bind(&source, offset)?;
+    let limit = bind(limit)?;
+    let offset = bind(offset)?;
     Ok(source.inherit_schema(|source| {
         PlanNode::Limit(planner::Limit {
             source: Box::new(source),

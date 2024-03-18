@@ -5,7 +5,7 @@ use crate::{
     connection::QueryContext,
     parser::{self, BinaryOp, NullOrder, Order, UnaryOp},
     rows::ColumnIndex,
-    storage::Table,
+    storage::{Blackhole, Table},
     types::{Type, Value},
     CatalogError, Storage, StorageError,
 };
@@ -85,6 +85,12 @@ impl<'txn, 'db, T: Storage> TypedPlanNode<'txn, 'db, T> {
             .find(|(_, column)| column.name == name)
             .map(|(i, column)| (ColumnIndex(i), column))
             .ok_or(PlannerError::UnknownColumn(name.to_owned()))
+    }
+}
+
+impl TypedPlanNode<'_, '_, Blackhole> {
+    fn blackhole() -> Self {
+        Self::empty_source()
     }
 }
 
