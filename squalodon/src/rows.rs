@@ -1,4 +1,6 @@
 use crate::{Error, Result, TryFromValueError, Type, Value};
+use serde::{Deserialize, Serialize};
+use std::ops::Index;
 
 #[derive(Debug, Clone)]
 pub struct Column {
@@ -13,6 +15,56 @@ impl Column {
 
     pub fn ty(&self) -> Type {
         self.ty
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ColumnIndex(pub usize);
+
+impl std::fmt::Display for ColumnIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#{}", self.0)
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Row(pub(crate) Vec<Value>);
+
+impl Row {
+    pub(crate) fn empty() -> Self {
+        Self(Vec::new())
+    }
+
+    pub fn get<T>(&self, column: usize) -> Result<T>
+    where
+        T: TryFrom<Value, Error = TryFromValueError>,
+    {
+        self.0
+            .get(column)
+            .ok_or(Error::ColumnIndexOutOfRange)?
+            .clone()
+            .try_into()
+            .map_err(Into::into)
+    }
+
+    pub fn columns(&self) -> &[Value] {
+        &self.0
+    }
+}
+
+impl Index<ColumnIndex> for Row {
+    type Output = Value;
+
+    fn index(&self, index: ColumnIndex) -> &Self::Output {
+        &self.0[index.0]
+    }
+}
+
+impl Index<&ColumnIndex> for Row {
+    type Output = Value;
+
+    fn index(&self, index: &ColumnIndex) -> &Self::Output {
+        &self.0[index.0]
     }
 }
 
@@ -39,27 +91,5 @@ impl Iterator for Rows {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.iter.next()
-    }
-}
-
-pub struct Row {
-    pub(crate) columns: Vec<Value>,
-}
-
-impl Row {
-    pub fn get<T>(&self, column: usize) -> Result<T>
-    where
-        T: TryFrom<Value, Error = TryFromValueError>,
-    {
-        self.columns
-            .get(column)
-            .ok_or(Error::ColumnIndexOutOfRange)?
-            .clone()
-            .try_into()
-            .map_err(Into::into)
-    }
-
-    pub fn columns(&self) -> &[Value] {
-        &self.columns
     }
 }

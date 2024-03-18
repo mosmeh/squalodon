@@ -4,11 +4,11 @@ use crate::{
     catalog::{self, TableFnPtr},
     connection::QueryContext,
     parser::{self, BinaryOp, NullOrder, Order, UnaryOp},
+    rows::ColumnIndex,
     storage::Table,
     types::{Type, Value},
     CatalogError, Storage, StorageError,
 };
-use serde::{Deserialize, Serialize};
 use std::fmt::Write;
 
 #[derive(Debug, thiserror::Error)]
@@ -45,15 +45,6 @@ pub fn plan<'txn, 'db, T: Storage>(
     statement: parser::Statement,
 ) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
     binder::Binder::new(ctx).bind(statement)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ColumnIndex(pub usize);
-
-impl std::fmt::Display for ColumnIndex {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "#{}", self.0)
-    }
 }
 
 pub struct TypedPlanNode<'txn, 'db, T: Storage> {

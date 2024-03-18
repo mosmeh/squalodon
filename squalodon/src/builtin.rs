@@ -2,7 +2,7 @@ use crate::{
     catalog::{Constraint, TableFunction},
     planner::Column,
     storage::Storage,
-    Type,
+    Row, Type,
 };
 
 pub fn load_table_functions<T: Storage>() -> impl Iterator<Item = (String, TableFunction<T>)> {
@@ -14,7 +14,7 @@ pub fn load_table_functions<T: Storage>() -> impl Iterator<Item = (String, Table
                     let mut rows = Vec::new();
                     for table in ctx.catalog().tables() {
                         let table = table?;
-                        rows.push(vec![table.name().into()]);
+                        rows.push(Row(vec![table.name().into()]));
                     }
                     Ok(Box::new(rows.into_iter()))
                 },
@@ -48,13 +48,13 @@ pub fn load_table_functions<T: Storage>() -> impl Iterator<Item = (String, Table
                             }
                         }
                         for (column, constraint) in table.columns().iter().zip(constraints) {
-                            rows.push(vec![
+                            rows.push(Row(vec![
                                 table.name().into(),
                                 column.name.clone().into(),
                                 column.ty.to_string().into(),
                                 constraint.is_nullable.into(),
                                 constraint.is_primary_key.into(),
-                            ]);
+                            ]));
                         }
                     }
                     Ok(Box::new(rows.into_iter()))

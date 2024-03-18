@@ -1,9 +1,10 @@
-use super::{ColumnIndex, PlanNode, PlannerError, PlannerResult, TypedPlanNode, Values};
+use super::{PlanNode, PlannerError, PlannerResult, TypedPlanNode, Values};
 use crate::{
     catalog,
     connection::QueryContext,
     parser::{self, BinaryOp, UnaryOp},
     planner,
+    rows::ColumnIndex,
     storage::{Blackhole, Table},
     types::Type,
     CatalogError, Storage,

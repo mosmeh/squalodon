@@ -5,7 +5,7 @@ use crate::{
     parser::{BinaryOp, UnaryOp},
     planner::{self, Expression, OrderBy, PlanNode},
     storage::{self, Table},
-    CatalogError, Storage, StorageError, Value,
+    CatalogError, Row, Storage, StorageError, Value,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -46,25 +46,25 @@ impl From<storage::StorageError> for NodeError {
     }
 }
 
-type Output = std::result::Result<Vec<Value>, NodeError>;
+type Output = std::result::Result<Row, NodeError>;
 
 trait IntoOutput {
     fn into_output(self) -> Output;
 }
 
-impl<E: Into<ExecutorError>> IntoOutput for std::result::Result<Vec<Value>, E> {
+impl<E: Into<ExecutorError>> IntoOutput for std::result::Result<Row, E> {
     fn into_output(self) -> Output {
         self.map_err(|e| NodeError::Error(e.into()))
     }
 }
 
-impl IntoOutput for Option<Vec<Value>> {
+impl IntoOutput for Option<Row> {
     fn into_output(self) -> Output {
         self.ok_or(NodeError::EndOfRows)
     }
 }
 
-impl<E: Into<ExecutorError>> IntoOutput for std::result::Result<Option<Vec<Value>>, E> {
+impl<E: Into<ExecutorError>> IntoOutput for std::result::Result<Option<Row>, E> {
     fn into_output(self) -> Output {
         match self {
             Ok(Some(row)) => Ok(row),
@@ -74,7 +74,7 @@ impl<E: Into<ExecutorError>> IntoOutput for std::result::Result<Option<Vec<Value
     }
 }
 
-impl<E: Into<ExecutorError>> IntoOutput for Option<std::result::Result<Vec<Value>, E>> {
+impl<E: Into<ExecutorError>> IntoOutput for Option<std::result::Result<Row, E>> {
     fn into_output(self) -> Output {
         match self {
             Some(Ok(row)) => Ok(row),
@@ -96,7 +96,7 @@ impl<'txn, 'db, T: Storage> Executor<'txn, 'db, T> {
 }
 
 impl<T: Storage> Iterator for Executor<'_, '_, T> {
-    type Item = ExecutorResult<Vec<Value>>;
+    type Item = ExecutorResult<Row>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.0.next_row() {
@@ -203,7 +203,7 @@ impl<T: Storage> Node for ExecutorNode<'_, '_, T> {
 }
 
 impl<T: Storage> Iterator for ExecutorNode<'_, '_, T> {
-    type Item = ExecutorResult<Vec<Value>>;
+    type Item = ExecutorResult<Row>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.next_row() {
@@ -237,17 +237,19 @@ impl Node for Values {
     fn next_row(&mut self) -> Output {
         self.iter
             .next()
-            .map(|row| {
-                row.into_iter()
-                    .map(|expr| expr.eval(&[]))
-                    .collect::<ExecutorResult<Vec<_>>>()
+            .map(|row| -> ExecutorResult<Row> {
+                let columns = row
+                    .into_iter()
+                    .map(|expr| expr.eval(&Row::empty()))
+                    .collect::<ExecutorResult<_>>()?;
+                Ok(Row(columns))
             })
             .into_output()
     }
 }
 
 struct SeqScan<'a> {
-    iter: Box<dyn Iterator<Item = storage::StorageResult<Vec<Value>>> + 'a>,
+    iter: Box<dyn Iterator<Item = storage::StorageResult<Row>> + 'a>,
 }
 
 impl<'a> SeqScan<'a> {
@@ -267,7 +269,7 @@ struct FunctionScan<'txn, 'db, T: Storage> {
     ctx: &'txn QueryContext<'txn, 'db, T>,
     source: Box<ExecutorNode<'txn, 'db, T>>,
     fn_ptr: TableFnPtr<T>,
-    rows: Option<Box<dyn Iterator<Item = Vec<Value>>>>,
+    rows: Option<Box<dyn Iterator<Item = Row>>>,
 }
 
 impl<'txn, 'db, T: Storage> FunctionScan<'txn, 'db, T> {
@@ -311,11 +313,12 @@ struct Project<'txn, 'db, T: Storage> {
 impl<T: Storage> Node for Project<'_, '_, T> {
     fn next_row(&mut self) -> Output {
         let row = self.source.next_row()?;
-        self.exprs
+        let columns = self
+            .exprs
             .iter()
             .map(|expr| expr.eval(&row))
-            .collect::<ExecutorResult<Vec<_>>>()
-            .into_output()
+            .collect::<ExecutorResult<_>>()?;
+        Ok(Row(columns))
     }
 }
 
@@ -343,7 +346,7 @@ enum Sort<'txn, 'db, T: Storage> {
         order_by: Vec<OrderBy>,
     },
     Output {
-        rows: Box<dyn Iterator<Item = Vec<Value>>>,
+        rows: Box<dyn Iterator<Item = Row>>,
     },
 }
 
@@ -401,7 +404,7 @@ impl<'txn, 'db, T: Storage> Limit<'txn, 'db, T> {
             let Some(expr) = expr else {
                 return Ok(None);
             };
-            let Value::Integer(i) = expr.eval(&[])? else {
+            let Value::Integer(i) = expr.eval(&Row::empty())? else {
                 return Err(ExecutorError::TypeError);
             };
             i.try_into()
@@ -480,19 +483,19 @@ impl<T: Storage> Node for Delete<'_, '_, T> {
 }
 
 impl Expression {
-    fn eval(&self, row: &[Value]) -> ExecutorResult<Value> {
+    fn eval(&self, row: &Row) -> ExecutorResult<Value> {
         let value = match self {
             Self::Constact(v) => v.clone(),
-            Self::ColumnRef { column } => row[column.0].clone(),
-            Self::UnaryOp { op, expr } => eval_unary_op(*op, expr)?,
+            Self::ColumnRef { column } => row[column].clone(),
+            Self::UnaryOp { op, expr } => eval_unary_op(*op, row, expr)?,
             Self::BinaryOp { op, lhs, rhs } => eval_binary_op(*op, row, lhs, rhs)?,
         };
         Ok(value)
     }
 }
 
-fn eval_unary_op(op: UnaryOp, expr: &Expression) -> ExecutorResult<Value> {
-    let expr = expr.eval(&[])?;
+fn eval_unary_op(op: UnaryOp, row: &Row, expr: &Expression) -> ExecutorResult<Value> {
+    let expr = expr.eval(row)?;
     match (op, expr) {
         (UnaryOp::Plus, Value::Integer(v)) => Ok(Value::Integer(v)),
         (UnaryOp::Plus, Value::Real(v)) => Ok(Value::Real(v)),
@@ -505,7 +508,7 @@ fn eval_unary_op(op: UnaryOp, expr: &Expression) -> ExecutorResult<Value> {
 
 fn eval_binary_op(
     op: BinaryOp,
-    row: &[Value],
+    row: &Row,
     lhs: &Expression,
     rhs: &Expression,
 ) -> ExecutorResult<Value> {

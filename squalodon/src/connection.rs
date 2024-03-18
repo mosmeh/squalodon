@@ -3,7 +3,7 @@ use crate::{
     executor::Executor,
     parser::{Parser, ParserResult, Statement, TransactionControl},
     planner::{plan, TypedPlanNode},
-    rows::{Column, Row, Rows},
+    rows::{Column, Rows},
     storage::{Storage, Transaction},
     Database, Result, Type,
 };
@@ -128,13 +128,13 @@ fn execute_plan<'txn, 'db, T: Storage>(
     let mut rows = Vec::new();
     for row in executor {
         let row = row?;
-        assert_eq!(row.len(), columns.len());
-        for (value, column) in row.iter().zip(&columns) {
+        assert_eq!(row.columns().len(), columns.len());
+        for (value, column) in row.columns().iter().zip(&columns) {
             if let Some(ty) = value.ty() {
                 assert_eq!(column.ty, ty);
             }
         }
-        rows.push(Row { columns: row });
+        rows.push(row);
     }
     Ok(Rows {
         iter: rows.into_iter(),

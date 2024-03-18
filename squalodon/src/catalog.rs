@@ -2,10 +2,11 @@ use crate::{
     builtin,
     connection::QueryContext,
     executor::ExecutorResult,
-    planner::{self, ColumnIndex},
+    planner,
+    rows::ColumnIndex,
     storage::{self, Storage, Transaction},
     types::Type,
-    Value,
+    Row,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::atomic::AtomicU64};
@@ -92,10 +93,8 @@ impl<T: Storage> Clone for TableFunction<T> {
     }
 }
 
-pub type TableFnPtr<T> = for<'a> fn(
-    &QueryContext<'_, 'a, T>,
-    &[Value],
-) -> ExecutorResult<Box<dyn Iterator<Item = Vec<Value>>>>;
+pub type TableFnPtr<T> =
+    for<'a> fn(&QueryContext<'_, 'a, T>, &Row) -> ExecutorResult<Box<dyn Iterator<Item = Row>>>;
 
 pub struct Catalog<T: Storage> {
     next_table_id: AtomicU64,

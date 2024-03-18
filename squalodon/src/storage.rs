@@ -7,7 +7,7 @@ pub use memory::Memory;
 use crate::{
     catalog::{self, Column, Constraint},
     memcomparable::MemcomparableSerde,
-    Value,
+    Row, Value,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -100,7 +100,7 @@ impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
         &self.def.constraints
     }
 
-    pub fn scan(&self) -> Box<dyn Iterator<Item = StorageResult<Vec<Value>>> + 'txn> {
+    pub fn scan(&self) -> Box<dyn Iterator<Item = StorageResult<Row>> + 'txn> {
         let start = self.def.id.serialize();
         let mut end = start;
         end[end.len() - 1] += 1;
@@ -111,7 +111,7 @@ impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
         Box::new(iter)
     }
 
-    pub fn insert(&self, row: &[Value]) -> StorageResult<()> {
+    pub fn insert(&self, row: &Row) -> StorageResult<()> {
         let key = self.prepare_for_write(row)?;
         if self.txn.insert(key, bincode::serialize(row)?) {
             Ok(())
@@ -120,7 +120,7 @@ impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
         }
     }
 
-    pub fn update(&self, row: &[Value]) -> StorageResult<()> {
+    pub fn update(&self, row: &Row) -> StorageResult<()> {
         let key = self.prepare_for_write(row)?;
         let removed = self.txn.remove(key.clone()).is_some();
         assert!(removed);
@@ -129,7 +129,7 @@ impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
         Ok(())
     }
 
-    pub fn delete(&self, row: &[Value]) -> StorageResult<()> {
+    pub fn delete(&self, row: &Row) -> StorageResult<()> {
         let key = self.prepare_for_write(row)?;
         let removed = self.txn.remove(key).is_some();
         assert!(removed);
@@ -139,9 +139,9 @@ impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
     /// Performs integrity checks before writing a row to the storage.
     ///
     /// Returns the serialized key if the row passes the checks.
-    fn prepare_for_write(&self, row: &[Value]) -> StorageResult<Vec<u8>> {
-        assert_eq!(row.len(), self.def.columns.len());
-        for (value, column) in row.iter().zip(&self.def.columns) {
+    fn prepare_for_write(&self, row: &Row) -> StorageResult<Vec<u8>> {
+        assert_eq!(row.columns().len(), self.def.columns.len());
+        for (value, column) in row.columns().iter().zip(&self.def.columns) {
             if let Some(ty) = value.ty() {
                 assert_eq!(ty, column.ty);
             }
@@ -155,12 +155,12 @@ impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
                     has_primary_key = true;
                     let serde = MemcomparableSerde::new();
                     for column in columns {
-                        serde.serialize_into(&row[column.0], &mut key);
+                        serde.serialize_into(&row[column], &mut key);
                     }
                     // Uniqueness of primary key is checked when inserting
                 }
                 Constraint::NotNull(column) => {
-                    if matches!(row[column.0], Value::Null) {
+                    if matches!(row[column], Value::Null) {
                         return Err(StorageError::NotNullConstraintViolation(
                             self.def.columns[column.0].name.clone(),
                         ));
