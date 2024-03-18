@@ -4,15 +4,22 @@ mod memory;
 pub use blackhole::Blackhole;
 pub use memory::Memory;
 
-use crate::{catalog::TableId, memcomparable::MemcomparableSerde, Value};
+use crate::{
+    catalog::{self, Column, Constraint},
+    memcomparable::MemcomparableSerde,
+    Value,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
     #[error("Unknown table {0:?}")]
     UnknownTable(String),
 
-    #[error("Duplicate key {0:?}")]
-    DuplicateKey(Value),
+    #[error("Duplicate key")]
+    DuplicateKey,
+
+    #[error("NOT NULL constraint violated at column {0:?}")]
+    NotNullConstraintViolation(String),
 
     #[error("Bincode error: {0}")]
     Bincode(#[from] bincode::Error),
@@ -20,33 +27,36 @@ pub enum StorageError {
 
 pub(crate) type StorageResult<T> = std::result::Result<T, StorageError>;
 
-pub trait KeyValueStore {
-    type Transaction<'a>: KeyValueTransaction
+pub trait Storage {
+    type Transaction<'a>: Transaction
     where
         Self: 'a;
 
     fn transaction(&self) -> Self::Transaction<'_>;
 }
 
-pub trait KeyValueTransaction {
+pub trait Transaction {
+    /// Returns the value associated with the key.
+    ///
     /// Returns None if the key does not exist.
     fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
 
-    /// Returns an iterator over the key-value pairs in the range [start, end).
+    /// Returns an iterator over the key-value pairs
+    /// in the key range `[start, end)`.
     fn scan<const N: usize>(
         &self,
         start: [u8; N],
         end: [u8; N],
     ) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)>;
 
+    /// Inserts a key-value pair only if the key does not exist.
+    ///
     /// Returns true if the key was inserted, false if it already existed.
     #[must_use]
     fn insert(&self, key: Vec<u8>, value: Vec<u8>) -> bool;
 
-    /// Returns true if the key was updated, false if it did not exist.
-    #[must_use]
-    fn update(&self, key: Vec<u8>, value: Vec<u8>) -> bool;
-
+    /// Removes a key from the storage.
+    ///
     /// Returns the value if the key was removed, None if it did not exist.
     #[must_use]
     fn remove(&self, key: Vec<u8>) -> Option<Vec<u8>>;
@@ -57,81 +67,108 @@ pub trait KeyValueTransaction {
     fn commit(self);
 }
 
-pub(crate) struct Storage<T: KeyValueStore> {
-    kvs: T,
+pub(crate) struct Table<'txn, 'db, T: Storage + 'db> {
+    txn: &'txn T::Transaction<'db>,
+    name: String,
+    def: catalog::Table,
 }
 
-impl<T: KeyValueStore> Storage<T> {
-    pub fn new(kvs: T) -> Self {
-        Self { kvs }
-    }
-
-    pub fn transaction(&self) -> Transaction<T> {
-        Transaction {
-            raw: self.kvs.transaction(),
+impl<T: Storage> Clone for Table<'_, '_, T> {
+    fn clone(&self) -> Self {
+        Self {
+            txn: self.txn,
+            name: self.name.clone(),
+            def: self.def.clone(),
         }
     }
 }
 
-pub(crate) struct Transaction<'a, T: KeyValueStore + 'a> {
-    raw: T::Transaction<'a>,
-}
-
-impl<'a, T: KeyValueStore> Transaction<'a, T> {
-    pub fn raw(&self) -> &T::Transaction<'a> {
-        &self.raw
+impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
+    pub fn new(txn: &'txn T::Transaction<'db>, name: String, def: catalog::Table) -> Self {
+        Self { txn, name, def }
     }
 
-    pub fn scan_table(
-        &self,
-        table: TableId,
-    ) -> Box<dyn Iterator<Item = StorageResult<Vec<Value>>> + '_> {
-        let start = table.serialize();
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn columns(&self) -> &[Column] {
+        &self.def.columns
+    }
+
+    pub fn constraints(&self) -> &[Constraint] {
+        &self.def.constraints
+    }
+
+    pub fn scan(&self) -> Box<dyn Iterator<Item = StorageResult<Vec<Value>>> + 'txn> {
+        let start = self.def.id.serialize();
         let mut end = start;
         end[end.len() - 1] += 1;
         let iter = self
-            .raw
+            .txn
             .scan(start, end)
             .map(|(_, v)| bincode::deserialize(&v).map_err(Into::into));
         Box::new(iter)
     }
 
-    pub fn insert(
-        &self,
-        table: TableId,
-        primary_key: &Value,
-        columns: &[Value],
-    ) -> StorageResult<()> {
-        let mut key = table.serialize().to_vec();
-        MemcomparableSerde::new().serialize_into(primary_key, &mut key);
-        if self.raw.insert(key, bincode::serialize(columns)?) {
+    pub fn insert(&self, row: &[Value]) -> StorageResult<()> {
+        let key = self.prepare_for_write(row)?;
+        if self.txn.insert(key, bincode::serialize(row)?) {
             Ok(())
         } else {
-            Err(StorageError::DuplicateKey(primary_key.clone()))
+            Err(StorageError::DuplicateKey)
         }
     }
 
-    pub fn update(
-        &self,
-        table: TableId,
-        primary_key: &Value,
-        columns: &[Value],
-    ) -> StorageResult<()> {
-        let mut key = table.serialize().to_vec();
-        MemcomparableSerde::new().serialize_into(primary_key, &mut key);
-        let updated = self.raw.update(key, bincode::serialize(columns)?);
+    pub fn update(&self, row: &[Value]) -> StorageResult<()> {
+        let key = self.prepare_for_write(row)?;
+        let removed = self.txn.remove(key.clone()).is_some();
+        assert!(removed);
+        let updated = self.txn.insert(key, bincode::serialize(row)?);
         assert!(updated);
         Ok(())
     }
 
-    pub fn delete(&self, table: TableId, primary_key: &Value) {
-        let mut key = table.serialize().to_vec();
-        MemcomparableSerde::new().serialize_into(primary_key, &mut key);
-        let deleted = self.raw.remove(key).is_some();
-        assert!(deleted);
+    pub fn delete(&self, row: &[Value]) -> StorageResult<()> {
+        let key = self.prepare_for_write(row)?;
+        let removed = self.txn.remove(key).is_some();
+        assert!(removed);
+        Ok(())
     }
 
-    pub fn commit(self) {
-        self.raw.commit();
+    /// Performs integrity checks before writing a row to the storage.
+    ///
+    /// Returns the serialized key if the row passes the checks.
+    fn prepare_for_write(&self, row: &[Value]) -> StorageResult<Vec<u8>> {
+        assert_eq!(row.len(), self.def.columns.len());
+        for (value, column) in row.iter().zip(&self.def.columns) {
+            if let Some(ty) = value.ty() {
+                assert_eq!(ty, column.ty);
+            }
+        }
+        let mut key = self.def.id.serialize().to_vec();
+        let mut has_primary_key = false;
+        for constraint in &self.def.constraints {
+            match constraint {
+                Constraint::PrimaryKey(columns) => {
+                    assert!(!has_primary_key);
+                    has_primary_key = true;
+                    let serde = MemcomparableSerde::new();
+                    for column in columns {
+                        serde.serialize_into(&row[column.0], &mut key);
+                    }
+                    // Uniqueness of primary key is checked when inserting
+                }
+                Constraint::NotNull(column) => {
+                    if matches!(row[column.0], Value::Null) {
+                        return Err(StorageError::NotNullConstraintViolation(
+                            self.def.columns[column.0].name.clone(),
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(has_primary_key);
+        Ok(key)
     }
 }

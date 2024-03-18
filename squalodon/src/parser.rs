@@ -49,6 +49,13 @@ pub struct CreateTable {
     pub name: String,
     pub if_not_exists: bool,
     pub columns: Vec<Column>,
+    pub constraints: Vec<Constraint>,
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub enum Constraint {
+    PrimaryKey(Vec<String>),
+    NotNull(String),
 }
 
 #[derive(Debug)]
@@ -392,12 +399,57 @@ impl<'a> Parser<'a> {
             .is_some();
         let name = self.expect_identifier()?;
         self.expect(Token::LeftParen)?;
-        let columns = self.parse_comma_separated(Self::parse_column_definition)?;
+        let mut columns = Vec::new();
+        let mut constraints = Vec::new();
+        loop {
+            match self.lexer.peek()? {
+                Token::Primary => {
+                    self.lexer.consume()?;
+                    self.expect(Token::Key)?;
+                    self.expect(Token::LeftParen)?;
+                    constraints.push(Constraint::PrimaryKey(
+                        self.parse_comma_separated(Self::expect_identifier)?,
+                    ));
+                    self.expect(Token::RightParen)?;
+                }
+                Token::Identifier(_) => {
+                    let name = self.expect_identifier()?;
+                    let ty = match self.lexer.consume()? {
+                        Token::Integer => Type::Integer,
+                        Token::Real => Type::Real,
+                        Token::Boolean => Type::Boolean,
+                        Token::Text => Type::Text,
+                        token => return Err(ParserError::UnexpectedToken(token)),
+                    };
+                    loop {
+                        match self.lexer.peek()? {
+                            Token::Primary => {
+                                self.lexer.consume()?;
+                                self.expect(Token::Key)?;
+                                constraints.push(Constraint::PrimaryKey(vec![name.clone()]));
+                            }
+                            Token::Not => {
+                                self.lexer.consume()?;
+                                self.expect(Token::Null)?;
+                                constraints.push(Constraint::NotNull(name.clone()));
+                            }
+                            _ => break,
+                        }
+                    }
+                    columns.push(Column { name, ty });
+                }
+                token => return Err(ParserError::UnexpectedToken(token.clone())),
+            }
+            if !self.lexer.consume_if_eq(Token::Comma)? {
+                break;
+            }
+        }
         self.expect(Token::RightParen)?;
         Ok(CreateTable {
             name,
             if_not_exists,
             columns,
+            constraints,
         })
     }
 
@@ -419,41 +471,6 @@ impl<'a> Parser<'a> {
             .is_some();
         let name = self.expect_identifier()?;
         Ok(DropTable { name, if_exists })
-    }
-
-    fn parse_column_definition(&mut self) -> ParserResult<Column> {
-        let name = self.expect_identifier()?;
-        let ty = match self.lexer.consume()? {
-            Token::Integer => Type::Integer,
-            Token::Real => Type::Real,
-            Token::Boolean => Type::Boolean,
-            Token::Text => Type::Text,
-            token => return Err(ParserError::UnexpectedToken(token)),
-        };
-        let mut is_primary_key = false;
-        let mut is_nullable = true;
-        loop {
-            match self.lexer.peek()? {
-                Token::Primary => {
-                    self.lexer.consume()?;
-                    self.expect(Token::Key)?;
-                    is_primary_key = true;
-                    is_nullable = false;
-                }
-                Token::Not => {
-                    self.lexer.consume()?;
-                    self.expect(Token::Null)?;
-                    is_nullable = false;
-                }
-                _ => break,
-            }
-        }
-        Ok(Column {
-            name,
-            ty,
-            is_primary_key,
-            is_nullable,
-        })
     }
 
     fn parse_values(&mut self) -> ParserResult<Values> {

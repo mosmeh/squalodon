@@ -20,7 +20,7 @@ pub(crate) use storage::StorageError;
 pub use types::{TryFromValueError, Type, Value};
 
 use catalog::Catalog;
-use storage::{KeyValueStore, Storage, Transaction};
+use storage::Storage;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -54,18 +54,15 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub struct Database<T: KeyValueStore> {
-    storage: Storage<T>,
+pub struct Database<T: Storage> {
+    storage: T,
     catalog: Catalog<T>,
 }
 
-impl<T: KeyValueStore> Database<T> {
+impl<T: Storage> Database<T> {
     pub fn new(storage: T) -> Result<Self> {
         let catalog = Catalog::load(&storage)?;
-        Ok(Self {
-            storage: Storage::new(storage),
-            catalog,
-        })
+        Ok(Self { storage, catalog })
     }
 
     pub fn connect(&self) -> Connection<T> {

@@ -1,5 +1,5 @@
 use rocksdb::{Direction, IteratorMode, TransactionDB};
-use squalodon::storage::{KeyValueStore, KeyValueTransaction};
+use squalodon::storage::Storage;
 
 pub struct RocksDB {
     db: TransactionDB,
@@ -11,7 +11,7 @@ impl RocksDB {
     }
 }
 
-impl KeyValueStore for RocksDB {
+impl Storage for RocksDB {
     type Transaction<'a> = Transaction<'a>;
 
     fn transaction(&self) -> Self::Transaction<'_> {
@@ -21,7 +21,7 @@ impl KeyValueStore for RocksDB {
 
 pub struct Transaction<'a>(Option<rocksdb::Transaction<'a, TransactionDB>>);
 
-impl KeyValueTransaction for Transaction<'_> {
+impl squalodon::storage::Transaction for Transaction<'_> {
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
         self.0.as_ref().unwrap().get(key).unwrap()
     }
@@ -43,15 +43,6 @@ impl KeyValueTransaction for Transaction<'_> {
     fn insert(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
         let inner = self.0.as_ref().unwrap();
         if inner.get(&key).unwrap().is_some() {
-            return false;
-        }
-        inner.put(key, value).unwrap();
-        true
-    }
-
-    fn update(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
-        let inner = self.0.as_ref().unwrap();
-        if inner.get(&key).unwrap().is_none() {
             return false;
         }
         inner.put(key, value).unwrap();

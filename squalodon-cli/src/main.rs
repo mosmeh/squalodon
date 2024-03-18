@@ -5,7 +5,7 @@ use anyhow::Result;
 use clap::Parser;
 use rustyline::error::ReadlineError;
 use squalodon::{
-    storage::{KeyValueStore, Memory},
+    storage::{Memory, Storage},
     Database, Rows,
 };
 use std::{io::Write, path::PathBuf};
@@ -35,7 +35,7 @@ fn main() -> Result<()> {
     }
 }
 
-fn run<T: KeyValueStore>(args: Args, storage: T) -> Result<()> {
+fn run<T: Storage>(args: Args, storage: T) -> Result<()> {
     let db = Database::new(storage)?;
     let mut conn = db.connect();
     if let Some(init) = args.init {

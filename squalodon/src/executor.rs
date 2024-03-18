@@ -1,11 +1,11 @@
 use crate::{
-    catalog::{TableFnPtr, TableId},
+    catalog::TableFnPtr,
     connection::QueryContext,
     memcomparable::MemcomparableSerde,
     parser::{BinaryOp, UnaryOp},
-    planner::{self, ColumnIndex, Expression, OrderBy, PlanNode},
-    storage::{self, Transaction},
-    CatalogError, KeyValueStore, StorageError, Value,
+    planner::{self, Expression, OrderBy, PlanNode},
+    storage::{self, Table},
+    CatalogError, Storage, StorageError, Value,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -84,15 +84,18 @@ impl<E: Into<ExecutorError>> IntoOutput for Option<std::result::Result<Vec<Value
     }
 }
 
-pub struct Executor<'txn, 'db, T: KeyValueStore>(ExecutorNode<'txn, 'db, T>);
+pub struct Executor<'txn, 'db, T: Storage>(ExecutorNode<'txn, 'db, T>);
 
-impl<'txn, 'db, T: KeyValueStore> Executor<'txn, 'db, T> {
-    pub fn new(ctx: &'txn QueryContext<'txn, 'db, T>, plan: PlanNode<T>) -> ExecutorResult<Self> {
+impl<'txn, 'db, T: Storage> Executor<'txn, 'db, T> {
+    pub fn new(
+        ctx: &'txn QueryContext<'txn, 'db, T>,
+        plan: PlanNode<'txn, 'db, T>,
+    ) -> ExecutorResult<Self> {
         ExecutorNode::new(ctx, plan).map(Self)
     }
 }
 
-impl<T: KeyValueStore> Iterator for Executor<'_, '_, T> {
+impl<T: Storage> Iterator for Executor<'_, '_, T> {
     type Item = ExecutorResult<Vec<Value>>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -104,7 +107,7 @@ impl<T: KeyValueStore> Iterator for Executor<'_, '_, T> {
     }
 }
 
-enum ExecutorNode<'txn, 'db, T: KeyValueStore> {
+enum ExecutorNode<'txn, 'db, T: Storage> {
     Values(Values),
     SeqScan(SeqScan<'txn>),
     FunctionScan(FunctionScan<'txn, 'db, T>),
@@ -117,8 +120,11 @@ enum ExecutorNode<'txn, 'db, T: KeyValueStore> {
     Delete(Delete<'txn, 'db, T>),
 }
 
-impl<'txn, 'db, T: KeyValueStore> ExecutorNode<'txn, 'db, T> {
-    fn new(ctx: &'txn QueryContext<'txn, 'db, T>, plan: PlanNode<T>) -> ExecutorResult<Self> {
+impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
+    fn new(
+        ctx: &'txn QueryContext<'txn, 'db, T>,
+        plan: PlanNode<'txn, 'db, T>,
+    ) -> ExecutorResult<Self> {
         let executor = match plan {
             PlanNode::Explain(plan) => {
                 let rows = plan
@@ -129,8 +135,11 @@ impl<'txn, 'db, T: KeyValueStore> ExecutorNode<'txn, 'db, T> {
                 Self::Values(Values::new(rows))
             }
             PlanNode::CreateTable(create_table) => {
-                ctx.catalog()
-                    .create_table(&create_table.name, &create_table.columns)?;
+                ctx.catalog().create_table(
+                    &create_table.name,
+                    &create_table.columns,
+                    &create_table.constraints,
+                )?;
                 Self::Values(Values::one_empty_row())
             }
             PlanNode::DropTable(drop_table) => {
@@ -138,9 +147,7 @@ impl<'txn, 'db, T: KeyValueStore> ExecutorNode<'txn, 'db, T> {
                 Self::Values(Values::one_empty_row())
             }
             PlanNode::Values(planner::Values { rows }) => Self::Values(Values::new(rows)),
-            PlanNode::Scan(planner::Scan::SeqScan { table, columns }) => {
-                Self::SeqScan(SeqScan::new(ctx.transaction(), table, columns))
-            }
+            PlanNode::Scan(planner::Scan::SeqScan { table }) => Self::SeqScan(SeqScan::new(table)),
             PlanNode::Scan(planner::Scan::FunctionScan { source, fn_ptr }) => {
                 let source = Self::new(ctx, *source)?;
                 Self::FunctionScan(FunctionScan::new(ctx, source, fn_ptr))
@@ -162,29 +169,23 @@ impl<'txn, 'db, T: KeyValueStore> ExecutorNode<'txn, 'db, T> {
                 offset,
             }) => Self::Limit(Limit::new(Self::new(ctx, *source)?, limit, offset)?),
             PlanNode::Insert(insert) => Self::Insert(Insert {
-                txn: ctx.transaction(),
                 source: Box::new(Self::new(ctx, *insert.source)?),
                 table: insert.table,
-                primary_key_column: insert.primary_key_column,
             }),
             PlanNode::Update(update) => Self::Update(Update {
-                txn: ctx.transaction(),
                 source: Box::new(Self::new(ctx, *update.source)?),
                 table: update.table,
-                primary_key_column: update.primary_key_column,
             }),
             PlanNode::Delete(delete) => Self::Delete(Delete {
-                txn: ctx.transaction(),
                 source: Box::new(Self::new(ctx, *delete.source)?),
                 table: delete.table,
-                primary_key_column: delete.primary_key_column,
             }),
         };
         Ok(executor)
     }
 }
 
-impl<T: KeyValueStore> Node for ExecutorNode<'_, '_, T> {
+impl<T: Storage> Node for ExecutorNode<'_, '_, T> {
     fn next_row(&mut self) -> Output {
         match self {
             Self::Values(e) => e.next_row(),
@@ -201,7 +202,7 @@ impl<T: KeyValueStore> Node for ExecutorNode<'_, '_, T> {
     }
 }
 
-impl<T: KeyValueStore> Iterator for ExecutorNode<'_, '_, T> {
+impl<T: Storage> Iterator for ExecutorNode<'_, '_, T> {
     type Item = ExecutorResult<Vec<Value>>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -247,38 +248,29 @@ impl Node for Values {
 
 struct SeqScan<'a> {
     iter: Box<dyn Iterator<Item = storage::StorageResult<Vec<Value>>> + 'a>,
-    columns: Vec<ColumnIndex>,
 }
 
 impl<'a> SeqScan<'a> {
-    fn new<T: KeyValueStore>(
-        txn: &'a Transaction<T>,
-        table: TableId,
-        columns: Vec<ColumnIndex>,
-    ) -> Self {
-        Self {
-            iter: txn.scan_table(table),
-            columns,
-        }
+    fn new<T: Storage>(table: Table<'a, '_, T>) -> Self {
+        Self { iter: table.scan() }
     }
 }
 
 impl Node for SeqScan<'_> {
     fn next_row(&mut self) -> Output {
         let row = self.iter.next().into_output()?;
-        let columns = self.columns.iter().map(|i| row[i.0].clone()).collect();
-        Ok(columns)
+        Ok(row)
     }
 }
 
-struct FunctionScan<'txn, 'db, T: KeyValueStore> {
+struct FunctionScan<'txn, 'db, T: Storage> {
     ctx: &'txn QueryContext<'txn, 'db, T>,
     source: Box<ExecutorNode<'txn, 'db, T>>,
     fn_ptr: TableFnPtr<T>,
     rows: Option<Box<dyn Iterator<Item = Vec<Value>>>>,
 }
 
-impl<'txn, 'db, T: KeyValueStore> FunctionScan<'txn, 'db, T> {
+impl<'txn, 'db, T: Storage> FunctionScan<'txn, 'db, T> {
     fn new(
         ctx: &'txn QueryContext<'txn, 'db, T>,
         source: ExecutorNode<'txn, 'db, T>,
@@ -293,7 +285,7 @@ impl<'txn, 'db, T: KeyValueStore> FunctionScan<'txn, 'db, T> {
     }
 }
 
-impl<T: KeyValueStore> Node for FunctionScan<'_, '_, T> {
+impl<T: Storage> Node for FunctionScan<'_, '_, T> {
     fn next_row(&mut self) -> Output {
         loop {
             match &mut self.rows {
@@ -311,12 +303,12 @@ impl<T: KeyValueStore> Node for FunctionScan<'_, '_, T> {
     }
 }
 
-struct Project<'txn, 'db, T: KeyValueStore> {
+struct Project<'txn, 'db, T: Storage> {
     source: Box<ExecutorNode<'txn, 'db, T>>,
     exprs: Vec<Expression>,
 }
 
-impl<T: KeyValueStore> Node for Project<'_, '_, T> {
+impl<T: Storage> Node for Project<'_, '_, T> {
     fn next_row(&mut self) -> Output {
         let row = self.source.next_row()?;
         self.exprs
@@ -327,12 +319,12 @@ impl<T: KeyValueStore> Node for Project<'_, '_, T> {
     }
 }
 
-struct Filter<'txn, 'db, T: KeyValueStore> {
+struct Filter<'txn, 'db, T: Storage> {
     source: Box<ExecutorNode<'txn, 'db, T>>,
     cond: Expression,
 }
 
-impl<T: KeyValueStore> Node for Filter<'_, '_, T> {
+impl<T: Storage> Node for Filter<'_, '_, T> {
     fn next_row(&mut self) -> Output {
         loop {
             let row = self.source.next_row()?;
@@ -345,7 +337,7 @@ impl<T: KeyValueStore> Node for Filter<'_, '_, T> {
     }
 }
 
-enum Sort<'txn, 'db, T: KeyValueStore> {
+enum Sort<'txn, 'db, T: Storage> {
     Collect {
         source: Box<ExecutorNode<'txn, 'db, T>>,
         order_by: Vec<OrderBy>,
@@ -355,7 +347,7 @@ enum Sort<'txn, 'db, T: KeyValueStore> {
     },
 }
 
-impl<'txn, 'db, T: KeyValueStore> Sort<'txn, 'db, T> {
+impl<'txn, 'db, T: Storage> Sort<'txn, 'db, T> {
     fn new(source: ExecutorNode<'txn, 'db, T>, order_by: Vec<OrderBy>) -> Self {
         Self::Collect {
             source: source.into(),
@@ -364,7 +356,7 @@ impl<'txn, 'db, T: KeyValueStore> Sort<'txn, 'db, T> {
     }
 }
 
-impl<T: KeyValueStore> Node for Sort<'_, '_, T> {
+impl<T: Storage> Node for Sort<'_, '_, T> {
     fn next_row(&mut self) -> Output {
         match self {
             Self::Collect { source, order_by } => {
@@ -392,14 +384,14 @@ impl<T: KeyValueStore> Node for Sort<'_, '_, T> {
     }
 }
 
-struct Limit<'txn, 'db, T: KeyValueStore> {
+struct Limit<'txn, 'db, T: Storage> {
     source: Box<ExecutorNode<'txn, 'db, T>>,
     limit: Option<usize>,
     offset: usize,
     cursor: usize,
 }
 
-impl<'txn, 'db, T: KeyValueStore> Limit<'txn, 'db, T> {
+impl<'txn, 'db, T: Storage> Limit<'txn, 'db, T> {
     fn new(
         source: ExecutorNode<'txn, 'db, T>,
         limit: Option<Expression>,
@@ -425,7 +417,7 @@ impl<'txn, 'db, T: KeyValueStore> Limit<'txn, 'db, T> {
     }
 }
 
-impl<T: KeyValueStore> Node for Limit<'_, '_, T> {
+impl<T: Storage> Node for Limit<'_, '_, T> {
     fn next_row(&mut self) -> Output {
         loop {
             let row = self.source.next_row()?;
@@ -445,55 +437,43 @@ impl<T: KeyValueStore> Node for Limit<'_, '_, T> {
     }
 }
 
-struct Insert<'txn, 'db, T: KeyValueStore> {
-    txn: &'txn Transaction<'db, T>,
+struct Insert<'txn, 'db, T: Storage> {
     source: Box<ExecutorNode<'txn, 'db, T>>,
-    table: TableId,
-    primary_key_column: ColumnIndex,
+    table: Table<'txn, 'db, T>,
 }
 
-impl<T: KeyValueStore> Node for Insert<'_, '_, T> {
+impl<T: Storage> Node for Insert<'_, '_, T> {
     fn next_row(&mut self) -> Output {
         for row in self.source.by_ref() {
-            let row = row?;
-            let primary_key = &row[self.primary_key_column.0];
-            self.txn.insert(self.table, primary_key, &row)?;
+            self.table.insert(&row?)?;
         }
         Err(NodeError::EndOfRows)
     }
 }
 
-struct Update<'txn, 'db, T: KeyValueStore> {
-    txn: &'txn Transaction<'db, T>,
+struct Update<'txn, 'db, T: Storage> {
     source: Box<ExecutorNode<'txn, 'db, T>>,
-    table: TableId,
-    primary_key_column: ColumnIndex,
+    table: Table<'txn, 'db, T>,
 }
 
-impl<T: KeyValueStore> Node for Update<'_, '_, T> {
+impl<T: Storage> Node for Update<'_, '_, T> {
     fn next_row(&mut self) -> Output {
         for row in self.source.by_ref() {
-            let row = row?;
-            let primary_key = &row[self.primary_key_column.0];
-            self.txn.update(self.table, primary_key, &row)?;
+            self.table.update(&row?)?;
         }
         Err(NodeError::EndOfRows)
     }
 }
 
-struct Delete<'txn, 'db, T: KeyValueStore> {
-    txn: &'txn Transaction<'db, T>,
+struct Delete<'txn, 'db, T: Storage> {
     source: Box<ExecutorNode<'txn, 'db, T>>,
-    table: TableId,
-    primary_key_column: ColumnIndex,
+    table: Table<'txn, 'db, T>,
 }
 
-impl<T: KeyValueStore> Node for Delete<'_, '_, T> {
+impl<T: Storage> Node for Delete<'_, '_, T> {
     fn next_row(&mut self) -> Output {
         for row in self.source.by_ref() {
-            let row = row?;
-            let primary_key = &row[self.primary_key_column.0];
-            self.txn.delete(self.table, primary_key);
+            self.table.delete(&row?)?;
         }
         Err(NodeError::EndOfRows)
     }

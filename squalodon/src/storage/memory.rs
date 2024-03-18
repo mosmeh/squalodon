@@ -1,4 +1,4 @@
-use super::KeyValueStore;
+use super::Storage;
 use crossbeam_skiplist::SkipMap;
 use std::{
     cell::RefCell,
@@ -19,7 +19,7 @@ impl Memory {
     }
 }
 
-impl KeyValueStore for Memory {
+impl Storage for Memory {
     type Transaction<'a> = Transaction<'a>;
 
     fn transaction(&self) -> Transaction {
@@ -39,7 +39,7 @@ pub struct Transaction<'a> {
     _guard: MutexGuard<'a, ()>,
 }
 
-impl super::KeyValueTransaction for Transaction<'_> {
+impl super::Transaction for Transaction<'_> {
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
         self.data.get(key).map(|entry| entry.value().clone())
     }
@@ -60,18 +60,6 @@ impl super::KeyValueTransaction for Transaction<'_> {
         }
         self.data.insert(key.clone(), value);
         self.undo_set.borrow_mut().entry(key).or_insert(None);
-        true
-    }
-
-    fn update(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
-        let Some(prev_value) = self.data.get(&key) else {
-            return false;
-        };
-        self.data.insert(key.clone(), value);
-        self.undo_set
-            .borrow_mut()
-            .entry(key)
-            .or_insert_with(|| Some(prev_value.value().clone()));
         true
     }
 

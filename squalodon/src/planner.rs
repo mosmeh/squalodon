@@ -1,12 +1,14 @@
 mod binder;
 
 use crate::{
-    catalog::{self, TableFnPtr, TableId},
+    catalog::{self, TableFnPtr},
     connection::QueryContext,
     parser::{self, BinaryOp, NullOrder, Order, UnaryOp},
+    storage::Table,
     types::{Type, Value},
-    CatalogError, KeyValueStore, StorageError,
+    CatalogError, Storage, StorageError,
 };
+use serde::{Deserialize, Serialize};
 use std::fmt::Write;
 
 #[derive(Debug, thiserror::Error)]
@@ -20,6 +22,12 @@ pub enum PlannerError {
     #[error("Duplicate column {0:?}")]
     DuplicateColumn(String),
 
+    #[error("Multiple primary keys are not allowed")]
+    MultiplePrimaryKeys,
+
+    #[error("Primary key is required")]
+    NoPrimaryKey,
+
     #[error("Type error")]
     TypeError,
 
@@ -32,14 +40,14 @@ pub enum PlannerError {
 
 type PlannerResult<T> = std::result::Result<T, PlannerError>;
 
-pub fn plan<T: KeyValueStore>(
-    ctx: &QueryContext<'_, '_, T>,
+pub fn plan<'txn, 'db, T: Storage>(
+    ctx: &'txn QueryContext<'txn, 'db, T>,
     statement: parser::Statement,
-) -> PlannerResult<TypedPlanNode<T>> {
+) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
     binder::Binder::new(ctx).bind(statement)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ColumnIndex(pub usize);
 
 impl std::fmt::Display for ColumnIndex {
@@ -48,12 +56,12 @@ impl std::fmt::Display for ColumnIndex {
     }
 }
 
-pub struct TypedPlanNode<T: KeyValueStore> {
-    pub node: PlanNode<T>,
+pub struct TypedPlanNode<'txn, 'db, T: Storage> {
+    pub node: PlanNode<'txn, 'db, T>,
     pub columns: Vec<Column>,
 }
 
-impl<T: KeyValueStore> TypedPlanNode<T> {
+impl<'txn, 'db, T: Storage> TypedPlanNode<'txn, 'db, T> {
     fn empty_source() -> Self {
         Self {
             node: PlanNode::Values(Values::one_empty_row()),
@@ -62,7 +70,7 @@ impl<T: KeyValueStore> TypedPlanNode<T> {
     }
 
     /// Creates a node that does not produce any rows.
-    fn sink(node: PlanNode<T>) -> Self {
+    fn sink(node: PlanNode<'txn, 'db, T>) -> Self {
         Self {
             node,
             columns: Vec::new(),
@@ -71,7 +79,7 @@ impl<T: KeyValueStore> TypedPlanNode<T> {
 
     fn inherit_schema<F>(self, f: F) -> Self
     where
-        F: FnOnce(PlanNode<T>) -> PlanNode<T>,
+        F: FnOnce(PlanNode<'txn, 'db, T>) -> PlanNode<'txn, 'db, T>,
     {
         Self {
             node: f(self.node),
@@ -138,22 +146,22 @@ impl ExplainVisitor {
     }
 }
 
-pub enum PlanNode<T: KeyValueStore> {
-    Explain(Box<PlanNode<T>>),
+pub enum PlanNode<'txn, 'db, T: Storage> {
+    Explain(Box<PlanNode<'txn, 'db, T>>),
     CreateTable(CreateTable),
     DropTable(DropTable),
     Values(Values),
-    Scan(Scan<T>),
-    Project(Project<T>),
-    Filter(Filter<T>),
-    Sort(Sort<T>),
-    Limit(Limit<T>),
-    Insert(Insert<T>),
-    Update(Update<T>),
-    Delete(Delete<T>),
+    Scan(Scan<'txn, 'db, T>),
+    Project(Project<'txn, 'db, T>),
+    Filter(Filter<'txn, 'db, T>),
+    Sort(Sort<'txn, 'db, T>),
+    Limit(Limit<'txn, 'db, T>),
+    Insert(Insert<'txn, 'db, T>),
+    Update(Update<'txn, 'db, T>),
+    Delete(Delete<'txn, 'db, T>),
 }
 
-impl<T: KeyValueStore> PlanNode<T> {
+impl<T: Storage> PlanNode<'_, '_, T> {
     pub fn explain(&self) -> Vec<String> {
         let mut visitor = ExplainVisitor::default();
         self.visit(&mut visitor);
@@ -161,7 +169,7 @@ impl<T: KeyValueStore> PlanNode<T> {
     }
 }
 
-impl<T: KeyValueStore> Explain for PlanNode<T> {
+impl<T: Storage> Explain for PlanNode<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
         visitor.depth += 1;
         match self {
@@ -185,6 +193,7 @@ impl<T: KeyValueStore> Explain for PlanNode<T> {
 pub struct CreateTable {
     pub name: String,
     pub columns: Vec<catalog::Column>,
+    pub constraints: Vec<catalog::Constraint>,
 }
 
 impl Explain for CreateTable {
@@ -235,32 +244,21 @@ impl Explain for Values {
     }
 }
 
-pub enum Scan<T: KeyValueStore> {
+pub enum Scan<'txn, 'db, T: Storage> {
     SeqScan {
-        table: TableId,
-        columns: Vec<ColumnIndex>,
+        table: Table<'txn, 'db, T>,
     },
     FunctionScan {
-        source: Box<PlanNode<T>>,
+        source: Box<PlanNode<'txn, 'db, T>>,
         fn_ptr: TableFnPtr<T>,
     },
 }
 
-impl<T: KeyValueStore> Explain for Scan<T> {
+impl<T: Storage> Explain for Scan<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
         match self {
-            Self::SeqScan { table, columns } => {
-                let mut f = String::new();
-                write!(&mut f, "SeqScan table={}, columns=[", table.0).unwrap();
-                for (i, column) in columns.iter().enumerate() {
-                    if i == 0 {
-                        write!(&mut f, "{column}").unwrap();
-                    } else {
-                        write!(&mut f, ", {column}").unwrap();
-                    }
-                }
-                f.push(']');
-                visitor.write_str(&f);
+            Self::SeqScan { table } => {
+                write!(visitor, "SeqScan table={:?}", table.name());
             }
             Self::FunctionScan { source, .. } => {
                 visitor.write_str("FunctionScan");
@@ -270,12 +268,12 @@ impl<T: KeyValueStore> Explain for Scan<T> {
     }
 }
 
-pub struct Project<T: KeyValueStore> {
-    pub source: Box<PlanNode<T>>,
+pub struct Project<'txn, 'db, T: Storage> {
+    pub source: Box<PlanNode<'txn, 'db, T>>,
     pub exprs: Vec<Expression>,
 }
 
-impl<T: KeyValueStore> Explain for Project<T> {
+impl<T: Storage> Explain for Project<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
         let mut f = "Project ".to_owned();
         for (i, expr) in self.exprs.iter().enumerate() {
@@ -290,24 +288,24 @@ impl<T: KeyValueStore> Explain for Project<T> {
     }
 }
 
-pub struct Filter<T: KeyValueStore> {
-    pub source: Box<PlanNode<T>>,
+pub struct Filter<'txn, 'db, T: Storage> {
+    pub source: Box<PlanNode<'txn, 'db, T>>,
     pub cond: Expression,
 }
 
-impl<T: KeyValueStore> Explain for Filter<T> {
+impl<T: Storage> Explain for Filter<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
         write!(visitor, "Filter {}", self.cond);
         self.source.visit(visitor);
     }
 }
 
-pub struct Sort<T: KeyValueStore> {
-    pub source: Box<PlanNode<T>>,
+pub struct Sort<'txn, 'db, T: Storage> {
+    pub source: Box<PlanNode<'txn, 'db, T>>,
     pub order_by: Vec<OrderBy>,
 }
 
-impl<T: KeyValueStore> Explain for Sort<T> {
+impl<T: Storage> Explain for Sort<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
         let mut f = "Sort by [".to_owned();
         for (i, order_by) in self.order_by.iter().enumerate() {
@@ -323,13 +321,13 @@ impl<T: KeyValueStore> Explain for Sort<T> {
     }
 }
 
-pub struct Limit<T: KeyValueStore> {
-    pub source: Box<PlanNode<T>>,
+pub struct Limit<'txn, 'db, T: Storage> {
+    pub source: Box<PlanNode<'txn, 'db, T>>,
     pub limit: Option<Expression>,
     pub offset: Option<Expression>,
 }
 
-impl<T: KeyValueStore> Explain for Limit<T> {
+impl<T: Storage> Explain for Limit<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
         let mut f = "Limit".to_owned();
         if let Some(limit) = &self.limit {
@@ -355,41 +353,38 @@ impl std::fmt::Display for OrderBy {
     }
 }
 
-pub struct Insert<T: KeyValueStore> {
-    pub source: Box<PlanNode<T>>,
-    pub table: TableId,
-    pub primary_key_column: ColumnIndex,
+pub struct Insert<'txn, 'db, T: Storage> {
+    pub source: Box<PlanNode<'txn, 'db, T>>,
+    pub table: Table<'txn, 'db, T>,
 }
 
-impl<T: KeyValueStore> Explain for Insert<T> {
+impl<T: Storage> Explain for Insert<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Insert table={:?}", self.table);
+        write!(visitor, "Insert table={:?}", self.table.name());
         self.source.visit(visitor);
     }
 }
 
-pub struct Update<T: KeyValueStore> {
-    pub source: Box<PlanNode<T>>,
-    pub table: TableId,
-    pub primary_key_column: ColumnIndex,
+pub struct Update<'txn, 'db, T: Storage> {
+    pub source: Box<PlanNode<'txn, 'db, T>>,
+    pub table: Table<'txn, 'db, T>,
 }
 
-impl<T: KeyValueStore> Explain for Update<T> {
+impl<T: Storage> Explain for Update<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Update table={:?}", self.table);
+        write!(visitor, "Update table={:?}", self.table.name());
         self.source.visit(visitor);
     }
 }
 
-pub struct Delete<T: KeyValueStore> {
-    pub source: Box<PlanNode<T>>,
-    pub table: TableId,
-    pub primary_key_column: ColumnIndex,
+pub struct Delete<'txn, 'db, T: Storage> {
+    pub source: Box<PlanNode<'txn, 'db, T>>,
+    pub table: Table<'txn, 'db, T>,
 }
 
-impl<T: KeyValueStore> Explain for Delete<T> {
+impl<T: Storage> Explain for Delete<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Delete table={:?}", self.table);
+        write!(visitor, "Delete table={:?}", self.table.name());
         self.source.visit(visitor);
     }
 }

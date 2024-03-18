@@ -1,4 +1,4 @@
-use super::KeyValueStore;
+use super::Storage;
 use std::marker::PhantomData;
 
 /// A storage engine that discards all data.
@@ -13,7 +13,7 @@ impl Blackhole {
     }
 }
 
-impl KeyValueStore for Blackhole {
+impl Storage for Blackhole {
     type Transaction<'a> = Transaction<'a>;
 
     fn transaction(&self) -> Transaction {
@@ -27,7 +27,7 @@ pub struct Transaction<'a> {
     phantom: PhantomData<&'a Blackhole>,
 }
 
-impl super::KeyValueTransaction for Transaction<'_> {
+impl super::Transaction for Transaction<'_> {
     fn get(&self, _key: &[u8]) -> Option<Vec<u8>> {
         None
     }
@@ -41,10 +41,6 @@ impl super::KeyValueTransaction for Transaction<'_> {
     }
 
     fn insert(&self, _key: Vec<u8>, _value: Vec<u8>) -> bool {
-        true
-    }
-
-    fn update(&self, _key: Vec<u8>, _value: Vec<u8>) -> bool {
         true
     }
 

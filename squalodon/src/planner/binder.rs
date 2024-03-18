@@ -1,24 +1,25 @@
 use super::{ColumnIndex, PlanNode, PlannerError, PlannerResult, TypedPlanNode, Values};
 use crate::{
+    catalog,
     connection::QueryContext,
     parser::{self, BinaryOp, UnaryOp},
     planner,
-    storage::Blackhole,
+    storage::{Blackhole, Table},
     types::Type,
-    CatalogError, KeyValueStore,
+    CatalogError, Storage,
 };
 use std::collections::HashSet;
 
-pub struct Binder<'txn, 'db, T: KeyValueStore> {
+pub struct Binder<'txn, 'db, T: Storage> {
     ctx: &'txn QueryContext<'txn, 'db, T>,
 }
 
-impl<'txn, 'db, T: KeyValueStore> Binder<'txn, 'db, T> {
+impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
     pub fn new(ctx: &'txn QueryContext<'txn, 'db, T>) -> Self {
         Self { ctx }
     }
 
-    pub fn bind(&self, statement: parser::Statement) -> PlannerResult<TypedPlanNode<T>> {
+    pub fn bind(&self, statement: parser::Statement) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
         match statement {
             parser::Statement::Explain(statement) => self.bind_explain(*statement),
             parser::Statement::Transaction(_) => unreachable!("handled before binding"),
@@ -41,14 +42,17 @@ impl<'txn, 'db, T: KeyValueStore> Binder<'txn, 'db, T> {
         }
     }
 
-    fn rewrite_to(&self, sql: &str) -> PlannerResult<TypedPlanNode<T>> {
+    fn rewrite_to(&self, sql: &str) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
         let mut parser = parser::Parser::new(sql);
         let statement = parser.next().unwrap().unwrap();
         assert!(parser.next().is_none());
         self.bind(statement)
     }
 
-    fn bind_explain(&self, statement: parser::Statement) -> PlannerResult<TypedPlanNode<T>> {
+    fn bind_explain(
+        &self,
+        statement: parser::Statement,
+    ) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
         let plan = self.bind(statement)?;
         Ok(TypedPlanNode {
             node: PlanNode::Explain(Box::new(plan.node)),
@@ -59,28 +63,73 @@ impl<'txn, 'db, T: KeyValueStore> Binder<'txn, 'db, T> {
     fn bind_create_table(
         &self,
         create_table: parser::CreateTable,
-    ) -> PlannerResult<TypedPlanNode<T>> {
+    ) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
         let mut column_names = HashSet::new();
         for column in &create_table.columns {
             if !column_names.insert(column.name.as_str()) {
                 return Err(PlannerError::DuplicateColumn(column.name.clone()));
             }
         }
-        match self.ctx.catalog().table(&create_table.name) {
+        match self.ctx.catalog().table(create_table.name.clone()) {
             Ok(_) if create_table.if_not_exists => return Ok(TypedPlanNode::empty_source()),
-            Ok(_) => return Err(PlannerError::TableAlreadyExists(create_table.name.clone())),
+            Ok(_) => return Err(PlannerError::TableAlreadyExists(create_table.name)),
             Err(CatalogError::UnknownEntry(_, _)) => (),
             Err(err) => return Err(err.into()),
         };
+        let mut bound_constraints = HashSet::new();
+        let mut has_primary_key = false;
+        for constraint in create_table.constraints {
+            match constraint {
+                parser::Constraint::PrimaryKey(columns) => {
+                    if has_primary_key {
+                        return Err(PlannerError::MultiplePrimaryKeys);
+                    }
+                    has_primary_key = true;
+                    let mut indices = Vec::with_capacity(columns.len());
+                    let mut column_names = HashSet::new();
+                    for column in &columns {
+                        if !column_names.insert(column.as_str()) {
+                            return Err(PlannerError::DuplicateColumn(column.clone()));
+                        }
+                        let (index, _) = create_table
+                            .columns
+                            .iter()
+                            .enumerate()
+                            .find(|(_, def)| def.name == *column)
+                            .ok_or_else(|| PlannerError::UnknownColumn(column.clone()))?;
+                        let index = ColumnIndex(index);
+                        indices.push(index);
+                        bound_constraints.insert(catalog::Constraint::NotNull(index));
+                    }
+                    bound_constraints.insert(catalog::Constraint::PrimaryKey(indices));
+                }
+                parser::Constraint::NotNull(column) => {
+                    let (index, _) = create_table
+                        .columns
+                        .iter()
+                        .enumerate()
+                        .find(|(_, def)| def.name == column)
+                        .ok_or_else(|| PlannerError::UnknownColumn(column.clone()))?;
+                    bound_constraints.insert(catalog::Constraint::NotNull(ColumnIndex(index)));
+                }
+            }
+        }
+        if !has_primary_key {
+            return Err(PlannerError::NoPrimaryKey);
+        }
         let create_table = planner::CreateTable {
             name: create_table.name,
             columns: create_table.columns,
+            constraints: bound_constraints.into_iter().collect(),
         };
         Ok(TypedPlanNode::sink(PlanNode::CreateTable(create_table)))
     }
 
-    fn bind_drop_table(&self, drop_table: parser::DropTable) -> PlannerResult<TypedPlanNode<T>> {
-        match self.ctx.catalog().table(&drop_table.name) {
+    fn bind_drop_table(
+        &self,
+        drop_table: parser::DropTable,
+    ) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
+        match self.ctx.catalog().table(drop_table.name.clone()) {
             Ok(_) => Ok(TypedPlanNode::sink(PlanNode::DropTable(
                 planner::DropTable {
                     name: drop_table.name,
@@ -93,7 +142,7 @@ impl<'txn, 'db, T: KeyValueStore> Binder<'txn, 'db, T> {
         }
     }
 
-    fn bind_select(&self, select: parser::Select) -> PlannerResult<TypedPlanNode<T>> {
+    fn bind_select(&self, select: parser::Select) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
         let mut node = match select.from {
             Some(table_ref) => self.bind_table_ref(table_ref)?,
             None => TypedPlanNode::empty_source(),
@@ -107,47 +156,32 @@ impl<'txn, 'db, T: KeyValueStore> Binder<'txn, 'db, T> {
         Ok(node)
     }
 
-    fn bind_insert(&self, insert: parser::Insert) -> PlannerResult<TypedPlanNode<T>> {
-        let table = self.ctx.catalog().table(&insert.table_name)?;
+    fn bind_insert(&self, insert: parser::Insert) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
+        let table = self.ctx.catalog().table(insert.table_name)?;
         let TypedPlanNode { node, columns } = bind_values(insert.values)?;
-        if table.columns.len() != columns.len() {
+        if table.columns().len() != columns.len() {
             return Err(PlannerError::TypeError);
         }
-        let mut primary_key_column = None;
-        for (i, (actual, expected)) in columns.iter().zip(table.columns.iter()).enumerate() {
+        for (actual, expected) in columns.iter().zip(table.columns().iter()) {
             if let Some(actual) = actual.ty {
                 if actual != expected.ty {
                     return Err(PlannerError::TypeError);
                 }
             }
-            if expected.is_primary_key {
-                assert!(
-                    primary_key_column.is_none(),
-                    "table has multiple primary keys"
-                );
-                primary_key_column = Some(ColumnIndex(i));
-            }
         }
         Ok(TypedPlanNode::sink(PlanNode::Insert(planner::Insert {
             source: Box::new(node),
-            table: table.id,
-            primary_key_column: primary_key_column.expect("table has no primary key"),
+            table,
         })))
     }
 
-    fn bind_update(&self, update: parser::Update) -> PlannerResult<TypedPlanNode<T>> {
-        let table = self.ctx.catalog().table(&update.table_name)?;
-        let primary_key_column = table
-            .columns
-            .iter()
-            .position(|column| column.is_primary_key)
-            .map(ColumnIndex)
-            .expect("table has no primary key");
-        let mut node = self.bind_base_table(&update.table_name)?;
+    fn bind_update(&self, update: parser::Update) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
+        let table = self.ctx.catalog().table(update.table_name)?;
+        let mut node = bind_base_table(table.clone());
         if let Some(where_clause) = update.where_clause {
             node = bind_where_clause(node, where_clause)?;
         }
-        let mut exprs = vec![None; table.columns.len()];
+        let mut exprs = vec![None; table.columns().len()];
         for set in update.sets {
             let (index, column) = node.resolve_column(&set.column_name)?;
             let expr = &mut exprs[index.0];
@@ -173,53 +207,39 @@ impl<'txn, 'db, T: KeyValueStore> Binder<'txn, 'db, T> {
         });
         Ok(TypedPlanNode::sink(PlanNode::Update(planner::Update {
             source: Box::new(node),
-            table: table.id,
-            primary_key_column,
+            table,
         })))
     }
 
-    fn bind_delete(&self, delete: parser::Delete) -> PlannerResult<TypedPlanNode<T>> {
-        let table = self.ctx.catalog().table(&delete.table_name)?;
-        let primary_key_column = table
-            .columns
-            .iter()
-            .position(|column| column.is_primary_key)
-            .map(ColumnIndex)
-            .expect("table has no primary key");
-        let mut node = self.bind_base_table(&delete.table_name)?;
+    fn bind_delete(&self, delete: parser::Delete) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
+        let table = self.ctx.catalog().table(delete.table_name)?;
+        let mut node = bind_base_table(table.clone());
         if let Some(where_clause) = delete.where_clause {
             node = bind_where_clause(node, where_clause)?;
         }
         Ok(TypedPlanNode::sink(PlanNode::Delete(planner::Delete {
             source: Box::new(node.node),
-            table: table.id,
-            primary_key_column,
+            table,
         })))
     }
 
-    fn bind_table_ref(&self, table_ref: parser::TableRef) -> PlannerResult<TypedPlanNode<T>> {
+    fn bind_table_ref(
+        &self,
+        table_ref: parser::TableRef,
+    ) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
         match table_ref {
-            parser::TableRef::BaseTable { name } => self.bind_base_table(&name),
+            parser::TableRef::BaseTable { name } => {
+                Ok(bind_base_table(self.ctx.catalog().table(name)?))
+            }
             parser::TableRef::Function { name, args } => self.bind_table_function(name, args),
         }
-    }
-
-    fn bind_base_table(&self, name: &str) -> PlannerResult<TypedPlanNode<T>> {
-        let table = self.ctx.catalog().table(name)?;
-        Ok(TypedPlanNode {
-            node: PlanNode::Scan(planner::Scan::SeqScan {
-                table: table.id,
-                columns: (0..table.columns.len()).map(ColumnIndex).collect(),
-            }),
-            columns: table.columns.into_iter().map(Into::into).collect(),
-        })
     }
 
     fn bind_table_function(
         &self,
         name: String,
         args: Vec<parser::Expression>,
-    ) -> PlannerResult<TypedPlanNode<T>> {
+    ) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
         let catalog = self.ctx.catalog();
         let table_function = catalog.table_function(&name)?;
         let mut exprs = Vec::with_capacity(args.len());
@@ -246,7 +266,9 @@ impl<'txn, 'db, T: KeyValueStore> Binder<'txn, 'db, T> {
     }
 }
 
-fn bind_values<T: KeyValueStore>(values: parser::Values) -> PlannerResult<TypedPlanNode<T>> {
+fn bind_values<'txn, 'db, T: Storage>(
+    values: parser::Values,
+) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
     let mut rows = Vec::with_capacity(values.rows.len());
     let mut columns;
     let mut rows_iter = values.rows.into_iter();
@@ -280,10 +302,20 @@ fn bind_values<T: KeyValueStore>(values: parser::Values) -> PlannerResult<TypedP
     Ok(TypedPlanNode { node, columns })
 }
 
-fn bind_where_clause<T: KeyValueStore>(
-    source: TypedPlanNode<T>,
+fn bind_base_table<'txn, 'db, T: Storage>(
+    table: Table<'txn, 'db, T>,
+) -> TypedPlanNode<'txn, 'db, T> {
+    let columns = table.columns().iter().cloned().map(Into::into).collect();
+    TypedPlanNode {
+        node: PlanNode::Scan(planner::Scan::SeqScan { table }),
+        columns,
+    }
+}
+
+fn bind_where_clause<'txn, 'db, T: Storage>(
+    source: TypedPlanNode<'txn, 'db, T>,
     expr: parser::Expression,
-) -> PlannerResult<TypedPlanNode<T>> {
+) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
     let cond = bind_expr(&source, expr)?.expect_type(Type::Boolean)?;
     Ok(source.inherit_schema(|source| {
         PlanNode::Filter(planner::Filter {
@@ -293,10 +325,10 @@ fn bind_where_clause<T: KeyValueStore>(
     }))
 }
 
-fn bind_projections<T: KeyValueStore>(
-    source: TypedPlanNode<T>,
+fn bind_projections<'txn, 'db, T: Storage>(
+    source: TypedPlanNode<'txn, 'db, T>,
     projections: Vec<parser::Projection>,
-) -> PlannerResult<TypedPlanNode<T>> {
+) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
     let mut exprs = Vec::new();
     let mut columns = Vec::new();
     for projection in projections {
@@ -331,10 +363,10 @@ fn bind_projections<T: KeyValueStore>(
     })
 }
 
-fn bind_order_by<T: KeyValueStore>(
-    source: TypedPlanNode<T>,
+fn bind_order_by<'txn, 'db, T: Storage>(
+    source: TypedPlanNode<'txn, 'db, T>,
     order_by: Vec<parser::OrderBy>,
-) -> PlannerResult<TypedPlanNode<T>> {
+) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
     if order_by.is_empty() {
         return Ok(source);
     }
@@ -355,12 +387,12 @@ fn bind_order_by<T: KeyValueStore>(
     }))
 }
 
-fn bind_limit<T: KeyValueStore>(
-    source: TypedPlanNode<T>,
+fn bind_limit<'txn, 'db, T: Storage>(
+    source: TypedPlanNode<'txn, 'db, T>,
     limit: Option<parser::Expression>,
     offset: Option<parser::Expression>,
-) -> PlannerResult<TypedPlanNode<T>> {
-    fn bind<T: KeyValueStore>(
+) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
+    fn bind<T: Storage>(
         source: &TypedPlanNode<T>,
         expr: Option<parser::Expression>,
     ) -> PlannerResult<Option<planner::Expression>> {
@@ -386,7 +418,7 @@ fn bind_limit<T: KeyValueStore>(
     }))
 }
 
-fn bind_expr<T: KeyValueStore>(
+fn bind_expr<T: Storage>(
     source: &TypedPlanNode<T>,
     expr: parser::Expression,
 ) -> PlannerResult<TypedExpression> {

@@ -1,7 +1,11 @@
-use crate::{catalog::TableFunction, planner::Column, storage::KeyValueStore, Type};
+use crate::{
+    catalog::{Constraint, TableFunction},
+    planner::Column,
+    storage::Storage,
+    Type,
+};
 
-pub fn load_table_functions<T: KeyValueStore>() -> impl Iterator<Item = (String, TableFunction<T>)>
-{
+pub fn load_table_functions<T: Storage>() -> impl Iterator<Item = (String, TableFunction<T>)> {
     [
         (
             "squalodon_tables",
@@ -10,7 +14,7 @@ pub fn load_table_functions<T: KeyValueStore>() -> impl Iterator<Item = (String,
                     let mut rows = Vec::new();
                     for table in ctx.catalog().tables() {
                         let table = table?;
-                        rows.push(vec![table.name.into()]);
+                        rows.push(vec![table.name().into()]);
                     }
                     Ok(Box::new(rows.into_iter()))
                 },
@@ -21,16 +25,35 @@ pub fn load_table_functions<T: KeyValueStore>() -> impl Iterator<Item = (String,
             "squalodon_columns",
             TableFunction {
                 fn_ptr: |ctx, _| {
+                    #[derive(Clone, Default)]
+                    struct ColumnConstraint {
+                        is_nullable: bool,
+                        is_primary_key: bool,
+                    }
                     let mut rows = Vec::new();
                     for table in ctx.catalog().tables() {
                         let table = table?;
-                        for column in table.columns {
+                        let mut constraints =
+                            vec![ColumnConstraint::default(); table.columns().len()];
+                        for constraint in table.constraints() {
+                            match constraint {
+                                Constraint::NotNull(column) => {
+                                    constraints[column.0].is_nullable = false;
+                                }
+                                Constraint::PrimaryKey(columns) => {
+                                    for column in columns {
+                                        constraints[column.0].is_primary_key = true;
+                                    }
+                                }
+                            }
+                        }
+                        for (column, constraint) in table.columns().iter().zip(constraints) {
                             rows.push(vec![
-                                table.name.clone().into(),
-                                column.name.into(),
+                                table.name().into(),
+                                column.name.clone().into(),
                                 column.ty.to_string().into(),
-                                column.is_nullable.into(),
-                                column.is_primary_key.into(),
+                                constraint.is_nullable.into(),
+                                constraint.is_primary_key.into(),
                             ]);
                         }
                     }

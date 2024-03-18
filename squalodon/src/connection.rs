@@ -4,16 +4,16 @@ use crate::{
     parser::{Parser, ParserResult, Statement, TransactionControl},
     planner::{plan, TypedPlanNode},
     rows::{Column, Row, Rows},
-    storage::{KeyValueStore, Transaction},
+    storage::{Storage, Transaction},
     Database, Result, Type,
 };
 
-pub struct Connection<'a, T: KeyValueStore> {
+pub struct Connection<'a, T: Storage> {
     db: &'a Database<T>,
     txn_status: TransactionState<'a, T>,
 }
 
-impl<'a, T: KeyValueStore> Connection<'a, T> {
+impl<'a, T: Storage> Connection<'a, T> {
     pub(crate) fn new(db: &'a Database<T>) -> Self {
         Self {
             db,
@@ -110,9 +110,9 @@ impl<'a, T: KeyValueStore> Connection<'a, T> {
     }
 }
 
-fn execute_plan<T: KeyValueStore>(
-    ctx: &QueryContext<'_, '_, T>,
-    plan: TypedPlanNode<T>,
+fn execute_plan<'txn, 'db, T: Storage>(
+    ctx: &'txn QueryContext<'txn, 'db, T>,
+    plan: TypedPlanNode<'txn, 'db, T>,
 ) -> Result<Rows> {
     let TypedPlanNode { node, columns } = plan;
     let columns: Vec<_> = columns
@@ -142,24 +142,20 @@ fn execute_plan<T: KeyValueStore>(
     })
 }
 
-pub struct QueryContext<'txn, 'db, T: KeyValueStore> {
-    txn: &'txn Transaction<'db, T>,
+pub struct QueryContext<'txn, 'db, T: Storage> {
+    txn: &'txn T::Transaction<'db>,
     catalog: &'db Catalog<T>,
 }
 
-impl<'txn, 'db, T: KeyValueStore> QueryContext<'txn, 'db, T> {
-    pub fn transaction(&self) -> &'txn Transaction<'db, T> {
-        self.txn
-    }
-
+impl<'txn, 'db: 'txn, T: Storage> QueryContext<'txn, 'db, T> {
     pub fn catalog(&self) -> CatalogRef<'txn, 'db, T> {
         self.catalog.with(self.txn)
     }
 }
 
-enum TransactionState<'a, T: KeyValueStore> {
+enum TransactionState<'a, T: Storage + 'a> {
     /// We are in an explicit transaction started with BEGIN.
-    Active(Transaction<'a, T>),
+    Active(T::Transaction<'a>),
 
     /// The explicit transaction has been aborted and waiting for
     /// COMMIT or ROLLBACK.
