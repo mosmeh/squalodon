@@ -27,7 +27,7 @@ impl std::fmt::Display for ColumnIndex {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Row(pub(crate) Vec<Value>);
 
 impl Row {

@@ -9,7 +9,7 @@ use crate::{
     types::Type,
     CatalogError, Storage,
 };
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 pub struct Binder<'txn, 'db, T: Storage> {
     ctx: &'txn QueryContext<'txn, 'db, T>,
@@ -35,7 +35,6 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
             )),
             parser::Statement::CreateTable(create_table) => self.bind_create_table(create_table),
             parser::Statement::DropTable(drop_table) => self.bind_drop_table(drop_table),
-            parser::Statement::Values(values) => bind_values(values),
             parser::Statement::Select(select) => self.bind_select(select),
             parser::Statement::Insert(insert) => self.bind_insert(insert),
             parser::Statement::Update(update) => self.bind_update(update),
@@ -144,22 +143,153 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
     }
 
     fn bind_select(&self, select: parser::Select) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
-        let mut node = match select.from {
-            Some(table_ref) => self.bind_table_ref(table_ref)?,
-            None => TypedPlanNode::empty_source(),
-        };
+        let mut node = self.bind_from(select.from)?;
         if let Some(where_clause) = select.where_clause {
-            node = bind_where_clause(node, where_clause)?;
+            node = self.bind_where_clause(node, where_clause)?;
         }
-        let node = bind_order_by(node, select.order_by)?;
-        let node = bind_limit(node, select.limit, select.offset)?;
-        let node = bind_projections(node, select.projections)?;
+        let node = self.bind_order_by(node, select.order_by)?;
+        let node = self.bind_limit(node, select.limit, select.offset)?;
+        let node = self.bind_projections(node, select.projections)?;
         Ok(node)
+    }
+
+    fn bind_from(&self, from: Vec<parser::TableRef>) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
+        if from.is_empty() {
+            return Ok(TypedPlanNode::empty_source());
+        }
+        let mut from = VecDeque::from(from);
+        let mut node = self.bind_table_ref(from.pop_front().unwrap())?;
+        while let Some(table_ref) = from.pop_front() {
+            let left = node;
+            let right = self.bind_table_ref(table_ref)?;
+            let mut columns = left.columns;
+            columns.extend(right.columns.into_iter());
+            node = TypedPlanNode {
+                node: PlanNode::CrossProduct(planner::CrossProduct {
+                    left: Box::new(left.node),
+                    right: Box::new(right.node),
+                }),
+                columns,
+            };
+        }
+        Ok(node)
+    }
+
+    fn bind_where_clause(
+        &self,
+        source: TypedPlanNode<'txn, 'db, T>,
+        expr: parser::Expression,
+    ) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
+        let cond = self.bind_expr(&source, expr)?.expect_type(Type::Boolean)?;
+        Ok(source.inherit_schema(|source| {
+            PlanNode::Filter(planner::Filter {
+                source: Box::new(source),
+                cond,
+            })
+        }))
+    }
+
+    fn bind_projections(
+        &self,
+        source: TypedPlanNode<'txn, 'db, T>,
+        projections: Vec<parser::Projection>,
+    ) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
+        let mut exprs = Vec::new();
+        let mut columns = Vec::new();
+        for projection in projections {
+            match projection {
+                parser::Projection::Wildcard => {
+                    for (i, column) in source.columns.iter().cloned().enumerate() {
+                        exprs.push(planner::Expression::ColumnRef {
+                            column: ColumnIndex(i),
+                        });
+                        columns.push(column);
+                    }
+                }
+                parser::Projection::Expression { expr, alias } => {
+                    let TypedExpression { expr, ty } = self.bind_expr(&source, expr)?;
+                    let name = alias.unwrap_or_else(|| {
+                        if let planner::Expression::ColumnRef { column } = &expr {
+                            source.columns[column.0].name.clone()
+                        } else {
+                            expr.to_string()
+                        }
+                    });
+                    exprs.push(expr);
+                    columns.push(planner::Column { name, ty });
+                }
+            }
+        }
+        Ok(TypedPlanNode {
+            node: PlanNode::Project(planner::Project {
+                source: Box::new(source.node),
+                exprs,
+            }),
+            columns,
+        })
+    }
+
+    fn bind_order_by(
+        &self,
+        source: TypedPlanNode<'txn, 'db, T>,
+        order_by: Vec<parser::OrderBy>,
+    ) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
+        if order_by.is_empty() {
+            return Ok(source);
+        }
+        let mut bound_order_by = Vec::with_capacity(order_by.len());
+        for item in order_by {
+            let TypedExpression { expr, .. } = self.bind_expr(&source, item.expr)?;
+            bound_order_by.push(planner::OrderBy {
+                expr,
+                order: item.order,
+                null_order: item.null_order,
+            });
+        }
+        Ok(source.inherit_schema(|source| {
+            PlanNode::Sort(planner::Sort {
+                source: source.into(),
+                order_by: bound_order_by,
+            })
+        }))
+    }
+
+    fn bind_limit(
+        &self,
+        source: TypedPlanNode<'txn, 'db, T>,
+        limit: Option<parser::Expression>,
+        offset: Option<parser::Expression>,
+    ) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
+        if limit.is_none() && offset.is_none() {
+            return Ok(source);
+        }
+        let limit = self.bind_limit_expr(limit)?;
+        let offset = self.bind_limit_expr(offset)?;
+        Ok(source.inherit_schema(|source| {
+            PlanNode::Limit(planner::Limit {
+                source: Box::new(source),
+                limit,
+                offset,
+            })
+        }))
+    }
+
+    fn bind_limit_expr(
+        &self,
+        expr: Option<parser::Expression>,
+    ) -> PlannerResult<Option<planner::Expression>> {
+        let Some(expr) = expr else {
+            return Ok(None);
+        };
+        let expr = self
+            .bind_expr(&TypedPlanNode::empty_source(), expr)?
+            .expect_type(Type::Integer)?;
+        Ok(Some(expr))
     }
 
     fn bind_insert(&self, insert: parser::Insert) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
         let table = self.ctx.catalog().table(insert.table_name)?;
-        let TypedPlanNode { node, columns } = bind_values(insert.values)?;
+        let TypedPlanNode { node, columns } = self.bind_select(insert.select)?;
         if table.columns().len() != columns.len() {
             return Err(PlannerError::TypeError);
         }
@@ -178,9 +308,9 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
 
     fn bind_update(&self, update: parser::Update) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
         let table = self.ctx.catalog().table(update.table_name)?;
-        let mut node = bind_base_table(table.clone());
+        let mut node = self.bind_base_table(table.clone());
         if let Some(where_clause) = update.where_clause {
-            node = bind_where_clause(node, where_clause)?;
+            node = self.bind_where_clause(node, where_clause)?;
         }
         let mut exprs = vec![None; table.columns().len()];
         for set in update.sets {
@@ -189,7 +319,10 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
             match expr {
                 Some(_) => return Err(PlannerError::DuplicateColumn(column.name.clone())),
                 None => {
-                    *expr = bind_expr(&node, set.expr)?.expect_type(column.ty)?.into();
+                    *expr = self
+                        .bind_expr(&node, set.expr)?
+                        .expect_type(column.ty)?
+                        .into();
                 }
             }
         }
@@ -214,9 +347,9 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
 
     fn bind_delete(&self, delete: parser::Delete) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
         let table = self.ctx.catalog().table(delete.table_name)?;
-        let mut node = bind_base_table(table.clone());
+        let mut node = self.bind_base_table(table.clone());
         if let Some(where_clause) = delete.where_clause {
-            node = bind_where_clause(node, where_clause)?;
+            node = self.bind_where_clause(node, where_clause)?;
         }
         Ok(TypedPlanNode::sink(PlanNode::Delete(planner::Delete {
             source: Box::new(node.node),
@@ -230,9 +363,20 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
     ) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
         match table_ref {
             parser::TableRef::BaseTable { name } => {
-                Ok(bind_base_table(self.ctx.catalog().table(name)?))
+                Ok(self.bind_base_table(self.ctx.catalog().table(name)?))
             }
+            parser::TableRef::Subquery(select) => self.bind_select(*select),
             parser::TableRef::Function { name, args } => self.bind_table_function(name, args),
+            parser::TableRef::Values(values) => self.bind_values(values),
+        }
+    }
+
+    #[allow(clippy::unused_self)] // Used for type inference
+    fn bind_base_table(&self, table: Table<'txn, 'db, T>) -> TypedPlanNode<'txn, 'db, T> {
+        let columns = table.columns().iter().cloned().map(Into::into).collect();
+        TypedPlanNode {
+            node: PlanNode::Scan(planner::Scan::SeqScan { table }),
+            columns,
         }
     }
 
@@ -245,7 +389,9 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         let table_function = catalog.table_function(&name)?;
         let mut exprs = Vec::with_capacity(args.len());
         for (expr, column) in args.into_iter().zip(table_function.result_columns.iter()) {
-            let expr = bind_expr(&TypedPlanNode::blackhole(), expr)?.expect_type(column.ty)?;
+            let expr = self
+                .bind_expr(&TypedPlanNode::empty_source(), expr)?
+                .expect_type(column.ty)?;
             exprs.push(expr);
         }
         let node = PlanNode::Project(planner::Project {
@@ -264,195 +410,87 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
                 .collect(),
         })
     }
-}
 
-fn bind_values<'txn, 'db, T: Storage>(
-    values: parser::Values,
-) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
-    let mut rows = Vec::with_capacity(values.rows.len());
-    let mut columns;
-    let mut rows_iter = values.rows.into_iter();
-    {
-        let row = rows_iter.next().unwrap();
-        let mut exprs = Vec::with_capacity(row.len());
-        columns = Vec::with_capacity(row.len());
-        let row = row.into_iter().enumerate();
-        for (i, expr) in row {
-            let TypedExpression { expr, ty } = bind_expr(&TypedPlanNode::blackhole(), expr)?;
-            exprs.push(expr);
-            columns.push(planner::Column {
-                name: format!("column{}", i + 1),
-                ty,
-            });
-        }
-        rows.push(exprs);
-    }
-    for row in rows_iter {
-        assert_eq!(row.len(), columns.len());
-        let mut exprs = Vec::with_capacity(row.len());
-        for (expr, column) in row.into_iter().zip(columns.iter()) {
-            let expr = bind_expr(&TypedPlanNode::blackhole(), expr)?.expect_type(column.ty)?;
-            exprs.push(expr);
-        }
-        rows.push(exprs);
-    }
-    let node = PlanNode::Values(planner::Values { rows });
-    Ok(TypedPlanNode { node, columns })
-}
-
-fn bind_base_table<'txn, 'db, T: Storage>(
-    table: Table<'txn, 'db, T>,
-) -> TypedPlanNode<'txn, 'db, T> {
-    let columns = table.columns().iter().cloned().map(Into::into).collect();
-    TypedPlanNode {
-        node: PlanNode::Scan(planner::Scan::SeqScan { table }),
-        columns,
-    }
-}
-
-fn bind_where_clause<'txn, 'db, T: Storage>(
-    source: TypedPlanNode<'txn, 'db, T>,
-    expr: parser::Expression,
-) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
-    let cond = bind_expr(&source, expr)?.expect_type(Type::Boolean)?;
-    Ok(source.inherit_schema(|source| {
-        PlanNode::Filter(planner::Filter {
-            source: Box::new(source),
-            cond,
-        })
-    }))
-}
-
-fn bind_projections<'txn, 'db, T: Storage>(
-    source: TypedPlanNode<'txn, 'db, T>,
-    projections: Vec<parser::Projection>,
-) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
-    let mut exprs = Vec::new();
-    let mut columns = Vec::new();
-    for projection in projections {
-        match projection {
-            parser::Projection::Wildcard => {
-                for (i, column) in source.columns.iter().cloned().enumerate() {
-                    exprs.push(planner::Expression::ColumnRef {
-                        column: ColumnIndex(i),
-                    });
-                    columns.push(column);
-                }
-            }
-            parser::Projection::Expression { expr, alias } => {
-                let TypedExpression { expr, ty } = bind_expr(&source, expr)?;
-                let name = alias.unwrap_or_else(|| match expr {
-                    planner::Expression::ColumnRef { column } => {
-                        source.columns[column.0].name.clone()
-                    }
-                    _ => expr.to_string(),
-                });
+    fn bind_values(&self, values: parser::Values) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
+        let mut rows = Vec::with_capacity(values.rows.len());
+        let mut columns;
+        let mut rows_iter = values.rows.into_iter();
+        {
+            let row = rows_iter.next().unwrap();
+            let mut exprs = Vec::with_capacity(row.len());
+            columns = Vec::with_capacity(row.len());
+            let row = row.into_iter().enumerate();
+            for (i, expr) in row {
+                let TypedExpression { expr, ty } =
+                    self.bind_expr(&TypedPlanNode::empty_source(), expr)?;
                 exprs.push(expr);
-                columns.push(planner::Column { name, ty });
+                columns.push(planner::Column {
+                    name: format!("column{}", i + 1),
+                    ty,
+                });
             }
+            rows.push(exprs);
         }
-    }
-    Ok(TypedPlanNode {
-        node: PlanNode::Project(planner::Project {
-            source: Box::new(source.node),
-            exprs,
-        }),
-        columns,
-    })
-}
-
-fn bind_order_by<'txn, 'db, T: Storage>(
-    source: TypedPlanNode<'txn, 'db, T>,
-    order_by: Vec<parser::OrderBy>,
-) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
-    if order_by.is_empty() {
-        return Ok(source);
-    }
-    let mut bound_order_by = Vec::with_capacity(order_by.len());
-    for item in order_by {
-        let TypedExpression { expr, .. } = bind_expr(&source, item.expr)?;
-        bound_order_by.push(planner::OrderBy {
-            expr,
-            order: item.order,
-            null_order: item.null_order,
-        });
-    }
-    Ok(source.inherit_schema(|source| {
-        PlanNode::Sort(planner::Sort {
-            source: source.into(),
-            order_by: bound_order_by,
-        })
-    }))
-}
-
-fn bind_limit<'txn, 'db, T: Storage>(
-    source: TypedPlanNode<'txn, 'db, T>,
-    limit: Option<parser::Expression>,
-    offset: Option<parser::Expression>,
-) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
-    fn bind(expr: Option<parser::Expression>) -> PlannerResult<Option<planner::Expression>> {
-        let Some(expr) = expr else {
-            return Ok(None);
-        };
-        let expr = bind_expr(&TypedPlanNode::blackhole(), expr)?.expect_type(Type::Integer)?;
-        Ok(Some(expr))
-    }
-
-    if limit.is_none() && offset.is_none() {
-        return Ok(source);
-    }
-
-    let limit = bind(limit)?;
-    let offset = bind(offset)?;
-    Ok(source.inherit_schema(|source| {
-        PlanNode::Limit(planner::Limit {
-            source: Box::new(source),
-            limit,
-            offset,
-        })
-    }))
-}
-
-fn bind_expr<T: Storage>(
-    source: &TypedPlanNode<T>,
-    expr: parser::Expression,
-) -> PlannerResult<TypedExpression> {
-    match expr {
-        parser::Expression::Constant(value) => {
-            let ty = value.ty();
-            Ok(TypedExpression {
-                expr: planner::Expression::Constact(value),
-                ty,
-            })
+        for row in rows_iter {
+            assert_eq!(row.len(), columns.len());
+            let mut exprs = Vec::with_capacity(row.len());
+            for (expr, column) in row.into_iter().zip(columns.iter()) {
+                let expr = self
+                    .bind_expr(&TypedPlanNode::empty_source(), expr)?
+                    .expect_type(column.ty)?;
+                exprs.push(expr);
+            }
+            rows.push(exprs);
         }
-        parser::Expression::ColumnRef(column) => {
-            let (index, column) = source.resolve_column(&column)?;
-            let expr = planner::Expression::ColumnRef { column: index };
-            Ok(TypedExpression {
-                expr,
-                ty: column.ty,
-            })
-        }
-        parser::Expression::UnaryOp { op, expr } => {
-            let TypedExpression { expr, ty } = bind_expr(source, *expr)?;
-            let ty = match (op, ty) {
-                (UnaryOp::Not, _) => Some(Type::Boolean),
-                (UnaryOp::Plus | UnaryOp::Minus, Some(ty)) if ty.is_numeric() => Some(ty),
-                (UnaryOp::Plus | UnaryOp::Minus, None) => None,
-                _ => return Err(PlannerError::TypeError),
-            };
-            let expr = planner::Expression::UnaryOp {
-                op,
-                expr: expr.into(),
-            };
-            Ok(TypedExpression { expr, ty })
-        }
-        parser::Expression::BinaryOp { op, lhs, rhs } => {
-            let lhs = bind_expr(source, *lhs)?;
-            let rhs = bind_expr(source, *rhs)?;
-            let ty = match op {
-                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
-                    match (lhs.ty, rhs.ty) {
+        let node = PlanNode::Values(planner::Values { rows });
+        Ok(TypedPlanNode { node, columns })
+    }
+
+    #[allow(clippy::only_used_in_recursion)] // Used for type inference
+    fn bind_expr(
+        &self,
+        source: &TypedPlanNode<T>,
+        expr: parser::Expression,
+    ) -> PlannerResult<TypedExpression> {
+        match expr {
+            parser::Expression::Constant(value) => {
+                let ty = value.ty();
+                Ok(TypedExpression {
+                    expr: planner::Expression::Constact(value),
+                    ty,
+                })
+            }
+            parser::Expression::ColumnRef(column_ref) => {
+                let (index, column) = source.resolve_column(&column_ref)?;
+                let expr = planner::Expression::ColumnRef { column: index };
+                Ok(TypedExpression {
+                    expr,
+                    ty: column.ty,
+                })
+            }
+            parser::Expression::UnaryOp { op, expr } => {
+                let TypedExpression { expr, ty } = self.bind_expr(source, *expr)?;
+                let ty = match (op, ty) {
+                    (UnaryOp::Not, _) => Some(Type::Boolean),
+                    (UnaryOp::Plus | UnaryOp::Minus, Some(ty)) if ty.is_numeric() => Some(ty),
+                    (UnaryOp::Plus | UnaryOp::Minus, None) => None,
+                    _ => return Err(PlannerError::TypeError),
+                };
+                let expr = planner::Expression::UnaryOp {
+                    op,
+                    expr: expr.into(),
+                };
+                Ok(TypedExpression { expr, ty })
+            }
+            parser::Expression::BinaryOp { op, lhs, rhs } => {
+                let lhs = self.bind_expr(source, *lhs)?;
+                let rhs = self.bind_expr(source, *rhs)?;
+                let ty = match op {
+                    BinaryOp::Add
+                    | BinaryOp::Sub
+                    | BinaryOp::Mul
+                    | BinaryOp::Div
+                    | BinaryOp::Mod => match (lhs.ty, rhs.ty) {
                         (Some(Type::Integer), Some(Type::Integer)) => Some(Type::Integer),
                         (Some(ty), Some(Type::Real)) | (Some(Type::Real), Some(ty))
                             if ty.is_numeric() =>
@@ -462,32 +500,32 @@ fn bind_expr<T: Storage>(
                         (None, _) => rhs.ty,
                         (_, None) => lhs.ty,
                         _ => return Err(PlannerError::TypeError),
-                    }
-                }
-                BinaryOp::Eq
-                | BinaryOp::Ne
-                | BinaryOp::Lt
-                | BinaryOp::Le
-                | BinaryOp::Gt
-                | BinaryOp::Ge
-                | BinaryOp::And
-                | BinaryOp::Or => match (lhs.ty, rhs.ty) {
-                    (Some(lhs_ty), Some(rhs_ty)) if lhs_ty != rhs_ty => {
-                        return Err(PlannerError::TypeError)
-                    }
-                    _ => Some(Type::Boolean),
-                },
-                BinaryOp::Concat => match (lhs.ty, rhs.ty) {
-                    (Some(Type::Text) | None, Some(Type::Text) | None) => Some(Type::Text),
-                    _ => return Err(PlannerError::TypeError),
-                },
-            };
-            let expr = planner::Expression::BinaryOp {
-                op,
-                lhs: lhs.expr.into(),
-                rhs: rhs.expr.into(),
-            };
-            Ok(TypedExpression { expr, ty })
+                    },
+                    BinaryOp::Eq
+                    | BinaryOp::Ne
+                    | BinaryOp::Lt
+                    | BinaryOp::Le
+                    | BinaryOp::Gt
+                    | BinaryOp::Ge
+                    | BinaryOp::And
+                    | BinaryOp::Or => match (lhs.ty, rhs.ty) {
+                        (Some(lhs_ty), Some(rhs_ty)) if lhs_ty != rhs_ty => {
+                            return Err(PlannerError::TypeError)
+                        }
+                        _ => Some(Type::Boolean),
+                    },
+                    BinaryOp::Concat => match (lhs.ty, rhs.ty) {
+                        (Some(Type::Text) | None, Some(Type::Text) | None) => Some(Type::Text),
+                        _ => return Err(PlannerError::TypeError),
+                    },
+                };
+                let expr = planner::Expression::BinaryOp {
+                    op,
+                    lhs: lhs.expr.into(),
+                    rhs: rhs.expr.into(),
+                };
+                Ok(TypedExpression { expr, ty })
+            }
         }
     }
 }

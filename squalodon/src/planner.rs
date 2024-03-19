@@ -5,7 +5,7 @@ use crate::{
     connection::QueryContext,
     parser::{self, BinaryOp, NullOrder, Order, UnaryOp},
     rows::ColumnIndex,
-    storage::{Blackhole, Table},
+    storage::Table,
     types::{Type, Value},
     CatalogError, Storage, StorageError,
 };
@@ -18,6 +18,9 @@ pub enum PlannerError {
 
     #[error("Unknown column {0:?}")]
     UnknownColumn(String),
+
+    #[error("Ambiguous column {0:?}")]
+    AmbiguousColumn(String),
 
     #[error("Duplicate column {0:?}")]
     DuplicateColumn(String),
@@ -88,12 +91,6 @@ impl<'txn, 'db, T: Storage> TypedPlanNode<'txn, 'db, T> {
     }
 }
 
-impl TypedPlanNode<'_, '_, Blackhole> {
-    fn blackhole() -> Self {
-        Self::empty_source()
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Column {
     pub name: String,
@@ -153,6 +150,7 @@ pub enum PlanNode<'txn, 'db, T: Storage> {
     Filter(Filter<'txn, 'db, T>),
     Sort(Sort<'txn, 'db, T>),
     Limit(Limit<'txn, 'db, T>),
+    CrossProduct(CrossProduct<'txn, 'db, T>),
     Insert(Insert<'txn, 'db, T>),
     Update(Update<'txn, 'db, T>),
     Delete(Delete<'txn, 'db, T>),
@@ -179,6 +177,7 @@ impl<T: Storage> Explain for PlanNode<'_, '_, T> {
             Self::Filter(n) => n.visit(visitor),
             Self::Sort(n) => n.visit(visitor),
             Self::Limit(n) => n.visit(visitor),
+            Self::CrossProduct(n) => n.visit(visitor),
             Self::Insert(n) => n.visit(visitor),
             Self::Update(n) => n.visit(visitor),
             Self::Delete(n) => n.visit(visitor),
@@ -347,6 +346,19 @@ pub struct OrderBy {
 impl std::fmt::Display for OrderBy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} {} {}", self.expr, self.order, self.null_order)
+    }
+}
+
+pub struct CrossProduct<'txn, 'db, T: Storage> {
+    pub left: Box<PlanNode<'txn, 'db, T>>,
+    pub right: Box<PlanNode<'txn, 'db, T>>,
+}
+
+impl<T: Storage> Explain for CrossProduct<'_, '_, T> {
+    fn visit(&self, visitor: &mut ExplainVisitor) {
+        visitor.write_str("CrossProduct");
+        self.left.visit(visitor);
+        self.right.visit(visitor);
     }
 }
 

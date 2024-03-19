@@ -113,8 +113,9 @@ enum ExecutorNode<'txn, 'db, T: Storage> {
     FunctionScan(FunctionScan<'txn, 'db, T>),
     Project(Project<'txn, 'db, T>),
     Filter(Filter<'txn, 'db, T>),
-    Sort(Sort<'txn, 'db, T>),
+    Sort(Sort),
     Limit(Limit<'txn, 'db, T>),
+    CrossProduct(CrossProduct<'txn, 'db, T>),
     Insert(Insert<'txn, 'db, T>),
     Update(Update<'txn, 'db, T>),
     Delete(Delete<'txn, 'db, T>),
@@ -161,13 +162,16 @@ impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
                 cond,
             }),
             PlanNode::Sort(planner::Sort { source, order_by }) => {
-                Self::Sort(Sort::new(Self::new(ctx, *source)?, order_by))
+                Self::Sort(Sort::new(Self::new(ctx, *source)?, order_by)?)
             }
             PlanNode::Limit(planner::Limit {
                 source,
                 limit,
                 offset,
             }) => Self::Limit(Limit::new(Self::new(ctx, *source)?, limit, offset)?),
+            PlanNode::CrossProduct(planner::CrossProduct { left, right }) => Self::CrossProduct(
+                CrossProduct::new(Self::new(ctx, *left)?, Self::new(ctx, *right)?)?,
+            ),
             PlanNode::Insert(insert) => Self::Insert(Insert {
                 source: Box::new(Self::new(ctx, *insert.source)?),
                 table: insert.table,
@@ -195,6 +199,7 @@ impl<T: Storage> Node for ExecutorNode<'_, '_, T> {
             Self::Filter(e) => e.next_row(),
             Self::Sort(e) => e.next_row(),
             Self::Limit(e) => e.next_row(),
+            Self::CrossProduct(e) => e.next_row(),
             Self::Insert(e) => e.next_row(),
             Self::Update(e) => e.next_row(),
             Self::Delete(e) => e.next_row(),
@@ -260,8 +265,7 @@ impl<'a> SeqScan<'a> {
 
 impl Node for SeqScan<'_> {
     fn next_row(&mut self) -> Output {
-        let row = self.iter.next().into_output()?;
-        Ok(row)
+        self.iter.next().into_output()
     }
 }
 
@@ -269,7 +273,7 @@ struct FunctionScan<'txn, 'db, T: Storage> {
     ctx: &'txn QueryContext<'txn, 'db, T>,
     source: Box<ExecutorNode<'txn, 'db, T>>,
     fn_ptr: TableFnPtr<T>,
-    rows: Option<Box<dyn Iterator<Item = Row>>>,
+    rows: Box<dyn Iterator<Item = Row>>,
 }
 
 impl<'txn, 'db, T: Storage> FunctionScan<'txn, 'db, T> {
@@ -282,7 +286,7 @@ impl<'txn, 'db, T: Storage> FunctionScan<'txn, 'db, T> {
             ctx,
             source: source.into(),
             fn_ptr,
-            rows: None,
+            rows: Box::new(std::iter::empty()),
         }
     }
 }
@@ -290,17 +294,11 @@ impl<'txn, 'db, T: Storage> FunctionScan<'txn, 'db, T> {
 impl<T: Storage> Node for FunctionScan<'_, '_, T> {
     fn next_row(&mut self) -> Output {
         loop {
-            match &mut self.rows {
-                Some(rows) => match rows.next() {
-                    Some(row) => return Ok(row),
-                    None => self.rows = None,
-                },
-                None => {
-                    let row = self.source.next_row()?;
-                    let rows = (self.fn_ptr)(self.ctx, &row)?;
-                    self.rows = Some(rows);
-                }
+            if let Some(row) = self.rows.next() {
+                return Ok(row);
             }
+            let row = self.source.next_row()?;
+            self.rows = (self.fn_ptr)(self.ctx, &row)?;
         }
     }
 }
@@ -340,50 +338,38 @@ impl<T: Storage> Node for Filter<'_, '_, T> {
     }
 }
 
-enum Sort<'txn, 'db, T: Storage> {
-    Collect {
-        source: Box<ExecutorNode<'txn, 'db, T>>,
-        order_by: Vec<OrderBy>,
-    },
-    Output {
-        rows: Box<dyn Iterator<Item = Row>>,
-    },
+struct Sort {
+    rows: Box<dyn Iterator<Item = Row>>,
 }
 
-impl<'txn, 'db, T: Storage> Sort<'txn, 'db, T> {
-    fn new(source: ExecutorNode<'txn, 'db, T>, order_by: Vec<OrderBy>) -> Self {
-        Self::Collect {
-            source: source.into(),
-            order_by,
+impl Sort {
+    fn new<T: Storage>(
+        source: ExecutorNode<'_, '_, T>,
+        order_by: Vec<OrderBy>,
+    ) -> ExecutorResult<Self> {
+        let mut rows = Vec::new();
+        for row in source {
+            let row = row?;
+            let mut sort_key = Vec::new();
+            for order_by in &order_by {
+                let value = order_by.expr.eval(&row)?;
+                MemcomparableSerde::new()
+                    .order(order_by.order)
+                    .null_order(order_by.null_order)
+                    .serialize_into(&value, &mut sort_key);
+            }
+            rows.push((row, sort_key));
         }
+        rows.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+        Ok(Self {
+            rows: Box::new(rows.into_iter().map(|(row, _)| row)),
+        })
     }
 }
 
-impl<T: Storage> Node for Sort<'_, '_, T> {
+impl Node for Sort {
     fn next_row(&mut self) -> Output {
-        match self {
-            Self::Collect { source, order_by } => {
-                let mut rows = Vec::new();
-                for row in source {
-                    let row = row?;
-                    let mut sort_key = Vec::new();
-                    for order_by in order_by.iter() {
-                        let value = order_by.expr.eval(&row)?;
-                        MemcomparableSerde::new()
-                            .order(order_by.order)
-                            .null_order(order_by.null_order)
-                            .serialize_into(&value, &mut sort_key);
-                    }
-                    rows.push((row, sort_key));
-                }
-                rows.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
-                *self = Self::Output {
-                    rows: Box::new(rows.into_iter().map(|(row, _)| row)),
-                };
-                self.next_row()
-            }
-            Self::Output { rows } => rows.next().into_output(),
-        }
+        self.rows.next().into_output()
     }
 }
 
@@ -436,6 +422,49 @@ impl<T: Storage> Node for Limit<'_, '_, T> {
                 Some(_) => return Err(NodeError::EndOfRows),
                 None => return Ok(row),
             }
+        }
+    }
+}
+
+struct CrossProduct<'txn, 'db, T: Storage> {
+    left_source: Box<ExecutorNode<'txn, 'db, T>>,
+    left_row: Option<Row>,
+    right_rows: Vec<Row>,
+    right_cursor: usize,
+}
+
+impl<'txn, 'db, T: Storage> CrossProduct<'txn, 'db, T> {
+    fn new(
+        left_source: ExecutorNode<'txn, 'db, T>,
+        right_source: ExecutorNode<'txn, 'db, T>,
+    ) -> ExecutorResult<Self> {
+        Ok(Self {
+            left_source: left_source.into(),
+            left_row: None,
+            right_rows: right_source.collect::<ExecutorResult<_>>()?,
+            right_cursor: 0,
+        })
+    }
+}
+
+impl<T: Storage> Node for CrossProduct<'_, '_, T> {
+    fn next_row(&mut self) -> Output {
+        if self.right_rows.is_empty() {
+            return Err(NodeError::EndOfRows);
+        }
+        loop {
+            let left_row = match &self.left_row {
+                Some(row) => row,
+                None => self.left_row.insert(self.left_source.next_row()?),
+            };
+            if let Some(right_row) = self.right_rows.get(self.right_cursor) {
+                let mut row = left_row.clone();
+                row.0.extend(right_row.0.clone());
+                self.right_cursor += 1;
+                return Ok(row);
+            }
+            self.left_row = None;
+            self.right_cursor = 0;
         }
     }
 }

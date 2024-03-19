@@ -23,6 +23,7 @@ macro_rules! keywords {
             Plus,
             Comma,
             Minus,
+            Dot,
             Slash,
             Semicolon,
             Lt,
@@ -59,6 +60,7 @@ macro_rules! keywords {
                     Self::Plus => f.write_str("+"),
                     Self::Comma => f.write_str(","),
                     Self::Minus => f.write_str("-"),
+                    Self::Dot => f.write_str("."),
                     Self::Slash => f.write_str("/"),
                     Self::Semicolon => f.write_str(";"),
                     Self::Lt => f.write_str("<"),
@@ -214,16 +216,18 @@ impl<'a> LexerInner<'a> {
                     }));
                 }
                 _ => {
-                    return Ok(if self.consume_if_eq('*') {
-                        Token::Asterisk
-                    } else if self.consume_if_eq(',') {
-                        Token::Comma
+                    return Ok(if self.consume_if_eq('%') {
+                        Token::Percent
                     } else if self.consume_if_eq('(') {
                         Token::LeftParen
                     } else if self.consume_if_eq(')') {
                         Token::RightParen
+                    } else if self.consume_if_eq('*') {
+                        Token::Asterisk
                     } else if self.consume_if_eq('+') {
                         Token::Plus
+                    } else if self.consume_if_eq(',') {
+                        Token::Comma
                     } else if self.consume_if_eq('-') {
                         if self.consume_if_eq('-') {
                             // Comment
@@ -231,14 +235,12 @@ impl<'a> LexerInner<'a> {
                             continue;
                         }
                         Token::Minus
-                    } else if self.consume_if_eq('=') {
-                        Token::Eq
-                    } else if self.consume_if_eq(';') {
-                        Token::Semicolon
+                    } else if self.consume_if_eq('.') {
+                        Token::Dot
                     } else if self.consume_if_eq('/') {
                         Token::Slash
-                    } else if self.consume_if_eq('%') {
-                        Token::Percent
+                    } else if self.consume_if_eq(';') {
+                        Token::Semicolon
                     } else if self.consume_if_eq('<') {
                         if self.consume_if_eq('>') {
                             Token::Ne
@@ -247,6 +249,8 @@ impl<'a> LexerInner<'a> {
                         } else {
                             Token::Lt
                         }
+                    } else if self.consume_if_eq('=') {
+                        Token::Eq
                     } else if self.consume_if_eq('>') {
                         if self.consume_if_eq('=') {
                             Token::Ge

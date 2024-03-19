@@ -30,7 +30,6 @@ pub enum Statement {
     Describe(String),
     CreateTable(CreateTable),
     DropTable(DropTable),
-    Values(Values),
     Select(Select),
     Insert(Insert),
     Update(Update),
@@ -65,14 +64,9 @@ pub struct DropTable {
 }
 
 #[derive(Debug)]
-pub struct Values {
-    pub rows: Vec<Vec<Expression>>,
-}
-
-#[derive(Debug)]
 pub struct Select {
     pub projections: Vec<Projection>,
-    pub from: Option<TableRef>,
+    pub from: Vec<TableRef>,
     pub where_clause: Option<Expression>,
     pub order_by: Vec<OrderBy>,
     pub limit: Option<Expression>,
@@ -91,7 +85,14 @@ pub enum Projection {
 #[derive(Debug)]
 pub enum TableRef {
     BaseTable { name: String },
+    Subquery(Box<Select>),
     Function { name: String, args: Vec<Expression> },
+    Values(Values),
+}
+
+#[derive(Debug)]
+pub struct Values {
+    pub rows: Vec<Vec<Expression>>,
 }
 
 #[derive(Debug)]
@@ -105,7 +106,7 @@ pub struct OrderBy {
 pub struct Insert {
     pub table_name: String,
     pub column_names: Vec<String>,
-    pub values: Values,
+    pub select: Select,
 }
 
 #[derive(Debug)]
@@ -369,8 +370,7 @@ impl<'a> Parser<'a> {
             }
             Token::Create => self.parse_create(),
             Token::Drop => self.parse_drop(),
-            Token::Values => self.parse_values().map(Statement::Values),
-            Token::Select => self.parse_select().map(Statement::Select),
+            Token::Select | Token::Values => self.parse_select().map(Statement::Select),
             Token::Insert => self.parse_insert().map(Statement::Insert),
             Token::Update => self.parse_update().map(Statement::Update),
             Token::Delete => self.parse_delete().map(Statement::Delete),
@@ -473,36 +473,48 @@ impl<'a> Parser<'a> {
         Ok(DropTable { name, if_exists })
     }
 
-    fn parse_values(&mut self) -> ParserResult<Values> {
-        self.expect(Token::Values)?;
-        let mut num_columns = None;
-        let rows = self.parse_comma_separated(|parser| {
-            parser.expect(Token::LeftParen)?;
-            let exprs = parser.parse_comma_separated(Self::parse_expr)?;
-            parser.expect(Token::RightParen)?;
-            match num_columns {
-                None => num_columns = Some(exprs.len()),
-                Some(n) if n != exprs.len() => return Err(ParserError::ValuesColumnCountMismatch),
-                _ => (),
-            }
-            Ok(exprs)
-        })?;
-        Ok(Values { rows })
-    }
-
     fn parse_select(&mut self) -> ParserResult<Select> {
-        self.expect(Token::Select)?;
-        let projections = self.parse_comma_separated(Self::parse_projection)?;
-        let from = self
-            .lexer
-            .consume_if_eq(Token::From)?
-            .then(|| self.parse_table_ref())
-            .transpose()?;
-        let where_clause = self
-            .lexer
-            .consume_if_eq(Token::Where)?
-            .then(|| self.parse_expr())
-            .transpose()?;
+        let projections;
+        let from;
+        let where_clause;
+        match self.lexer.peek()? {
+            Token::Select => {
+                self.lexer.consume()?;
+                projections = self.parse_comma_separated(Self::parse_projection)?;
+                from = self
+                    .lexer
+                    .consume_if_eq(Token::From)?
+                    .then(|| self.parse_comma_separated(Self::parse_table_ref))
+                    .transpose()?
+                    .unwrap_or_default();
+                where_clause = self
+                    .lexer
+                    .consume_if_eq(Token::Where)?
+                    .then(|| self.parse_expr())
+                    .transpose()?;
+            }
+            Token::Values => {
+                self.lexer.consume()?;
+                let mut num_columns = None;
+                let rows = self.parse_comma_separated(|parser| {
+                    parser.expect(Token::LeftParen)?;
+                    let exprs = parser.parse_comma_separated(Self::parse_expr)?;
+                    parser.expect(Token::RightParen)?;
+                    match num_columns {
+                        None => num_columns = Some(exprs.len()),
+                        Some(n) if n != exprs.len() => {
+                            return Err(ParserError::ValuesColumnCountMismatch)
+                        }
+                        _ => (),
+                    }
+                    Ok(exprs)
+                })?;
+                projections = vec![Projection::Wildcard];
+                from = vec![TableRef::Values(Values { rows })];
+                where_clause = None;
+            }
+            token => return Err(ParserError::UnexpectedToken(token.clone())),
+        };
         let order_by = (*self.lexer.peek()? == Token::Order)
             .then(|| self.parse_order_by())
             .transpose()?
@@ -532,22 +544,41 @@ impl<'a> Parser<'a> {
             Ok(Projection::Wildcard)
         } else {
             let expr = self.parse_expr()?;
-            let alias = self
-                .lexer
-                .consume_if_eq(Token::As)?
-                .then(|| self.expect_identifier())
-                .transpose()?;
+            let alias = match self.lexer.peek()? {
+                Token::As => {
+                    self.lexer.consume()?;
+                    Some(self.expect_identifier()?)
+                }
+                Token::Identifier(_) => Some(self.expect_identifier()?),
+                _ => None,
+            };
             Ok(Projection::Expression { expr, alias })
         }
     }
 
     fn parse_table_ref(&mut self) -> ParserResult<TableRef> {
-        let name = self.expect_identifier()?;
-        if *self.lexer.peek()? == Token::LeftParen {
-            let args = self.parse_args()?;
-            Ok(TableRef::Function { name, args })
-        } else {
-            Ok(TableRef::BaseTable { name })
+        match self.lexer.peek()? {
+            Token::Identifier(_) => {
+                let name = self.expect_identifier()?;
+                if *self.lexer.peek()? == Token::LeftParen {
+                    let args = self.parse_args()?;
+                    Ok(TableRef::Function { name, args })
+                } else {
+                    Ok(TableRef::BaseTable { name })
+                }
+            }
+            Token::LeftParen => {
+                self.lexer.consume()?;
+                let inner = match self.lexer.peek()? {
+                    Token::Select | Token::Values => {
+                        TableRef::Subquery(self.parse_select()?.into())
+                    }
+                    token => return Err(ParserError::UnexpectedToken(token.clone())),
+                };
+                self.expect(Token::RightParen)?;
+                Ok(inner)
+            }
+            token => Err(ParserError::UnexpectedToken(token.clone())),
         }
     }
 
@@ -592,11 +623,11 @@ impl<'a> Parser<'a> {
             column_names = self.parse_comma_separated(Self::expect_identifier)?;
             self.expect(Token::RightParen)?;
         }
-        let values = self.parse_values()?;
+        let select = self.parse_select()?;
         Ok(Insert {
             table_name,
             column_names,
-            values,
+            select,
         })
     }
 
