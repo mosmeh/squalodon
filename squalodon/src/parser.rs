@@ -131,7 +131,7 @@ pub struct Delete {
 #[derive(Debug, Clone)]
 pub enum Expression {
     Constant(Value),
-    ColumnRef(String),
+    ColumnRef(ColumnRef),
     UnaryOp {
         op: UnaryOp,
         expr: Box<Expression>,
@@ -141,6 +141,12 @@ pub enum Expression {
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct ColumnRef {
+    pub table_name: Option<String>,
+    pub column_name: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -713,7 +719,20 @@ impl<'a> Parser<'a> {
             Token::True => Expression::Constant(Value::Boolean(true)),
             Token::False => Expression::Constant(Value::Boolean(false)),
             Token::String(s) => Expression::Constant(Value::Text(s)),
-            Token::Identifier(ident) => Expression::ColumnRef(ident),
+            Token::Identifier(ident) => {
+                if self.lexer.consume_if_eq(Token::Dot)? {
+                    let column = self.expect_identifier()?;
+                    Expression::ColumnRef(ColumnRef {
+                        table_name: Some(ident),
+                        column_name: column,
+                    })
+                } else {
+                    Expression::ColumnRef(ColumnRef {
+                        table_name: None,
+                        column_name: ident,
+                    })
+                }
+            }
             Token::LeftParen => {
                 let expr = self.parse_expr()?;
                 self.expect(Token::RightParen)?;

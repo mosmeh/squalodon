@@ -119,7 +119,7 @@ fn execute_plan<'txn, 'db, T: Storage>(
         .iter()
         .map(|column| {
             Column {
-                name: column.name.clone(),
+                name: column.column_name.clone(),
                 ty: column.ty.unwrap_or(Type::Integer), // Arbitrarily choose integer
             }
         })

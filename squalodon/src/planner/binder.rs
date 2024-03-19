@@ -2,7 +2,7 @@ use super::{PlanNode, PlannerError, PlannerResult, TypedPlanNode, Values};
 use crate::{
     catalog,
     connection::QueryContext,
-    parser::{self, BinaryOp, UnaryOp},
+    parser::{self, BinaryOp, ColumnRef, UnaryOp},
     planner,
     rows::ColumnIndex,
     storage::Table,
@@ -208,15 +208,25 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
                 }
                 parser::Projection::Expression { expr, alias } => {
                     let TypedExpression { expr, ty } = self.bind_expr(&source, expr)?;
-                    let name = alias.unwrap_or_else(|| {
-                        if let planner::Expression::ColumnRef { column } = &expr {
-                            source.columns[column.0].name.clone()
-                        } else {
-                            expr.to_string()
-                        }
-                    });
+                    let table_name;
+                    let column_name;
+                    if let Some(alias) = alias {
+                        table_name = None;
+                        column_name = alias;
+                    } else if let planner::Expression::ColumnRef { column } = &expr {
+                        let column = &source.columns[column.0];
+                        table_name = column.table_name.clone();
+                        column_name = column.column_name.clone();
+                    } else {
+                        table_name = None;
+                        column_name = expr.to_string();
+                    }
                     exprs.push(expr);
-                    columns.push(planner::Column { name, ty });
+                    columns.push(planner::Column {
+                        table_name,
+                        column_name,
+                        ty,
+                    });
                 }
             }
         }
@@ -314,10 +324,13 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         }
         let mut exprs = vec![None; table.columns().len()];
         for set in update.sets {
-            let (index, column) = node.resolve_column(&set.column_name)?;
+            let (index, column) = node.resolve_column(&ColumnRef {
+                table_name: Some(table.name().to_owned()),
+                column_name: set.column_name.clone(),
+            })?;
             let expr = &mut exprs[index.0];
             match expr {
-                Some(_) => return Err(PlannerError::DuplicateColumn(column.name.clone())),
+                Some(_) => return Err(PlannerError::DuplicateColumn(column.column_name.clone())),
                 None => {
                     *expr = self
                         .bind_expr(&node, set.expr)?
@@ -373,7 +386,16 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
 
     #[allow(clippy::unused_self)] // Used for type inference
     fn bind_base_table(&self, table: Table<'txn, 'db, T>) -> TypedPlanNode<'txn, 'db, T> {
-        let columns = table.columns().iter().cloned().map(Into::into).collect();
+        let columns = table
+            .columns()
+            .iter()
+            .cloned()
+            .map(|column| planner::Column {
+                table_name: Some(table.name().to_owned()),
+                column_name: column.name,
+                ty: Some(column.ty),
+            })
+            .collect();
         TypedPlanNode {
             node: PlanNode::Scan(planner::Scan::SeqScan { table }),
             columns,
@@ -425,7 +447,8 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
                     self.bind_expr(&TypedPlanNode::empty_source(), expr)?;
                 exprs.push(expr);
                 columns.push(planner::Column {
-                    name: format!("column{}", i + 1),
+                    table_name: None,
+                    column_name: format!("column{}", i + 1),
                     ty,
                 });
             }

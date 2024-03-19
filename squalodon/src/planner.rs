@@ -3,7 +3,7 @@ mod binder;
 use crate::{
     catalog::{self, TableFnPtr},
     connection::QueryContext,
-    parser::{self, BinaryOp, NullOrder, Order, UnaryOp},
+    parser::{self, BinaryOp, ColumnRef, NullOrder, Order, UnaryOp},
     rows::ColumnIndex,
     storage::Table,
     types::{Type, Value},
@@ -81,36 +81,47 @@ impl<'txn, 'db, T: Storage> TypedPlanNode<'txn, 'db, T> {
         }
     }
 
-    fn resolve_column(&self, name: &str) -> PlannerResult<(ColumnIndex, &Column)> {
-        self.columns
-            .iter()
-            .enumerate()
-            .find(|(_, column)| column.name == name)
-            .map(|(i, column)| (ColumnIndex(i), column))
-            .ok_or(PlannerError::UnknownColumn(name.to_owned()))
+    fn resolve_column(&self, column_ref: &ColumnRef) -> PlannerResult<(ColumnIndex, &Column)> {
+        let mut candidates = self.columns.iter().enumerate().filter(|(_, column)| {
+            if column.column_name != column_ref.column_name {
+                return false;
+            }
+            match (&column.table_name, &column_ref.table_name) {
+                (Some(a), Some(b)) => a == b,
+                (_, None) => {
+                    // If the column reference does not specify
+                    // a table name, it ambiguously matches any column
+                    // with the same name.
+                    true
+                }
+                (None, Some(_)) => false,
+            }
+        });
+        let (i, column) = candidates
+            .next()
+            .ok_or_else(|| PlannerError::UnknownColumn(column_ref.column_name.clone()))?;
+        if candidates.next().is_some() {
+            return Err(PlannerError::AmbiguousColumn(
+                column_ref.column_name.clone(),
+            ));
+        }
+        Ok((ColumnIndex(i), column))
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Column {
-    pub name: String,
+    pub table_name: Option<String>,
+    pub column_name: String,
     pub ty: Option<Type>,
 }
 
 impl Column {
     pub fn new(name: &str, ty: Type) -> Self {
         Self {
-            name: name.to_owned(),
+            table_name: None,
+            column_name: name.to_owned(),
             ty: Some(ty),
-        }
-    }
-}
-
-impl From<catalog::Column> for Column {
-    fn from(c: catalog::Column) -> Self {
-        Self {
-            name: c.name,
-            ty: Some(c.ty),
         }
     }
 }
