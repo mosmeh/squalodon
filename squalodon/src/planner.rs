@@ -24,6 +24,9 @@ pub enum PlannerError {
     #[error("Duplicate column {0:?}")]
     DuplicateColumn(String),
 
+    #[error("Expected {expected} columns but got {actual}")]
+    ColumnCountMismatch { expected: usize, actual: usize },
+
     #[error("Multiple primary keys are not allowed")]
     MultiplePrimaryKeys,
 
@@ -433,7 +436,7 @@ impl<T: Storage> Explain for Delete<'_, '_, T> {
 pub enum Expression {
     Constact(Value),
     ColumnRef {
-        column: ColumnIndex,
+        index: ColumnIndex,
     },
     UnaryOp {
         op: UnaryOp,
@@ -450,7 +453,7 @@ impl std::fmt::Display for Expression {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Constact(value) => write!(f, "{value:?}"),
-            Self::ColumnRef { column } => write!(f, "{column}"),
+            Self::ColumnRef { index } => write!(f, "{index}"),
             Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
             Self::BinaryOp { op, lhs, rhs } => {
                 write!(f, "({lhs} {op} {rhs})")

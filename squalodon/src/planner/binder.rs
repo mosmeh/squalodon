@@ -181,7 +181,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
                 parser::Projection::Wildcard => {
                     for (i, column) in source.schema.0.iter().cloned().enumerate() {
                         exprs.push(planner::Expression::ColumnRef {
-                            column: ColumnIndex(i),
+                            index: ColumnIndex(i),
                         });
                         columns.push(column);
                     }
@@ -193,8 +193,8 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
                     if let Some(alias) = alias {
                         table_name = None;
                         column_name = alias;
-                    } else if let planner::Expression::ColumnRef { column } = &expr {
-                        let column = &source.schema.0[column.0];
+                    } else if let planner::Expression::ColumnRef { index } = &expr {
+                        let column = &source.schema.0[index.0];
                         table_name = column.table_name.clone();
                         column_name = column.column_name.clone();
                     } else {
@@ -281,15 +281,55 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         let table = self.catalog.table(insert.table_name)?;
         let TypedPlanNode { node, schema } = self.bind_select(insert.select)?;
         if table.columns().len() != schema.0.len() {
-            return Err(PlannerError::TypeError);
+            return Err(PlannerError::ColumnCountMismatch {
+                expected: table.columns().len(),
+                actual: schema.0.len(),
+            });
         }
-        for (actual, expected) in schema.0.iter().zip(table.columns().iter()) {
-            if let Some(actual) = actual.ty {
-                if actual != expected.ty {
-                    return Err(PlannerError::TypeError);
+        let node = if let Some(column_names) = insert.column_names {
+            if table.columns().len() != column_names.len() {
+                return Err(PlannerError::ColumnCountMismatch {
+                    expected: table.columns().len(),
+                    actual: column_names.len(),
+                });
+            }
+            let mut indices_in_source = vec![None; table.columns().len()];
+            let iter = column_names.into_iter().zip(schema.0).enumerate();
+            for (index_in_source, (column_name, actual_column)) in iter {
+                let (index_in_table, expected_column) = table
+                    .columns()
+                    .iter()
+                    .enumerate()
+                    .find(|(_, column)| column.name == column_name)
+                    .ok_or_else(|| PlannerError::UnknownColumn(column_name.clone()))?;
+                match &mut indices_in_source[index_in_table] {
+                    Some(_) => return Err(PlannerError::DuplicateColumn(column_name)),
+                    i @ None => *i = Some(index_in_source),
+                }
+                match actual_column.ty {
+                    Some(ty) if ty != expected_column.ty => return Err(PlannerError::TypeError),
+                    _ => (),
                 }
             }
-        }
+            let exprs = indices_in_source
+                .into_iter()
+                .map(|i| planner::Expression::ColumnRef {
+                    index: ColumnIndex(i.unwrap()),
+                })
+                .collect();
+            PlanNode::Project(planner::Project {
+                source: Box::new(node),
+                exprs,
+            })
+        } else {
+            for (actual, expected) in schema.0.iter().zip(table.columns()) {
+                match actual.ty {
+                    Some(actual) if actual != expected.ty => return Err(PlannerError::TypeError),
+                    _ => (),
+                }
+            }
+            node
+        };
         Ok(TypedPlanNode::sink(PlanNode::Insert(planner::Insert {
             source: Box::new(node),
             table,
@@ -324,7 +364,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
             .enumerate()
             .map(|(i, expr)| {
                 expr.unwrap_or(planner::Expression::ColumnRef {
-                    column: ColumnIndex(i),
+                    index: ColumnIndex(i),
                 })
             })
             .collect();
@@ -484,7 +524,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
             }
             parser::Expression::ColumnRef(column_ref) => {
                 let (index, column) = schema.resolve_column(&column_ref)?;
-                let expr = planner::Expression::ColumnRef { column: index };
+                let expr = planner::Expression::ColumnRef { index };
                 Ok(TypedExpression {
                     expr,
                     ty: column.ty,

@@ -113,7 +113,7 @@ pub struct OrderBy {
 #[derive(Debug)]
 pub struct Insert {
     pub table_name: String,
-    pub column_names: Vec<String>,
+    pub column_names: Option<Vec<String>>,
     pub select: Select,
 }
 
@@ -679,11 +679,15 @@ impl<'a> Parser<'a> {
         self.expect(Token::Insert)?;
         self.expect(Token::Into)?;
         let table_name = self.expect_identifier()?;
-        let mut column_names = Vec::new();
-        if self.lexer.consume_if_eq(Token::LeftParen)? {
-            column_names = self.parse_comma_separated(Self::expect_identifier)?;
-            self.expect(Token::RightParen)?;
-        }
+        let column_names = self
+            .lexer
+            .consume_if_eq(Token::LeftParen)?
+            .then(|| -> ParserResult<_> {
+                let column_names = self.parse_comma_separated(Self::expect_identifier)?;
+                self.expect(Token::RightParen)?;
+                Ok(column_names)
+            })
+            .transpose()?;
         let select = self.parse_select()?;
         Ok(Insert {
             table_name,

@@ -538,7 +538,7 @@ impl Expression {
     fn eval(&self, row: &Row) -> ExecutorResult<Value> {
         let value = match self {
             Self::Constact(v) => v.clone(),
-            Self::ColumnRef { column } => row[column].clone(),
+            Self::ColumnRef { index } => row[index].clone(),
             Self::UnaryOp { op, expr } => eval_unary_op(*op, row, expr)?,
             Self::BinaryOp { op, lhs, rhs } => eval_binary_op(*op, row, lhs, rhs)?,
         };
