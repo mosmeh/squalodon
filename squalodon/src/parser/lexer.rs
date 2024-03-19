@@ -90,6 +90,7 @@ keywords! {
     By
     Commit
     Create
+    Cross
     Delete
     Desc
     Describe
@@ -100,9 +101,11 @@ keywords! {
     First
     From
     If
+    Inner
     Insert
     Integer
     Into
+    Join
     Key
     Last
     Limit
@@ -110,6 +113,7 @@ keywords! {
     Null
     Nulls
     Offset
+    On
     Or
     Order
     Primary

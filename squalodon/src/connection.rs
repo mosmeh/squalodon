@@ -1,6 +1,5 @@
 use crate::{
-    catalog::{Catalog, CatalogRef},
-    executor::Executor,
+    executor::{Executor, ExecutorContext},
     parser::{Parser, ParserResult, Statement, TransactionControl},
     planner::{plan, TypedPlanNode},
     rows::{Column, Rows},
@@ -51,12 +50,9 @@ impl<'a, T: Storage> Connection<'a, T> {
             TransactionState::Aborted => return Err(TransactionError::TransactionAborted.into()),
             TransactionState::Inactive => implicit_txn.insert(self.db.storage.transaction()),
         };
-        let ctx = QueryContext {
-            txn,
-            catalog: &self.db.catalog,
-        };
-        let plan = plan(&ctx, statement)?;
-        match execute_plan(&ctx, plan) {
+        let catalog = self.db.catalog.with(txn);
+        let plan = plan(&catalog, statement)?;
+        match self.execute_plan(txn, plan) {
             Ok(rows) => {
                 if let Some(txn) = implicit_txn {
                     txn.commit(); // Auto commit
@@ -108,48 +104,40 @@ impl<'a, T: Storage> Connection<'a, T> {
             ) => Err(TransactionError::NoActiveTransaction),
         }
     }
-}
 
-fn execute_plan<'txn, 'db, T: Storage>(
-    ctx: &'txn QueryContext<'txn, 'db, T>,
-    plan: TypedPlanNode<'txn, 'db, T>,
-) -> Result<Rows> {
-    let TypedPlanNode { node, columns } = plan;
-    let columns: Vec<_> = columns
-        .iter()
-        .map(|column| {
-            Column {
-                name: column.column_name.clone(),
-                ty: column.ty.unwrap_or(Type::Integer), // Arbitrarily choose integer
+    fn execute_plan(
+        &self,
+        txn: &T::Transaction<'a>,
+        plan: TypedPlanNode<'_, 'a, T>,
+    ) -> Result<Rows> {
+        let TypedPlanNode { node, schema } = plan;
+        let columns: Vec<_> = schema
+            .0
+            .iter()
+            .map(|column| {
+                Column {
+                    name: column.column_name.clone(),
+                    ty: column.ty.unwrap_or(Type::Integer), // Arbitrarily choose integer
+                }
+            })
+            .collect();
+        let ctx = ExecutorContext::new(self.db.catalog.with(txn));
+        let executor = Executor::new(&ctx, node)?;
+        let mut rows = Vec::new();
+        for row in executor {
+            let row = row?;
+            assert_eq!(row.columns().len(), columns.len());
+            for (value, column) in row.columns().iter().zip(&columns) {
+                if let Some(ty) = value.ty() {
+                    assert_eq!(column.ty, ty);
+                }
             }
-        })
-        .collect();
-    let executor = Executor::new(ctx, node)?;
-    let mut rows = Vec::new();
-    for row in executor {
-        let row = row?;
-        assert_eq!(row.columns().len(), columns.len());
-        for (value, column) in row.columns().iter().zip(&columns) {
-            if let Some(ty) = value.ty() {
-                assert_eq!(column.ty, ty);
-            }
+            rows.push(row);
         }
-        rows.push(row);
-    }
-    Ok(Rows {
-        iter: rows.into_iter(),
-        columns,
-    })
-}
-
-pub struct QueryContext<'txn, 'db, T: Storage> {
-    txn: &'txn T::Transaction<'db>,
-    catalog: &'db Catalog<T>,
-}
-
-impl<'txn, 'db: 'txn, T: Storage> QueryContext<'txn, 'db, T> {
-    pub fn catalog(&self) -> CatalogRef<'txn, 'db, T> {
-        self.catalog.with(self.txn)
+        Ok(Rows {
+            iter: rows.into_iter(),
+            columns,
+        })
     }
 }
 

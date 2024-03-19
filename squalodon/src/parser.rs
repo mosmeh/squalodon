@@ -66,7 +66,7 @@ pub struct DropTable {
 #[derive(Debug)]
 pub struct Select {
     pub projections: Vec<Projection>,
-    pub from: Vec<TableRef>,
+    pub from: TableRef,
     pub where_clause: Option<Expression>,
     pub order_by: Vec<OrderBy>,
     pub limit: Option<Expression>,
@@ -85,9 +85,17 @@ pub enum Projection {
 #[derive(Debug)]
 pub enum TableRef {
     BaseTable { name: String },
+    Join(Box<Join>),
     Subquery(Box<Select>),
     Function { name: String, args: Vec<Expression> },
     Values(Values),
+}
+
+#[derive(Debug)]
+pub struct Join {
+    pub left: TableRef,
+    pub right: TableRef,
+    pub on: Option<Expression>,
 }
 
 #[derive(Debug)]
@@ -487,12 +495,10 @@ impl<'a> Parser<'a> {
             Token::Select => {
                 self.lexer.consume()?;
                 projections = self.parse_comma_separated(Self::parse_projection)?;
-                from = self
-                    .lexer
-                    .consume_if_eq(Token::From)?
-                    .then(|| self.parse_comma_separated(Self::parse_table_ref))
+                from = (*self.lexer.peek()? == Token::From)
+                    .then(|| self.parse_from())
                     .transpose()?
-                    .unwrap_or_default();
+                    .unwrap_or(TableRef::Values(Values { rows: Vec::new() }));
                 where_clause = self
                     .lexer
                     .consume_if_eq(Token::Where)?
@@ -516,7 +522,7 @@ impl<'a> Parser<'a> {
                     Ok(exprs)
                 })?;
                 projections = vec![Projection::Wildcard];
-                from = vec![TableRef::Values(Values { rows })];
+                from = TableRef::Values(Values { rows });
                 where_clause = None;
             }
             token => return Err(ParserError::UnexpectedToken(token.clone())),
@@ -545,6 +551,20 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn parse_from(&mut self) -> ParserResult<TableRef> {
+        self.expect(Token::From)?;
+        let mut table_ref = self.parse_table_ref()?;
+        while self.lexer.consume_if_eq(Token::Comma)? {
+            // Equivalent to CROSS JOIN
+            table_ref = TableRef::Join(Box::new(Join {
+                left: table_ref,
+                right: self.parse_table_ref()?,
+                on: None,
+            }));
+        }
+        Ok(table_ref)
+    }
+
     fn parse_projection(&mut self) -> ParserResult<Projection> {
         if self.lexer.consume_if_eq(Token::Asterisk)? {
             Ok(Projection::Wildcard)
@@ -563,6 +583,40 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_table_ref(&mut self) -> ParserResult<TableRef> {
+        let mut table_ref = self.parse_table_or_subquery()?;
+        loop {
+            match self.lexer.peek()? {
+                Token::Cross => {
+                    self.lexer.consume()?;
+                    self.expect(Token::Join)?;
+                    table_ref = TableRef::Join(Box::new(Join {
+                        left: table_ref,
+                        right: self.parse_table_or_subquery()?,
+                        on: None,
+                    }));
+                }
+                Token::Inner => {
+                    self.lexer.consume()?;
+                    // INNER JOIN is the same as JOIN, so we just consume
+                    // INNER and parse JOIN in the next iteration.
+                }
+                Token::Join => {
+                    self.lexer.consume()?;
+                    let right = self.parse_table_or_subquery()?;
+                    self.expect(Token::On)?;
+                    let on = self.parse_expr()?;
+                    table_ref = TableRef::Join(Box::new(Join {
+                        left: table_ref,
+                        right,
+                        on: Some(on),
+                    }));
+                }
+                _ => return Ok(table_ref),
+            }
+        }
+    }
+
+    fn parse_table_or_subquery(&mut self) -> ParserResult<TableRef> {
         match self.lexer.peek()? {
             Token::Identifier(_) => {
                 let name = self.expect_identifier()?;
@@ -576,6 +630,7 @@ impl<'a> Parser<'a> {
             Token::LeftParen => {
                 self.lexer.consume()?;
                 let inner = match self.lexer.peek()? {
+                    Token::Identifier(_) | Token::LeftParen => self.parse_table_or_subquery()?,
                     Token::Select | Token::Values => {
                         TableRef::Subquery(self.parse_select()?.into())
                     }

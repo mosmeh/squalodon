@@ -1,8 +1,7 @@
 mod binder;
 
 use crate::{
-    catalog::{self, TableFnPtr},
-    connection::QueryContext,
+    catalog::{self, CatalogRef, TableFnPtr},
     parser::{self, BinaryOp, ColumnRef, NullOrder, Order, UnaryOp},
     rows::ColumnIndex,
     storage::Table,
@@ -44,45 +43,21 @@ pub enum PlannerError {
 type PlannerResult<T> = std::result::Result<T, PlannerError>;
 
 pub fn plan<'txn, 'db, T: Storage>(
-    ctx: &'txn QueryContext<'txn, 'db, T>,
+    catalog: &'txn CatalogRef<'txn, 'db, T>,
     statement: parser::Statement,
 ) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
-    binder::Binder::new(ctx).bind(statement)
+    binder::Binder::new(catalog).bind(statement)
 }
 
-pub struct TypedPlanNode<'txn, 'db, T: Storage> {
-    pub node: PlanNode<'txn, 'db, T>,
-    pub columns: Vec<Column>,
-}
+pub struct PlanSchema(pub Vec<Column>);
 
-impl<'txn, 'db, T: Storage> TypedPlanNode<'txn, 'db, T> {
-    fn empty_source() -> Self {
-        Self {
-            node: PlanNode::Values(Values::one_empty_row()),
-            columns: Vec::new(),
-        }
-    }
-
-    /// Creates a node that does not produce any rows.
-    fn sink(node: PlanNode<'txn, 'db, T>) -> Self {
-        Self {
-            node,
-            columns: Vec::new(),
-        }
-    }
-
-    fn inherit_schema<F>(self, f: F) -> Self
-    where
-        F: FnOnce(PlanNode<'txn, 'db, T>) -> PlanNode<'txn, 'db, T>,
-    {
-        Self {
-            node: f(self.node),
-            columns: self.columns,
-        }
+impl PlanSchema {
+    fn empty() -> Self {
+        Self(Vec::new())
     }
 
     fn resolve_column(&self, column_ref: &ColumnRef) -> PlannerResult<(ColumnIndex, &Column)> {
-        let mut candidates = self.columns.iter().enumerate().filter(|(_, column)| {
+        let mut candidates = self.0.iter().enumerate().filter(|(_, column)| {
             if column.column_name != column_ref.column_name {
                 return false;
             }
@@ -106,6 +81,44 @@ impl<'txn, 'db, T: Storage> TypedPlanNode<'txn, 'db, T> {
             ));
         }
         Ok((ColumnIndex(i), column))
+    }
+}
+
+impl From<Vec<Column>> for PlanSchema {
+    fn from(columns: Vec<Column>) -> Self {
+        Self(columns)
+    }
+}
+
+pub struct TypedPlanNode<'txn, 'db, T: Storage> {
+    pub node: PlanNode<'txn, 'db, T>,
+    pub schema: PlanSchema,
+}
+
+impl<'txn, 'db, T: Storage> TypedPlanNode<'txn, 'db, T> {
+    fn empty_source() -> Self {
+        Self {
+            node: PlanNode::Values(Values::one_empty_row()),
+            schema: PlanSchema::empty(),
+        }
+    }
+
+    /// Creates a node that does not produce any rows.
+    fn sink(node: PlanNode<'txn, 'db, T>) -> Self {
+        Self {
+            node,
+            schema: PlanSchema::empty(),
+        }
+    }
+
+    fn inherit_schema<F>(self, f: F) -> Self
+    where
+        F: FnOnce(PlanNode<'txn, 'db, T>) -> PlanNode<'txn, 'db, T>,
+    {
+        Self {
+            node: f(self.node),
+            schema: self.schema,
+        }
     }
 }
 
@@ -161,7 +174,7 @@ pub enum PlanNode<'txn, 'db, T: Storage> {
     Filter(Filter<'txn, 'db, T>),
     Sort(Sort<'txn, 'db, T>),
     Limit(Limit<'txn, 'db, T>),
-    CrossProduct(CrossProduct<'txn, 'db, T>),
+    Join(Join<'txn, 'db, T>),
     Insert(Insert<'txn, 'db, T>),
     Update(Update<'txn, 'db, T>),
     Delete(Delete<'txn, 'db, T>),
@@ -188,7 +201,7 @@ impl<T: Storage> Explain for PlanNode<'_, '_, T> {
             Self::Filter(n) => n.visit(visitor),
             Self::Sort(n) => n.visit(visitor),
             Self::Limit(n) => n.visit(visitor),
-            Self::CrossProduct(n) => n.visit(visitor),
+            Self::Join(n) => n.visit(visitor),
             Self::Insert(n) => n.visit(visitor),
             Self::Update(n) => n.visit(visitor),
             Self::Delete(n) => n.visit(visitor),
@@ -360,16 +373,23 @@ impl std::fmt::Display for OrderBy {
     }
 }
 
-pub struct CrossProduct<'txn, 'db, T: Storage> {
-    pub left: Box<PlanNode<'txn, 'db, T>>,
-    pub right: Box<PlanNode<'txn, 'db, T>>,
+pub enum Join<'txn, 'db, T: Storage> {
+    NestedLoop {
+        left: Box<PlanNode<'txn, 'db, T>>,
+        right: Box<PlanNode<'txn, 'db, T>>,
+        on: Expression,
+    },
 }
 
-impl<T: Storage> Explain for CrossProduct<'_, '_, T> {
+impl<T: Storage> Join<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
-        visitor.write_str("CrossProduct");
-        self.left.visit(visitor);
-        self.right.visit(visitor);
+        match self {
+            Self::NestedLoop { left, right, on } => {
+                write!(visitor, "NestedLoopJoin on={on}");
+                left.visit(visitor);
+                right.visit(visitor);
+            }
+        }
     }
 }
 
