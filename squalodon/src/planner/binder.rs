@@ -474,21 +474,24 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         let mut rows = Vec::with_capacity(values.rows.len());
         let mut columns;
         let mut rows_iter = values.rows.into_iter();
-        {
-            let row = rows_iter.next().unwrap();
-            let mut exprs = Vec::with_capacity(row.len());
-            columns = Vec::with_capacity(row.len());
-            let row = row.into_iter().enumerate();
-            for (i, expr) in row {
-                let TypedExpression { expr, ty } = self.bind_expr(&PlanSchema::empty(), expr)?;
-                exprs.push(expr);
-                columns.push(planner::Column {
-                    table_name: None,
-                    column_name: format!("column{}", i + 1),
-                    ty,
-                });
+        match rows_iter.next() {
+            Some(row) => {
+                let mut exprs = Vec::with_capacity(row.len());
+                columns = Vec::with_capacity(row.len());
+                let row = row.into_iter().enumerate();
+                for (i, expr) in row {
+                    let TypedExpression { expr, ty } =
+                        self.bind_expr(&PlanSchema::empty(), expr)?;
+                    exprs.push(expr);
+                    columns.push(planner::Column {
+                        table_name: None,
+                        column_name: format!("column{}", i + 1),
+                        ty,
+                    });
+                }
+                rows.push(exprs);
             }
-            rows.push(exprs);
+            None => return Ok(TypedPlanNode::empty_source()),
         }
         for row in rows_iter {
             assert_eq!(row.len(), columns.len());
