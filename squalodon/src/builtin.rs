@@ -1,5 +1,6 @@
 use crate::{
     catalog::{Constraint, TableFunction},
+    lexer,
     planner::Column,
     storage::Storage,
     Row, Type,
@@ -7,20 +8,6 @@ use crate::{
 
 pub fn load_table_functions<T: Storage>() -> impl Iterator<Item = (String, TableFunction<T>)> {
     [
-        (
-            "squalodon_tables",
-            TableFunction {
-                fn_ptr: |ctx, _| {
-                    let mut rows = Vec::new();
-                    for table in ctx.catalog().tables() {
-                        let table = table?;
-                        rows.push(Row(vec![table.name().into()]));
-                    }
-                    Ok(Box::new(rows.into_iter()))
-                },
-                result_columns: vec![Column::new("name", Type::Text)],
-            },
-        ),
         (
             "squalodon_columns",
             TableFunction {
@@ -66,6 +53,32 @@ pub fn load_table_functions<T: Storage>() -> impl Iterator<Item = (String, Table
                     Column::new("is_nullable", Type::Boolean),
                     Column::new("is_primary_key", Type::Boolean),
                 ],
+            },
+        ),
+        (
+            "squalodon_keywords",
+            TableFunction {
+                fn_ptr: |_, _| {
+                    let rows = lexer::KEYWORDS
+                        .iter()
+                        .map(|keyword| Row(vec![keyword.to_ascii_uppercase().into()]));
+                    Ok(Box::new(rows))
+                },
+                result_columns: vec![Column::new("keyword", Type::Text)],
+            },
+        ),
+        (
+            "squalodon_tables",
+            TableFunction {
+                fn_ptr: |ctx, _| {
+                    let mut rows = Vec::new();
+                    for table in ctx.catalog().tables() {
+                        let table = table?;
+                        rows.push(Row(vec![table.name().into()]));
+                    }
+                    Ok(Box::new(rows.into_iter()))
+                },
+                result_columns: vec![Column::new("name", Type::Text)],
             },
         ),
     ]

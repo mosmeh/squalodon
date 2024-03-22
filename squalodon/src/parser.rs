@@ -1,17 +1,13 @@
-mod lexer;
-
-pub use lexer::{quote, LexerError};
-
 use crate::{
     catalog::Column,
+    lexer::{Lexer, LexerError, Token},
     types::{Type, Value},
 };
-use lexer::{Lexer, Token};
 
 #[derive(thiserror::Error, Debug)]
 pub enum ParserError {
-    #[error("Unexpected token {0:?}")]
-    UnexpectedToken(Token),
+    #[error("Unexpected token {0}")]
+    UnexpectedToken(String),
 
     #[error("Rows in VALUES must have the same number of columns")]
     ValuesColumnCountMismatch,
@@ -388,7 +384,7 @@ impl<'a> Parser<'a> {
             Token::Insert => self.parse_insert().map(Statement::Insert),
             Token::Update => self.parse_update().map(Statement::Update),
             Token::Delete => self.parse_delete().map(Statement::Delete),
-            token => Err(ParserError::UnexpectedToken(token.clone())),
+            token => Err(unexpected(token)),
         }
     }
 
@@ -396,7 +392,7 @@ impl<'a> Parser<'a> {
         self.expect(Token::Create)?;
         match self.lexer.peek()? {
             Token::Table => self.parse_create_table().map(Statement::CreateTable),
-            token => Err(ParserError::UnexpectedToken(token.clone())),
+            token => Err(unexpected(token)),
         }
     }
 
@@ -433,7 +429,7 @@ impl<'a> Parser<'a> {
                         Token::Real => Type::Real,
                         Token::Boolean => Type::Boolean,
                         Token::Text => Type::Text,
-                        token => return Err(ParserError::UnexpectedToken(token)),
+                        token => return Err(unexpected(&token)),
                     };
                     loop {
                         match self.lexer.peek()? {
@@ -452,7 +448,7 @@ impl<'a> Parser<'a> {
                     }
                     columns.push(Column { name, ty });
                 }
-                token => return Err(ParserError::UnexpectedToken(token.clone())),
+                token => return Err(unexpected(token)),
             }
             if !self.lexer.consume_if_eq(Token::Comma)? {
                 break;
@@ -471,7 +467,7 @@ impl<'a> Parser<'a> {
         self.expect(Token::Drop)?;
         match self.lexer.peek()? {
             Token::Table => self.parse_drop_table().map(Statement::DropTable),
-            token => Err(ParserError::UnexpectedToken(token.clone())),
+            token => Err(unexpected(token)),
         }
     }
 
@@ -525,7 +521,7 @@ impl<'a> Parser<'a> {
                 from = TableRef::Values(Values { rows });
                 where_clause = None;
             }
-            token => return Err(ParserError::UnexpectedToken(token.clone())),
+            token => return Err(unexpected(token)),
         };
         let order_by = (*self.lexer.peek()? == Token::Order)
             .then(|| self.parse_order_by())
@@ -634,12 +630,12 @@ impl<'a> Parser<'a> {
                     Token::Select | Token::Values => {
                         TableRef::Subquery(self.parse_select()?.into())
                     }
-                    token => return Err(ParserError::UnexpectedToken(token.clone())),
+                    token => return Err(unexpected(token)),
                 };
                 self.expect(Token::RightParen)?;
                 Ok(inner)
             }
-            token => Err(ParserError::UnexpectedToken(token.clone())),
+            token => Err(unexpected(token)),
         }
     }
 
@@ -661,7 +657,7 @@ impl<'a> Parser<'a> {
                 match parser.lexer.consume()? {
                     Token::First => NullOrder::NullsFirst,
                     Token::Last => NullOrder::NullsLast,
-                    token => return Err(ParserError::UnexpectedToken(token)),
+                    token => return Err(unexpected(&token)),
                 }
             } else {
                 Default::default()
@@ -797,7 +793,7 @@ impl<'a> Parser<'a> {
                 self.expect(Token::RightParen)?;
                 expr
             }
-            token => return Err(ParserError::UnexpectedToken(token)),
+            token => return Err(unexpected(&token)),
         };
         Ok(expr)
     }
@@ -833,7 +829,7 @@ impl<'a> Parser<'a> {
     fn expect_one_of(&mut self, expected: &[Token]) -> ParserResult<()> {
         let actual = self.lexer.consume()?;
         if !expected.contains(&actual) {
-            return Err(ParserError::UnexpectedToken(actual));
+            return Err(unexpected(&actual));
         }
         Ok(())
     }
@@ -841,7 +837,11 @@ impl<'a> Parser<'a> {
     fn expect_identifier(&mut self) -> ParserResult<String> {
         match self.lexer.consume()? {
             Token::Identifier(ident) => Ok(ident),
-            token => Err(ParserError::UnexpectedToken(token)),
+            token => Err(unexpected(&token)),
         }
     }
+}
+
+fn unexpected(token: &Token) -> ParserError {
+    ParserError::UnexpectedToken(format!("{token:?}"))
 }

@@ -1,3 +1,4 @@
+pub mod lexer;
 pub mod storage;
 
 mod builtin;
@@ -13,7 +14,7 @@ mod types;
 pub use catalog::CatalogError;
 pub use connection::{Connection, TransactionError};
 pub use executor::ExecutorError;
-pub use parser::{LexerError, ParserError};
+pub use parser::ParserError;
 pub use planner::PlannerError;
 pub use rows::{Column, Row, Rows};
 pub(crate) use storage::StorageError;

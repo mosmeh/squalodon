@@ -3,12 +3,20 @@ mod rocks;
 
 use anyhow::Result;
 use clap::Parser;
-use rustyline::error::ReadlineError;
-use squalodon::{
-    storage::{Memory, Storage},
-    Database, Rows,
+use rustyline::{
+    completion::{extract_word, Completer},
+    error::ReadlineError,
+    highlight::Highlighter,
+    hint::Hinter,
+    validate::Validator,
+    Helper,
 };
-use std::{io::Write, path::PathBuf};
+use squalodon::{
+    lexer::{is_valid_identifier_char, SegmentKind, Segmenter},
+    storage::{Memory, Storage},
+    Connection, Database, Rows,
+};
+use std::{cell::RefCell, io::Write, path::PathBuf};
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Parser, Debug)]
@@ -42,7 +50,8 @@ fn run<T: Storage>(args: Args, storage: T) -> Result<()> {
         let init = std::fs::read_to_string(init)?;
         conn.execute(&init)?;
     }
-    let mut rl = rustyline::DefaultEditor::new()?;
+    let mut rl = rustyline::Editor::new()?;
+    rl.set_helper(Some(RustylineHelper::new(db.connect())));
     let mut buf = String::new();
     loop {
         let prompt = if buf.is_empty() { "> " } else { ". " };
@@ -111,3 +120,98 @@ fn write_table<W: Write>(out: &mut W, rows: Rows) -> std::io::Result<()> {
     }
     Ok(())
 }
+
+struct RustylineHelper<'a, T: Storage> {
+    conn: RefCell<Connection<'a, T>>,
+}
+
+impl<'a, T: Storage> RustylineHelper<'a, T> {
+    fn new(conn: Connection<'a, T>) -> Self {
+        Self { conn: conn.into() }
+    }
+}
+
+impl<T: Storage> Helper for RustylineHelper<'_, T> {}
+
+impl<T: Storage> Completer for RustylineHelper<'_, T> {
+    type Candidate = String;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &rustyline::Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
+        let (start, word) = extract_word(line, pos, None, |ch| !is_valid_identifier_char(ch));
+        let mut candidates = Vec::new();
+        let mut conn = self.conn.borrow_mut();
+        let rows = conn.query("SELECT * FROM squalodon_keywords()").unwrap();
+        let uppercase_word = word.to_ascii_uppercase();
+        for row in rows {
+            let keyword: String = row.get(0).unwrap();
+            if keyword.starts_with(&uppercase_word) {
+                candidates.push(keyword.to_string());
+            }
+        }
+        let rows = conn.query("SELECT * FROM squalodon_tables()").unwrap();
+        for row in rows {
+            let table_name: String = row.get(0).unwrap();
+            if table_name.starts_with(word) {
+                candidates.push(table_name);
+            }
+        }
+        Ok((start, candidates))
+    }
+}
+
+impl<T: Storage> Highlighter for RustylineHelper<'_, T> {
+    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> std::borrow::Cow<'l, str> {
+        let mut segmenter = Segmenter::new(line);
+        let mut highlighted = String::new();
+        for segment in segmenter.by_ref() {
+            match segment {
+                Ok(segment) => {
+                    let color = match segment.kind() {
+                        SegmentKind::Literal => {
+                            Some("\x1b[33m") // yellow
+                        }
+                        SegmentKind::Keyword => {
+                            Some("\x1b[32m") // green
+                        }
+                        SegmentKind::Comment => {
+                            Some("\x1b[90m") // gray
+                        }
+                        SegmentKind::Identifier
+                        | SegmentKind::Operator
+                        | SegmentKind::Whitespace => None,
+                    };
+                    match color {
+                        Some(color) => {
+                            highlighted.push_str(color);
+                            highlighted.push_str(segment.slice());
+                            highlighted.push_str("\x1b[0m");
+                        }
+                        None => {
+                            highlighted.push_str(segment.slice());
+                        }
+                    }
+                }
+                Err(remaining) => {
+                    highlighted.push_str(remaining);
+                    break;
+                }
+            }
+        }
+        highlighted.into()
+    }
+
+    fn highlight_char(&self, _line: &str, _pos: usize, _forced: bool) -> bool {
+        true
+    }
+}
+
+impl<T: Storage> Hinter for RustylineHelper<'_, T> {
+    type Hint = String;
+}
+
+impl<T: Storage> Validator for RustylineHelper<'_, T> {}

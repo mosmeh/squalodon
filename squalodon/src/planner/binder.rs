@@ -1,6 +1,7 @@
 use super::{PlanNode, PlannerError, PlannerResult, TypedPlanNode, Values};
 use crate::{
     catalog::{self, CatalogRef},
+    lexer,
     parser::{self, BinaryOp, ColumnRef, UnaryOp},
     planner,
     rows::ColumnIndex,
@@ -31,7 +32,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
                 "SELECT column_name, type, is_nullable, is_primary_key
                 FROM squalodon_columns()
                 WHERE table_name = {}",
-                parser::quote(&name, '\'')
+                lexer::quote(&name, '\'')
             )),
             parser::Statement::CreateTable(create_table) => self.bind_create_table(create_table),
             parser::Statement::DropTable(drop_table) => self.bind_drop_table(drop_table),
