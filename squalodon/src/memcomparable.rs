@@ -6,7 +6,7 @@
 
 use crate::{
     parser::{NullOrder, Order},
-    Error, Result, Value,
+    Value,
 };
 use std::borrow::Cow;
 
@@ -44,6 +44,7 @@ impl MemcomparableSerde {
         self
     }
 
+    /// Serialize a value into bytes, appending them to `buf`.
     pub fn serialize_into(&self, value: &Value, buf: &mut Vec<u8>) {
         let start = buf.len();
         match value {
@@ -102,45 +103,68 @@ impl MemcomparableSerde {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn deserialize_from(&self, buf: &[u8]) -> Result<Value> {
-        let (&tag, buf) = buf.split_first().ok_or(Error::InvalidEncoding)?;
+    /// Deserialize a sequence of values from the buffer.
+    ///
+    /// Invalid or incomplete trailing bytes are ignored.
+    pub fn deserialize_seq_from<'a>(&'a self, buf: &'a [u8]) -> impl Iterator<Item = Value> + '_ {
+        let mut buf = buf;
+        std::iter::from_fn(move || {
+            if buf.is_empty() {
+                return None;
+            }
+            if let Some((value, len)) = self.deserialize_from(buf) {
+                buf = &buf[len..];
+                Some(value)
+            } else {
+                buf = &[];
+                None
+            }
+        })
+    }
+
+    /// Deserialize a value at the beginning of the buffer.
+    ///
+    /// When successful, returns the value and the number of bytes consumed.
+    pub fn deserialize_from(&self, buf: &[u8]) -> Option<(Value, usize)> {
+        let (&tag, buf) = buf.split_first()?;
         let buf = match self.order {
             Order::Desc if !buf.is_empty() => Cow::Owned(buf.iter().map(|i| !i).collect()),
             Order::Asc | Order::Desc => Cow::Borrowed(buf),
         };
         match (tag, buf.as_ref()) {
             (NULL_FIRST_TAG, []) => match self.null_order {
-                NullOrder::NullsFirst => Ok(Value::Null),
-                NullOrder::NullsLast => Err(Error::InvalidEncoding),
+                NullOrder::NullsFirst => Some((Value::Null, TAG_SIZE)),
+                NullOrder::NullsLast => None,
             },
             (NULL_LAST_TAG, []) => match self.null_order {
-                NullOrder::NullsFirst => Err(Error::InvalidEncoding),
-                NullOrder::NullsLast => Ok(Value::Null),
+                NullOrder::NullsFirst => None,
+                NullOrder::NullsLast => Some((Value::Null, TAG_SIZE)),
             },
             (INTEGER_TAG, serialized) => {
-                let serialized = serialized.try_into().map_err(|_| Error::InvalidEncoding)?;
+                let serialized = *serialized.first_chunk()?;
                 let i = (u64::from_be_bytes(serialized) ^ (1 << (u64::BITS - 1))) as i64;
-                Ok(Value::Integer(i))
+                Some((Value::Integer(i), TAG_SIZE + serialized.len()))
             }
             (REAL_TAG, serialized) => {
-                let serialized = serialized.try_into().map_err(|_| Error::InvalidEncoding)?;
+                let serialized = *serialized.first_chunk()?;
                 let mut v = u64::from_be_bytes(serialized);
                 if v & (1 << (u64::BITS - 1)) != 0 {
                     v &= !(1 << (u64::BITS - 1));
                 } else {
                     v = !v;
                 }
-                Ok(Value::Real(f64::from_bits(v)))
+                Some((Value::Real(f64::from_bits(v)), TAG_SIZE + serialized.len()))
             }
-            (BOOLEAN_TAG, [0]) => Ok(Value::Boolean(false)),
-            (BOOLEAN_TAG, [1]) => Ok(Value::Boolean(true)),
-            (TEXT_TAG, [0]) => Ok(Value::Text(String::new())),
+            (BOOLEAN_TAG, [0]) => Some((Value::Boolean(false), TAG_SIZE + 1)),
+            (BOOLEAN_TAG, [1]) => Some((Value::Boolean(true), TAG_SIZE + 1)),
+            (TEXT_TAG, [0]) => Some((Value::Text(String::new()), TAG_SIZE + 1)),
             (TEXT_TAG, [1, serialized @ ..]) => {
                 let mut s = Vec::with_capacity(serialized.len() / UNIT_SIZE);
                 let mut serialized = serialized;
+                let mut consumed_len = TAG_SIZE + 1;
                 loop {
                     let (unit, rest) = serialized.split_at(UNIT_SIZE);
+                    consumed_len += UNIT_SIZE;
                     match unit[CHUNK_SIZE] {
                         len @ 1..=CHUNK_SIZE_U8 => {
                             s.extend_from_slice(&unit[..len as usize]);
@@ -150,13 +174,13 @@ impl MemcomparableSerde {
                             s.extend_from_slice(&unit[..CHUNK_SIZE]);
                             serialized = rest;
                         }
-                        _ => return Err(Error::InvalidEncoding),
+                        _ => return None,
                     }
                 }
-                let s = String::from_utf8(s).map_err(|_| Error::InvalidEncoding)?;
-                Ok(Value::Text(s))
+                let s = String::from_utf8(s).ok()?;
+                Some((Value::Text(s), consumed_len))
             }
-            _ => Err(Error::InvalidEncoding),
+            _ => None,
         }
     }
 }

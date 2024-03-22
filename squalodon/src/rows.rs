@@ -52,6 +52,14 @@ impl Row {
     }
 }
 
+impl Index<usize> for Row {
+    type Output = Value;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.0[index]
+    }
+}
+
 impl Index<ColumnIndex> for Row {
     type Output = Value;
 

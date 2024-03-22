@@ -1,7 +1,7 @@
 mod binder;
 
 use crate::{
-    catalog::{self, CatalogRef, TableFnPtr},
+    catalog::{self, AggregateInitFnPtr, CatalogRef, TableFnPtr},
     parser::{self, BinaryOp, ColumnRef, NullOrder, Order, UnaryOp},
     rows::ColumnIndex,
     storage::Table,
@@ -33,8 +33,14 @@ pub enum PlannerError {
     #[error("Primary key is required")]
     NoPrimaryKey,
 
+    #[error("Aggregate function is not allowed in this context")]
+    AggregateNotAllowed,
+
     #[error("Type error")]
     TypeError,
+
+    #[error("Arity error")]
+    ArityError,
 
     #[error("Storage error: {0}")]
     Storage(#[from] StorageError),
@@ -43,7 +49,7 @@ pub enum PlannerError {
     Catalog(#[from] CatalogError),
 }
 
-type PlannerResult<T> = std::result::Result<T, PlannerError>;
+pub type PlannerResult<T> = std::result::Result<T, PlannerError>;
 
 pub fn plan<'txn, 'db, T: Storage>(
     catalog: &'txn CatalogRef<'txn, 'db, T>,
@@ -178,6 +184,7 @@ pub enum PlanNode<'txn, 'db, T: Storage> {
     Sort(Sort<'txn, 'db, T>),
     Limit(Limit<'txn, 'db, T>),
     Join(Join<'txn, 'db, T>),
+    Aggregate(Aggregate<'txn, 'db, T>),
     Insert(Insert<'txn, 'db, T>),
     Update(Update<'txn, 'db, T>),
     Delete(Delete<'txn, 'db, T>),
@@ -205,6 +212,7 @@ impl<T: Storage> Explain for PlanNode<'_, '_, T> {
             Self::Sort(n) => n.visit(visitor),
             Self::Limit(n) => n.visit(visitor),
             Self::Join(n) => n.visit(visitor),
+            Self::Aggregate(n) => n.visit(visitor),
             Self::Insert(n) => n.visit(visitor),
             Self::Update(n) => n.visit(visitor),
             Self::Delete(n) => n.visit(visitor),
@@ -384,7 +392,7 @@ pub enum Join<'txn, 'db, T: Storage> {
     },
 }
 
-impl<T: Storage> Join<'_, '_, T> {
+impl<T: Storage> Explain for Join<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
         match self {
             Self::NestedLoop { left, right, on } => {
@@ -393,6 +401,18 @@ impl<T: Storage> Join<'_, '_, T> {
                 right.visit(visitor);
             }
         }
+    }
+}
+
+pub struct Aggregate<'txn, 'db, T: Storage> {
+    pub source: Box<PlanNode<'txn, 'db, T>>,
+    pub init_fn_ptrs: Vec<AggregateInitFnPtr>,
+}
+
+impl<T: Storage> Explain for Aggregate<'_, '_, T> {
+    fn visit(&self, visitor: &mut ExplainVisitor) {
+        write!(visitor, "Aggregate #aggregated={}", self.init_fn_ptrs.len());
+        self.source.visit(visitor);
     }
 }
 

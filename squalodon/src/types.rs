@@ -93,6 +93,21 @@ impl PartialOrd for Value {
     }
 }
 
+impl Eq for Value {}
+
+impl std::hash::Hash for Value {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Self::Null => (),
+            Self::Integer(i) => i.hash(state),
+            Self::Real(r) => r.to_bits().hash(state),
+            Self::Boolean(b) => b.hash(state),
+            Self::Text(s) => s.hash(state),
+        }
+    }
+}
+
 impl From<i64> for Value {
     fn from(v: i64) -> Self {
         Self::Integer(v)

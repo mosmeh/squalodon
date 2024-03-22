@@ -114,6 +114,8 @@ keywords! {
     False
     First
     From
+    Group
+    Having
     If
     Inner
     Insert

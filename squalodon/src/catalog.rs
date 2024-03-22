@@ -1,11 +1,11 @@
 use crate::{
     builtin,
     executor::{ExecutorContext, ExecutorResult},
-    planner,
+    planner::{self, PlannerResult},
     rows::ColumnIndex,
     storage::{self, Storage, Transaction},
     types::Type,
-    Row,
+    Row, Value,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::atomic::AtomicU64};
@@ -27,6 +27,7 @@ pub type CatalogResult<T> = std::result::Result<T, CatalogError>;
 #[derive(Debug)]
 pub enum CatalogEntryKind {
     Table,
+    AggregateFunction,
     TableFunction,
 }
 
@@ -34,6 +35,7 @@ impl std::fmt::Display for CatalogEntryKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Table => "table",
+            Self::AggregateFunction => "aggregate function",
             Self::TableFunction => "table function",
         })
     }
@@ -78,26 +80,31 @@ pub enum Constraint {
     NotNull(ColumnIndex),
 }
 
+pub struct AggregateFunction {
+    pub bind_fn_ptr: AggregateBindFnPtr,
+    pub init_fn_ptr: AggregateInitFnPtr,
+}
+
+pub type AggregateBindFnPtr = fn(Option<Type>) -> PlannerResult<Option<Type>>;
+pub type AggregateInitFnPtr = fn() -> Box<dyn Aggregator>;
+
+pub trait Aggregator {
+    fn update(&mut self, value: &Value) -> ExecutorResult<()>;
+    fn finish(&self) -> Value;
+}
+
 pub struct TableFunction<T: Storage> {
     pub fn_ptr: TableFnPtr<T>,
     pub result_columns: Vec<planner::Column>,
 }
 
-impl<T: Storage> Clone for TableFunction<T> {
-    fn clone(&self) -> Self {
-        Self {
-            fn_ptr: self.fn_ptr,
-            result_columns: self.result_columns.clone(),
-        }
-    }
-}
-
 pub type TableFnPtr<T> =
-    for<'a> fn(&ExecutorContext<'_, 'a, T>, &Row) -> ExecutorResult<Box<dyn Iterator<Item = Row>>>;
+    fn(&ExecutorContext<'_, '_, T>, &Row) -> ExecutorResult<Box<dyn Iterator<Item = Row>>>;
 
 pub struct Catalog<T: Storage> {
     next_table_id: AtomicU64,
-    table_functions: HashMap<String, TableFunction<T>>,
+    aggregate_functions: HashMap<&'static str, AggregateFunction>,
+    table_functions: HashMap<&'static str, TableFunction<T>>,
 }
 
 impl<T: Storage> Catalog<T> {
@@ -116,7 +123,8 @@ impl<T: Storage> Catalog<T> {
 
         Ok(Self {
             next_table_id: (max_table_id + 1).into(),
-            table_functions: builtin::load_table_functions().collect(),
+            aggregate_functions: builtin::aggregate_function::load().collect(),
+            table_functions: builtin::table_function::load().collect(),
         })
     }
 
@@ -208,13 +216,15 @@ impl<'txn, 'db, T: Storage> CatalogRef<'txn, 'db, T> {
         Ok(())
     }
 
-    pub fn table_function(&self, name: &str) -> CatalogResult<TableFunction<T>> {
-        self.catalog
-            .table_functions
-            .get(name)
-            .cloned()
-            .ok_or_else(|| {
-                CatalogError::UnknownEntry(CatalogEntryKind::TableFunction, name.to_owned())
-            })
+    pub fn aggregate_function(&self, name: &str) -> CatalogResult<&AggregateFunction> {
+        self.catalog.aggregate_functions.get(name).ok_or_else(|| {
+            CatalogError::UnknownEntry(CatalogEntryKind::AggregateFunction, name.to_owned())
+        })
+    }
+
+    pub fn table_function(&self, name: &str) -> CatalogResult<&TableFunction<T>> {
+        self.catalog.table_functions.get(name).ok_or_else(|| {
+            CatalogError::UnknownEntry(CatalogEntryKind::TableFunction, name.to_owned())
+        })
     }
 }

@@ -64,6 +64,8 @@ pub struct Select {
     pub projections: Vec<Projection>,
     pub from: TableRef,
     pub where_clause: Option<Expression>,
+    pub group_by: Vec<Expression>,
+    pub having: Option<Expression>,
     pub order_by: Vec<OrderBy>,
     pub limit: Option<Expression>,
     pub offset: Option<Expression>,
@@ -132,7 +134,7 @@ pub struct Delete {
     pub where_clause: Option<Expression>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Expression {
     Constant(Value),
     ColumnRef(ColumnRef),
@@ -145,15 +147,49 @@ pub enum Expression {
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },
+    Function {
+        name: String,
+        args: Vec<Expression>,
+    },
 }
 
-#[derive(Debug, Clone)]
+impl std::fmt::Display for Expression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Constant(value) => value.fmt(f),
+            Self::ColumnRef(column_ref) => column_ref.fmt(f),
+            Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
+            Self::BinaryOp { op, lhs, rhs } => write!(f, "({lhs} {op} {rhs})"),
+            Self::Function { name, args } => {
+                write!(f, "{name}(")?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    arg.fmt(f)?;
+                }
+                f.write_str(")")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ColumnRef {
     pub table_name: Option<String>,
     pub column_name: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+impl std::fmt::Display for ColumnRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(table_name) = &self.table_name {
+            write!(f, "{table_name}.")?;
+        }
+        f.write_str(&self.column_name)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnaryOp {
     Plus,
     Minus,
@@ -189,7 +225,7 @@ impl UnaryOp {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOp {
     Add,
     Sub,
@@ -486,7 +522,9 @@ impl<'a> Parser<'a> {
     fn parse_select(&mut self) -> ParserResult<Select> {
         let projections;
         let from;
-        let where_clause;
+        let mut where_clause = None;
+        let mut group_by = Vec::new();
+        let mut having = None;
         match self.lexer.peek()? {
             Token::Select => {
                 self.lexer.consume()?;
@@ -495,11 +533,16 @@ impl<'a> Parser<'a> {
                     .then(|| self.parse_from())
                     .transpose()?
                     .unwrap_or(TableRef::Values(Values { rows: Vec::new() }));
-                where_clause = self
-                    .lexer
-                    .consume_if_eq(Token::Where)?
-                    .then(|| self.parse_expr())
-                    .transpose()?;
+                if self.lexer.consume_if_eq(Token::Where)? {
+                    where_clause = Some(self.parse_expr()?);
+                }
+                if self.lexer.consume_if_eq(Token::Group)? {
+                    self.expect(Token::By)?;
+                    group_by = self.parse_comma_separated(Self::parse_expr)?;
+                }
+                if self.lexer.consume_if_eq(Token::Having)? {
+                    having = Some(self.parse_expr()?);
+                }
             }
             Token::Values => {
                 self.lexer.consume()?;
@@ -519,7 +562,6 @@ impl<'a> Parser<'a> {
                 })?;
                 projections = vec![Projection::Wildcard];
                 from = TableRef::Values(Values { rows });
-                where_clause = None;
             }
             token => return Err(unexpected(token)),
         };
@@ -541,6 +583,8 @@ impl<'a> Parser<'a> {
             projections,
             from,
             where_clause,
+            group_by,
+            having,
             order_by,
             limit,
             offset,
@@ -774,20 +818,24 @@ impl<'a> Parser<'a> {
             Token::True => Expression::Constant(Value::Boolean(true)),
             Token::False => Expression::Constant(Value::Boolean(false)),
             Token::String(s) => Expression::Constant(Value::Text(s)),
-            Token::Identifier(ident) => {
-                if self.lexer.consume_if_eq(Token::Dot)? {
+            Token::Identifier(ident) => match self.lexer.peek()? {
+                Token::LeftParen => {
+                    let args = self.parse_args()?;
+                    Expression::Function { name: ident, args }
+                }
+                Token::Dot => {
+                    self.lexer.consume()?;
                     let column = self.expect_identifier()?;
                     Expression::ColumnRef(ColumnRef {
                         table_name: Some(ident),
                         column_name: column,
                     })
-                } else {
-                    Expression::ColumnRef(ColumnRef {
-                        table_name: None,
-                        column_name: ident,
-                    })
                 }
-            }
+                _ => Expression::ColumnRef(ColumnRef {
+                    table_name: None,
+                    column_name: ident,
+                }),
+            },
             Token::LeftParen => {
                 let expr = self.parse_expr()?;
                 self.expect(Token::RightParen)?;

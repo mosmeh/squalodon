@@ -1,11 +1,12 @@
 use crate::{
-    catalog::{CatalogRef, TableFnPtr},
+    catalog::{AggregateInitFnPtr, CatalogRef, TableFnPtr},
     memcomparable::MemcomparableSerde,
     parser::{BinaryOp, UnaryOp},
     planner::{self, Expression, OrderBy, PlanNode},
     storage::{self, Table},
     CatalogError, Row, Storage, StorageError, Value,
 };
+use std::collections::HashMap;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutorError {
@@ -129,6 +130,7 @@ enum ExecutorNode<'txn, 'db, T: Storage> {
     Sort(Sort),
     Limit(Limit<'txn, 'db, T>),
     NestedLoopJoin(NestedLoopJoin<'txn, 'db, T>),
+    Aggregate(Aggregate),
     Insert(Insert<'txn, 'db, T>),
     Update(Update<'txn, 'db, T>),
     Delete(Delete<'txn, 'db, T>),
@@ -185,6 +187,10 @@ impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
             PlanNode::Join(planner::Join::NestedLoop { left, right, on }) => Self::NestedLoopJoin(
                 NestedLoopJoin::new(Self::new(ctx, *left)?, Self::new(ctx, *right)?, on)?,
             ),
+            PlanNode::Aggregate(planner::Aggregate {
+                source,
+                init_fn_ptrs,
+            }) => Self::Aggregate(Aggregate::new(Self::new(ctx, *source)?, &init_fn_ptrs)?),
             PlanNode::Insert(insert) => Self::Insert(Insert {
                 source: Box::new(Self::new(ctx, *insert.source)?),
                 table: insert.table,
@@ -213,6 +219,7 @@ impl<T: Storage> Node for ExecutorNode<'_, '_, T> {
             Self::Sort(e) => e.next_row(),
             Self::Limit(e) => e.next_row(),
             Self::NestedLoopJoin(e) => e.next_row(),
+            Self::Aggregate(e) => e.next_row(),
             Self::Insert(e) => e.next_row(),
             Self::Update(e) => e.next_row(),
             Self::Delete(e) => e.next_row(),
@@ -489,6 +496,55 @@ impl<T: Storage> Node for NestedLoopJoin<'_, '_, T> {
             self.outer_row = None;
             self.inner_cursor = 0;
         }
+    }
+}
+
+struct Aggregate {
+    rows: Box<dyn Iterator<Item = Row>>,
+}
+
+impl Aggregate {
+    fn new<T: Storage>(
+        mut source: ExecutorNode<'_, '_, T>,
+        init_fn_ptrs: &[AggregateInitFnPtr],
+    ) -> ExecutorResult<Self> {
+        // The first `init_fn_ptrs.len()` columns from `source` are
+        // the aggregated columns that are passed to the respective
+        // aggregate functions.
+        // The rest of the columns are the columns in the GROUP BY clause.
+
+        let serde = MemcomparableSerde::new();
+        let mut groups = HashMap::new();
+        for row in source.by_ref() {
+            let row = row?;
+            let mut key = Vec::new();
+            for value in &row.0[init_fn_ptrs.len()..] {
+                serde.serialize_into(value, &mut key);
+            }
+            let aggs = groups
+                .entry(key)
+                .or_insert_with(|| init_fn_ptrs.iter().map(|init| init()).collect::<Vec<_>>());
+            for (agg, value) in aggs.iter_mut().zip(&row.0) {
+                agg.update(value)?;
+            }
+        }
+        let rows = groups.into_iter().map(move |(key, aggs)| {
+            let row = aggs
+                .into_iter()
+                .map(|agg| agg.finish())
+                .chain(serde.deserialize_seq_from(&key))
+                .collect();
+            Row(row)
+        });
+        Ok(Self {
+            rows: Box::new(rows),
+        })
+    }
+}
+
+impl Node for Aggregate {
+    fn next_row(&mut self) -> Output {
+        self.rows.next().into_output()
     }
 }
 

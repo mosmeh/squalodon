@@ -1,8 +1,8 @@
-use super::{PlanNode, PlannerError, PlannerResult, TypedPlanNode, Values};
+use super::{PlanNode, PlannerError, PlannerResult, TypedPlanNode};
 use crate::{
-    catalog::{self, CatalogRef},
+    catalog::{self, AggregateFunction, CatalogRef},
     lexer,
-    parser::{self, BinaryOp, ColumnRef, UnaryOp},
+    parser::{self, BinaryOp, UnaryOp},
     planner,
     rows::ColumnIndex,
     storage::Table,
@@ -10,7 +10,7 @@ use crate::{
     CatalogError, Storage,
 };
 use planner::PlanSchema;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub struct Binder<'txn, 'db, T: Storage> {
     catalog: &'txn CatalogRef<'txn, 'db, T>,
@@ -148,9 +148,44 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         if let Some(where_clause) = select.where_clause {
             node = self.bind_where_clause(node, where_clause)?;
         }
-        let node = self.bind_order_by(node, select.order_by)?;
+
+        let mut aggregate_ctx = AggregateContext::default();
+
+        // We need to determine whether the query is an aggregate query or not.
+        // We search for all occurrences of aggregate functions in the query.
+        if let Some(having) = &select.having {
+            aggregate_ctx.gather_aggregates(self.catalog, having, &node.schema)?;
+        }
+        for order_by in &select.order_by {
+            aggregate_ctx.gather_aggregates(self.catalog, &order_by.expr, &node.schema)?;
+        }
+        for projection in &select.projections {
+            match projection {
+                parser::Projection::Wildcard => (),
+                parser::Projection::Expression { expr, .. } => {
+                    aggregate_ctx.gather_aggregates(self.catalog, expr, &node.schema)?;
+                }
+            }
+        }
+
+        // The query is an aggregate query if there are any aggregate functions
+        // or if there is a GROUP BY clause.
+        if aggregate_ctx.has_aggregates() || !select.group_by.is_empty() {
+            node = aggregate_ctx.bind_aggregates(self.catalog, node, select.group_by)?;
+        }
+
+        // HAVING, ORDER BY and SELECT expressions can reference
+        // the aggregated expressions. They are bound with the special
+        // binder that allows them to reference the aggregated expressions.
+        let aggregated_expr_binder =
+            ExpressionBinder::new(self.catalog).with_aggregate_context(aggregate_ctx);
+
+        if let Some(having) = select.having {
+            node = self.bind_having(&aggregated_expr_binder, node, having)?;
+        }
+        let node = self.bind_order_by(&aggregated_expr_binder, node, select.order_by)?;
         let node = self.bind_limit(node, select.limit, select.offset)?;
-        let node = self.bind_projections(node, select.projections)?;
+        let node = self.bind_projections(&aggregated_expr_binder, node, select.projections)?;
         Ok(node)
     }
 
@@ -170,8 +205,28 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         }))
     }
 
+    #[allow(clippy::unused_self)]
+    fn bind_having(
+        &self,
+        expr_binder: &ExpressionBinder<'txn, 'db, T>,
+        source: TypedPlanNode<'txn, 'db, T>,
+        expr: parser::Expression,
+    ) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
+        let cond = expr_binder
+            .bind(&source.schema, expr)?
+            .expect_type(Type::Boolean)?;
+        Ok(source.inherit_schema(|source| {
+            PlanNode::Filter(planner::Filter {
+                source: Box::new(source),
+                cond,
+            })
+        }))
+    }
+
+    #[allow(clippy::unused_self)]
     fn bind_projections(
         &self,
+        expr_binder: &ExpressionBinder<'txn, 'db, T>,
         source: TypedPlanNode<'txn, 'db, T>,
         projections: Vec<parser::Projection>,
     ) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
@@ -188,13 +243,13 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
                     }
                 }
                 parser::Projection::Expression { expr, alias } => {
-                    let TypedExpression { expr, ty } = self.bind_expr(&source.schema, expr)?;
+                    let bound_expr = expr_binder.bind(&source.schema, expr.clone())?;
                     let table_name;
                     let column_name;
                     if let Some(alias) = alias {
                         table_name = None;
                         column_name = alias;
-                    } else if let planner::Expression::ColumnRef { index } = &expr {
+                    } else if let planner::Expression::ColumnRef { index } = &bound_expr.expr {
                         let column = &source.schema.0[index.0];
                         table_name = column.table_name.clone();
                         column_name = column.column_name.clone();
@@ -202,11 +257,11 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
                         table_name = None;
                         column_name = expr.to_string();
                     }
-                    exprs.push(expr);
+                    exprs.push(bound_expr.expr);
                     columns.push(planner::Column {
                         table_name,
                         column_name,
-                        ty,
+                        ty: bound_expr.ty,
                     });
                 }
             }
@@ -220,8 +275,10 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         })
     }
 
+    #[allow(clippy::unused_self)]
     fn bind_order_by(
         &self,
+        expr_binder: &ExpressionBinder<'txn, 'db, T>,
         source: TypedPlanNode<'txn, 'db, T>,
         order_by: Vec<parser::OrderBy>,
     ) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
@@ -230,7 +287,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         }
         let mut bound_order_by = Vec::with_capacity(order_by.len());
         for item in order_by {
-            let TypedExpression { expr, .. } = self.bind_expr(&source.schema, item.expr)?;
+            let TypedExpression { expr, .. } = expr_binder.bind(&source.schema, item.expr)?;
             bound_order_by.push(planner::OrderBy {
                 expr,
                 order: item.order,
@@ -345,7 +402,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         }
         let mut exprs = vec![None; table.columns().len()];
         for set in update.sets {
-            let (index, column) = node.schema.resolve_column(&ColumnRef {
+            let (index, column) = node.schema.resolve_column(&planner::ColumnRef {
                 table_name: Some(table.name().to_owned()),
                 column_name: set.column_name.clone(),
             })?;
@@ -448,8 +505,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         name: String,
         args: Vec<parser::Expression>,
     ) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
-        let catalog = self.catalog;
-        let table_function = catalog.table_function(&name)?;
+        let table_function = self.catalog.table_function(&name)?;
         let mut exprs = Vec::with_capacity(args.len());
         for (expr, column) in args.into_iter().zip(table_function.result_columns.iter()) {
             let expr = self
@@ -458,7 +514,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
             exprs.push(expr);
         }
         let node = PlanNode::Project(planner::Project {
-            source: Box::new(PlanNode::Values(Values::one_empty_row())),
+            source: Box::new(PlanNode::Values(planner::Values::one_empty_row())),
             exprs,
         });
         let columns: Vec<_> = table_function.result_columns.clone();
@@ -512,8 +568,193 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         })
     }
 
-    #[allow(clippy::only_used_in_recursion)]
     fn bind_expr(
+        &self,
+        schema: &PlanSchema,
+        expr: parser::Expression,
+    ) -> PlannerResult<TypedExpression> {
+        ExpressionBinder::new(self.catalog).bind(schema, expr)
+    }
+}
+
+struct TypedExpression {
+    expr: planner::Expression,
+    ty: Option<Type>,
+}
+
+impl TypedExpression {
+    fn expect_type<T: Into<Option<Type>>>(self, expected: T) -> PlannerResult<planner::Expression> {
+        if let (Some(actual), Some(expected)) = (self.ty, expected.into()) {
+            if actual != expected {
+                return Err(PlannerError::TypeError);
+            }
+        }
+        Ok(self.expr)
+    }
+}
+
+#[derive(Default)]
+struct AggregateContext<'a> {
+    aggregates: HashMap<Aggregate, usize>,
+    bound_aggregates: Vec<BoundAggregate<'a>>,
+}
+
+impl<'a> AggregateContext<'a> {
+    fn has_aggregates(&self) -> bool {
+        !self.aggregates.is_empty()
+    }
+
+    fn gather_aggregates<T: Storage>(
+        &mut self,
+        catalog: &'a CatalogRef<'_, '_, T>,
+        expr: &parser::Expression,
+        schema: &PlanSchema,
+    ) -> PlannerResult<()> {
+        self.gather_aggregates_inner(catalog, expr, schema, false)
+    }
+
+    fn gather_aggregates_inner<T: Storage>(
+        &mut self,
+        catalog: &'a CatalogRef<'_, '_, T>,
+        expr: &parser::Expression,
+        schema: &PlanSchema,
+        in_aggregate_args: bool,
+    ) -> PlannerResult<()> {
+        match expr {
+            parser::Expression::Constant(_) | parser::Expression::ColumnRef(_) => Ok(()),
+            parser::Expression::UnaryOp { expr, .. } => {
+                self.gather_aggregates_inner(catalog, expr, schema, in_aggregate_args)
+            }
+            parser::Expression::BinaryOp { lhs, rhs, .. } => {
+                self.gather_aggregates_inner(catalog, lhs, schema, in_aggregate_args)?;
+                self.gather_aggregates_inner(catalog, rhs, schema, in_aggregate_args)
+            }
+            parser::Expression::Function { ref name, ref args } => {
+                let function = match catalog.aggregate_function(name) {
+                    Ok(func) => func,
+                    Err(CatalogError::UnknownEntry(_, _)) => return Ok(()),
+                    Err(err) => return Err(err.into()),
+                };
+                if in_aggregate_args {
+                    return Err(PlannerError::AggregateNotAllowed);
+                }
+                let [arg] = args.as_slice() else {
+                    return Err(PlannerError::ArityError);
+                };
+                self.gather_aggregates_inner(catalog, arg, schema, true)?;
+                let aggregate = Aggregate {
+                    function_name: name.clone(),
+                    arg: arg.clone(),
+                };
+                let std::collections::hash_map::Entry::Vacant(entry) =
+                    self.aggregates.entry(aggregate)
+                else {
+                    return Ok(());
+                };
+                let bound_expr = ExpressionBinder::new(catalog).bind(schema, arg.clone())?;
+                let index = self.bound_aggregates.len();
+                self.bound_aggregates.push(BoundAggregate {
+                    function,
+                    arg: bound_expr.expr,
+                    result_column: planner::Column {
+                        table_name: None,
+                        column_name: expr.to_string(),
+                        ty: (function.bind_fn_ptr)(bound_expr.ty)?,
+                    },
+                });
+                entry.insert(index);
+                Ok(())
+            }
+        }
+    }
+
+    fn bind_aggregates<'db, T: Storage>(
+        &self,
+        catalog: &'a CatalogRef<'a, 'db, T>,
+        source: TypedPlanNode<'a, 'db, T>,
+        group_by: Vec<parser::Expression>,
+    ) -> PlannerResult<TypedPlanNode<'a, 'db, T>> {
+        let mut exprs = Vec::with_capacity(self.bound_aggregates.len());
+        let mut columns = Vec::with_capacity(self.bound_aggregates.len());
+
+        // The first `bound_aggregates.len()` columns are the aggregated columns
+        // that are passed to the respective aggregate functions.
+        for bound_aggregate in &self.bound_aggregates {
+            exprs.push(bound_aggregate.arg.clone());
+            columns.push(bound_aggregate.result_column.clone());
+        }
+
+        // The rest of the columns are the columns in the GROUP BY clause.
+        let expr_binder = ExpressionBinder::new(catalog);
+        for group_by in group_by {
+            let TypedExpression { expr, ty } =
+                expr_binder.bind(&source.schema, group_by.clone())?;
+            let column = if let planner::Expression::ColumnRef { index } = expr {
+                source.schema.0[index.0].clone()
+            } else {
+                planner::Column {
+                    table_name: None,
+                    column_name: group_by.to_string(),
+                    ty,
+                }
+            };
+            exprs.push(expr);
+            columns.push(column);
+        }
+
+        let node = PlanNode::Project(planner::Project {
+            source: Box::new(source.node),
+            exprs,
+        });
+
+        let init_fn_ptrs = self
+            .bound_aggregates
+            .iter()
+            .map(|bound_aggregate| bound_aggregate.function.init_fn_ptr)
+            .collect();
+        Ok(TypedPlanNode {
+            node: PlanNode::Aggregate(planner::Aggregate {
+                source: Box::new(node),
+                init_fn_ptrs,
+            }),
+            schema: columns.into(),
+        })
+    }
+}
+
+#[derive(PartialEq, Eq, Hash)]
+struct Aggregate {
+    function_name: String,
+    arg: parser::Expression,
+}
+
+struct BoundAggregate<'a> {
+    function: &'a AggregateFunction,
+    arg: planner::Expression,
+    result_column: planner::Column,
+}
+
+struct ExpressionBinder<'txn, 'db, T: Storage> {
+    catalog: &'txn CatalogRef<'txn, 'db, T>,
+    aggregate_ctx: Option<AggregateContext<'txn>>,
+}
+
+impl<'txn, 'db, T: Storage> ExpressionBinder<'txn, 'db, T> {
+    fn new(catalog: &'txn CatalogRef<'txn, 'db, T>) -> Self {
+        Self {
+            catalog,
+            aggregate_ctx: None,
+        }
+    }
+
+    fn with_aggregate_context(&self, aggregate_ctx: AggregateContext<'txn>) -> Self {
+        Self {
+            catalog: self.catalog,
+            aggregate_ctx: Some(aggregate_ctx),
+        }
+    }
+
+    fn bind(
         &self,
         schema: &PlanSchema,
         expr: parser::Expression,
@@ -535,7 +776,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
                 })
             }
             parser::Expression::UnaryOp { op, expr } => {
-                let TypedExpression { expr, ty } = self.bind_expr(schema, *expr)?;
+                let TypedExpression { expr, ty } = self.bind(schema, *expr)?;
                 let ty = match (op, ty) {
                     (UnaryOp::Not, _) => Some(Type::Boolean),
                     (UnaryOp::Plus | UnaryOp::Minus, Some(ty)) if ty.is_numeric() => Some(ty),
@@ -549,8 +790,8 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
                 Ok(TypedExpression { expr, ty })
             }
             parser::Expression::BinaryOp { op, lhs, rhs } => {
-                let lhs = self.bind_expr(schema, *lhs)?;
-                let rhs = self.bind_expr(schema, *rhs)?;
+                let lhs = self.bind(schema, *lhs)?;
+                let rhs = self.bind(schema, *rhs)?;
                 let ty = match op {
                     BinaryOp::Add
                     | BinaryOp::Sub
@@ -592,22 +833,35 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
                 };
                 Ok(TypedExpression { expr, ty })
             }
-        }
-    }
-}
-
-struct TypedExpression {
-    expr: planner::Expression,
-    ty: Option<Type>,
-}
-
-impl TypedExpression {
-    fn expect_type<T: Into<Option<Type>>>(self, expected: T) -> PlannerResult<planner::Expression> {
-        if let (Some(actual), Some(expected)) = (self.ty, expected.into()) {
-            if actual != expected {
-                return Err(PlannerError::TypeError);
+            parser::Expression::Function { name, args } => {
+                // We currently assume all functions in expressions are
+                // aggregate functions.
+                self.catalog.aggregate_function(&name)?;
+                self.resolve_aggregate(name, args)
             }
         }
-        Ok(self.expr)
+    }
+
+    fn resolve_aggregate(
+        &self,
+        name: String,
+        args: Vec<parser::Expression>,
+    ) -> PlannerResult<TypedExpression> {
+        let Some(aggregate_ctx) = &self.aggregate_ctx else {
+            return Err(PlannerError::AggregateNotAllowed);
+        };
+        let [arg] = args.try_into().map_err(|_| PlannerError::ArityError)?;
+        let aggregate = Aggregate {
+            function_name: name,
+            arg,
+        };
+        let index = *aggregate_ctx.aggregates.get(&aggregate).unwrap();
+        let bound_aggregate = &aggregate_ctx.bound_aggregates[index];
+        Ok(TypedExpression {
+            expr: planner::Expression::ColumnRef {
+                index: ColumnIndex(index),
+            },
+            ty: bound_aggregate.result_column.ty,
+        })
     }
 }
