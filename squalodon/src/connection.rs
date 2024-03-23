@@ -1,7 +1,7 @@
 use crate::{
     executor::{Executor, ExecutorContext},
     parser::{Parser, ParserResult, Statement, TransactionControl},
-    planner::{plan, TypedPlanNode},
+    planner::{plan, Plan},
     rows::{Column, Rows},
     storage::{Storage, Transaction},
     Database, Result, Type,
@@ -105,12 +105,8 @@ impl<'a, T: Storage> Connection<'a, T> {
         }
     }
 
-    fn execute_plan(
-        &self,
-        txn: &T::Transaction<'a>,
-        plan: TypedPlanNode<'_, 'a, T>,
-    ) -> Result<Rows> {
-        let TypedPlanNode { node, schema } = plan;
+    fn execute_plan(&self, txn: &T::Transaction<'a>, plan: Plan<'_, 'a, T>) -> Result<Rows> {
+        let Plan { node, schema } = plan;
         let columns: Vec<_> = schema
             .0
             .iter()

@@ -103,9 +103,9 @@ pub struct Executor<'txn, 'db, T: Storage>(ExecutorNode<'txn, 'db, T>);
 impl<'txn, 'db, T: Storage> Executor<'txn, 'db, T> {
     pub fn new(
         ctx: &'txn ExecutorContext<'txn, 'db, T>,
-        plan: PlanNode<'txn, 'db, T>,
+        plan_node: PlanNode<'txn, 'db, T>,
     ) -> ExecutorResult<Self> {
-        ExecutorNode::new(ctx, plan).map(Self)
+        ExecutorNode::new(ctx, plan_node).map(Self)
     }
 }
 
@@ -139,9 +139,9 @@ enum ExecutorNode<'txn, 'db, T: Storage> {
 impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
     fn new(
         ctx: &'txn ExecutorContext<'txn, 'db, T>,
-        plan: PlanNode<'txn, 'db, T>,
+        plan_node: PlanNode<'txn, 'db, T>,
     ) -> ExecutorResult<Self> {
-        let executor = match plan {
+        let executor = match plan_node {
             PlanNode::Explain(plan) => {
                 let rows = plan
                     .explain()

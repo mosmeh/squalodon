@@ -54,7 +54,7 @@ pub type PlannerResult<T> = std::result::Result<T, PlannerError>;
 pub fn plan<'txn, 'db, T: Storage>(
     catalog: &'txn CatalogRef<'txn, 'db, T>,
     statement: parser::Statement,
-) -> PlannerResult<TypedPlanNode<'txn, 'db, T>> {
+) -> PlannerResult<Plan<'txn, 'db, T>> {
     binder::Binder::new(catalog).bind(statement)
 }
 
@@ -99,12 +99,12 @@ impl From<Vec<Column>> for PlanSchema {
     }
 }
 
-pub struct TypedPlanNode<'txn, 'db, T: Storage> {
+pub struct Plan<'txn, 'db, T: Storage> {
     pub node: PlanNode<'txn, 'db, T>,
     pub schema: PlanSchema,
 }
 
-impl<'txn, 'db, T: Storage> TypedPlanNode<'txn, 'db, T> {
+impl<'txn, 'db, T: Storage> Plan<'txn, 'db, T> {
     fn empty_source() -> Self {
         Self {
             node: PlanNode::Values(Values::one_empty_row()),
@@ -112,7 +112,7 @@ impl<'txn, 'db, T: Storage> TypedPlanNode<'txn, 'db, T> {
         }
     }
 
-    /// Creates a node that does not produce any rows.
+    /// Creates a plan that does not produce any rows.
     fn sink(node: PlanNode<'txn, 'db, T>) -> Self {
         Self {
             node,
