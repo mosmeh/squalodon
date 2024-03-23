@@ -81,8 +81,8 @@ pub enum Constraint {
 }
 
 pub struct AggregateFunction {
-    pub bind_fn_ptr: AggregateBindFnPtr,
-    pub init_fn_ptr: AggregateInitFnPtr,
+    pub bind: AggregateBindFnPtr,
+    pub init: AggregateInitFnPtr,
 }
 
 pub type AggregateBindFnPtr = fn(Option<Type>) -> PlannerResult<Option<Type>>;

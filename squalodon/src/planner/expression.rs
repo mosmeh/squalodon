@@ -217,9 +217,9 @@ impl<'txn, 'db, T: Storage> ExpressionBinder<'txn, 'db, T> {
                     .try_into()
                     .map_err(|_| PlannerError::MultipleColumnsFromSubquery)?;
 
-                let subquery_node = PlanNode::Aggregate(planner::Aggregate {
+                let subquery_node = PlanNode::Aggregate(planner::Aggregate::Ungrouped {
                     source: Box::new(subquery_plan.node),
-                    init_fn_ptrs: vec![init_agg],
+                    init_functions: vec![init_agg],
                 });
 
                 let mut columns = source.schema.0.clone();

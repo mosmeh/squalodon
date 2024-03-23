@@ -258,16 +258,43 @@ impl<T: Storage> Node for CrossProduct<'_, '_, T> {
     }
 }
 
-pub struct Aggregate {
+pub struct UngroupedAggregate {
+    row: Option<Row>,
+}
+
+impl UngroupedAggregate {
+    pub fn new<T: Storage>(
+        source: ExecutorNode<'_, '_, T>,
+        init_functions: &[AggregateInitFnPtr],
+    ) -> ExecutorResult<Self> {
+        let mut aggs: Vec<_> = init_functions.iter().map(|init| init()).collect();
+        for row in source {
+            let row = row?;
+            for (agg, value) in aggs.iter_mut().zip(&row.0) {
+                agg.update(value)?;
+            }
+        }
+        let row = Row(aggs.into_iter().map(|agg| agg.finish()).collect());
+        Ok(Self { row: Some(row) })
+    }
+}
+
+impl Node for UngroupedAggregate {
+    fn next_row(&mut self) -> Output {
+        self.row.take().into_output()
+    }
+}
+
+pub struct HashAggregate {
     rows: Box<dyn Iterator<Item = Row>>,
 }
 
-impl Aggregate {
+impl HashAggregate {
     pub fn new<T: Storage>(
         mut source: ExecutorNode<'_, '_, T>,
-        init_fn_ptrs: &[AggregateInitFnPtr],
+        init_functions: &[AggregateInitFnPtr],
     ) -> ExecutorResult<Self> {
-        // The first `init_fn_ptrs.len()` columns from `source` are
+        // The first `init_functions.len()` columns from `source` are
         // the aggregated columns that are passed to the respective
         // aggregate functions.
         // The rest of the columns are the columns in the GROUP BY clause.
@@ -277,12 +304,12 @@ impl Aggregate {
         for row in source.by_ref() {
             let row = row?;
             let mut key = Vec::new();
-            for value in &row.0[init_fn_ptrs.len()..] {
+            for value in &row.0[init_functions.len()..] {
                 serde.serialize_into(value, &mut key);
             }
             let aggs = groups
                 .entry(key)
-                .or_insert_with(|| init_fn_ptrs.iter().map(|init| init()).collect::<Vec<_>>());
+                .or_insert_with(|| init_functions.iter().map(|init| init()).collect::<Vec<_>>());
             for (agg, value) in aggs.iter_mut().zip(&row.0) {
                 agg.update(value)?;
             }
@@ -301,7 +328,7 @@ impl Aggregate {
     }
 }
 
-impl Node for Aggregate {
+impl Node for HashAggregate {
     fn next_row(&mut self) -> Output {
         self.rows.next().into_output()
     }

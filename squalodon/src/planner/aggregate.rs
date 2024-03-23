@@ -10,15 +10,43 @@ use crate::{
 };
 use std::collections::HashMap;
 
-pub struct Aggregate<'txn, 'db, T: Storage> {
-    pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub init_fn_ptrs: Vec<AggregateInitFnPtr>,
+pub enum Aggregate<'txn, 'db, T: Storage> {
+    Ungrouped {
+        source: Box<PlanNode<'txn, 'db, T>>,
+        init_functions: Vec<AggregateInitFnPtr>,
+    },
+    Hash {
+        source: Box<PlanNode<'txn, 'db, T>>,
+        init_functions: Vec<AggregateInitFnPtr>,
+    },
 }
 
 impl<T: Storage> Explain for Aggregate<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Aggregate #aggregated={}", self.init_fn_ptrs.len());
-        self.source.visit(visitor);
+        match self {
+            Self::Ungrouped {
+                source,
+                init_functions,
+            } => {
+                write!(
+                    visitor,
+                    "UngroupedAggregate #aggregated={}",
+                    init_functions.len()
+                );
+                source.visit(visitor);
+            }
+            Self::Hash {
+                source,
+                init_functions,
+            } => {
+                write!(
+                    visitor,
+                    "HashAggregate #aggregated={}",
+                    init_functions.len()
+                );
+                source.visit(visitor);
+            }
+        }
     }
 }
 
@@ -106,7 +134,7 @@ impl<'txn> AggregateContext<'txn> {
                     result_column: planner::Column {
                         table_name: None,
                         column_name: expr.to_string(),
-                        ty: (function.bind_fn_ptr)(bound_expr.ty)?,
+                        ty: (function.bind)(bound_expr.ty)?,
                     },
                 });
                 entry.insert(index);
@@ -134,7 +162,7 @@ impl<'txn> AggregateContext<'txn> {
 
         // The rest of the columns are the columns in the GROUP BY clause.
         let expr_binder = ExpressionBinder::new(catalog);
-        for group_by in group_by {
+        for group_by in &group_by {
             let (new_plan, TypedExpression { expr, ty }) =
                 expr_binder.bind(plan, group_by.clone())?;
             plan = new_plan;
@@ -156,16 +184,25 @@ impl<'txn> AggregateContext<'txn> {
             exprs,
         });
 
-        let init_fn_ptrs = self
+        let init_functions = self
             .bound_aggregates
             .iter()
-            .map(|bound_aggregate| bound_aggregate.function.init_fn_ptr)
+            .map(|bound_aggregate| bound_aggregate.function.init)
             .collect();
-        Ok(Plan {
-            node: PlanNode::Aggregate(Aggregate {
+
+        let node = if group_by.is_empty() {
+            Aggregate::Ungrouped {
                 source: Box::new(node),
-                init_fn_ptrs,
-            }),
+                init_functions,
+            }
+        } else {
+            Aggregate::Hash {
+                source: Box::new(node),
+                init_functions,
+            }
+        };
+        Ok(Plan {
+            node: PlanNode::Aggregate(node),
             schema: columns.into(),
         })
     }

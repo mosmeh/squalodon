@@ -11,39 +11,39 @@ pub fn load() -> impl Iterator<Item = (&'static str, AggregateFunction)> {
         (
             "avg",
             AggregateFunction {
-                bind_fn_ptr: |ty| match ty {
+                bind: |ty| match ty {
                     Some(Type::Integer | Type::Real) | None => Ok(Some(Type::Real)),
                     _ => Err(PlannerError::TypeError),
                 },
-                init_fn_ptr: || Box::<Average>::default(),
+                init: || Box::<Average>::default(),
             },
         ),
         (
             "count",
             AggregateFunction {
-                bind_fn_ptr: |_| Ok(Some(Type::Integer)),
-                init_fn_ptr: || Box::<Count>::default(),
+                bind: |_| Ok(Some(Type::Integer)),
+                init: || Box::<Count>::default(),
             },
         ),
         (
             "max",
             AggregateFunction {
-                bind_fn_ptr: bind_numeric,
-                init_fn_ptr: || Box::<Max>::default(),
+                bind: bind_numeric,
+                init: || Box::<Max>::default(),
             },
         ),
         (
             "min",
             AggregateFunction {
-                bind_fn_ptr: bind_numeric,
-                init_fn_ptr: || Box::<Min>::default(),
+                bind: bind_numeric,
+                init: || Box::<Min>::default(),
             },
         ),
         (
             "sum",
             AggregateFunction {
-                bind_fn_ptr: bind_numeric,
-                init_fn_ptr: || Box::<Sum>::default(),
+                bind: bind_numeric,
+                init: || Box::<Sum>::default(),
             },
         ),
     ]

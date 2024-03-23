@@ -8,7 +8,10 @@ use crate::{
     storage, CatalogError, Row, Storage, StorageError, Value,
 };
 use modification::{Delete, Insert, Update};
-use query::{Aggregate, CrossProduct, Filter, FunctionScan, Limit, Project, SeqScan, Sort, Values};
+use query::{
+    CrossProduct, Filter, FunctionScan, HashAggregate, Limit, Project, SeqScan, Sort,
+    UngroupedAggregate, Values,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutorError {
@@ -135,7 +138,8 @@ enum ExecutorNode<'txn, 'db, T: Storage> {
     Sort(Sort),
     Limit(Limit<'txn, 'db, T>),
     CrossProduct(CrossProduct<'txn, 'db, T>),
-    Aggregate(Aggregate),
+    UngroupedAggregate(UngroupedAggregate),
+    HashAggregate(HashAggregate),
     Insert(Insert<'txn, 'db, T>),
     Update(Update<'txn, 'db, T>),
     Delete(Delete<'txn, 'db, T>),
@@ -192,10 +196,20 @@ impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
             PlanNode::CrossProduct(planner::CrossProduct { left, right }) => Self::CrossProduct(
                 CrossProduct::new(Self::new(ctx, *left)?, Self::new(ctx, *right)?)?,
             ),
-            PlanNode::Aggregate(planner::Aggregate {
+            PlanNode::Aggregate(planner::Aggregate::Ungrouped {
                 source,
-                init_fn_ptrs,
-            }) => Self::Aggregate(Aggregate::new(Self::new(ctx, *source)?, &init_fn_ptrs)?),
+                init_functions,
+            }) => Self::UngroupedAggregate(UngroupedAggregate::new(
+                Self::new(ctx, *source)?,
+                &init_functions,
+            )?),
+            PlanNode::Aggregate(planner::Aggregate::Hash {
+                source,
+                init_functions,
+            }) => Self::HashAggregate(HashAggregate::new(
+                Self::new(ctx, *source)?,
+                &init_functions,
+            )?),
             PlanNode::Insert(planner::Insert { source, table }) => Self::Insert(Insert {
                 source: Box::new(Self::new(ctx, *source)?),
                 table,
@@ -224,7 +238,8 @@ impl<T: Storage> Node for ExecutorNode<'_, '_, T> {
             Self::Sort(e) => e.next_row(),
             Self::Limit(e) => e.next_row(),
             Self::CrossProduct(e) => e.next_row(),
-            Self::Aggregate(e) => e.next_row(),
+            Self::UngroupedAggregate(e) => e.next_row(),
+            Self::HashAggregate(e) => e.next_row(),
             Self::Insert(e) => e.next_row(),
             Self::Update(e) => e.next_row(),
             Self::Delete(e) => e.next_row(),
