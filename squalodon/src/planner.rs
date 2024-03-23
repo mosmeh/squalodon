@@ -1,14 +1,23 @@
-mod binder;
+mod aggregate;
+mod ddl;
+mod expression;
+mod modification;
+mod query;
+
+pub use aggregate::Aggregate;
+pub use expression::Expression;
+pub use modification::{Delete, Insert, Update};
+pub use query::{CrossProduct, Filter, Limit, OrderBy, Project, Scan, Sort, Values};
 
 use crate::{
-    catalog::{self, AggregateInitFnPtr, CatalogRef, TableFnPtr},
-    parser::{self, BinaryOp, ColumnRef, NullOrder, Order, UnaryOp},
+    catalog::CatalogRef,
+    lexer,
+    parser::{self, ColumnRef},
     rows::ColumnIndex,
-    storage::Table,
-    types::{Type, Value},
+    types::Type,
     CatalogError, Storage, StorageError,
 };
-use std::fmt::Write;
+use ddl::{CreateTable, DropTable};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlannerError {
@@ -58,7 +67,7 @@ pub fn plan<'txn, 'db, T: Storage>(
     catalog: &'txn CatalogRef<'txn, 'db, T>,
     statement: parser::Statement,
 ) -> PlannerResult<Plan<'txn, 'db, T>> {
-    binder::Binder::new(catalog).bind(statement)
+    Binder::new(catalog).bind(statement)
 }
 
 #[derive(Clone)]
@@ -225,256 +234,49 @@ impl<T: Storage> Explain for PlanNode<'_, '_, T> {
     }
 }
 
-pub struct CreateTable {
-    pub name: String,
-    pub columns: Vec<catalog::Column>,
-    pub constraints: Vec<catalog::Constraint>,
+struct Binder<'txn, 'db, T: Storage> {
+    catalog: &'txn CatalogRef<'txn, 'db, T>,
 }
 
-impl Explain for CreateTable {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "CreateTable {:?}", self.name);
-    }
-}
-
-pub struct DropTable {
-    pub name: String,
-}
-
-impl Explain for DropTable {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "DropTable {:?}", self.name);
-    }
-}
-
-pub struct Values {
-    pub rows: Vec<Vec<Expression>>,
-}
-
-impl Values {
-    fn new(rows: Vec<Vec<Expression>>) -> Self {
-        Self { rows }
+impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
+    fn new(catalog: &'txn CatalogRef<'txn, 'db, T>) -> Self {
+        Self { catalog }
     }
 
-    fn one_empty_row() -> Self {
-        Self::new(vec![Vec::new()])
-    }
-}
-
-impl Explain for Values {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        let mut f = "Values ".to_owned();
-        for (i, row) in self.rows.iter().enumerate() {
-            f.push_str(if i == 0 { "(" } else { ", (" });
-            for (j, value) in row.iter().enumerate() {
-                if j == 0 {
-                    write!(&mut f, "{value:?}").unwrap();
-                } else {
-                    write!(&mut f, ", {value:?}").unwrap();
-                }
+    fn bind(&self, statement: parser::Statement) -> PlannerResult<Plan<'txn, 'db, T>> {
+        match statement {
+            parser::Statement::Explain(statement) => self.bind_explain(*statement),
+            parser::Statement::Transaction(_) => unreachable!("handled before binding"),
+            parser::Statement::ShowTables => {
+                self.rewrite_to("SELECT * FROM squalodon_tables() ORDER BY name")
             }
-            f.push(')');
-        }
-        visitor.write_str(&f);
-    }
-}
-
-pub enum Scan<'txn, 'db, T: Storage> {
-    SeqScan {
-        table: Table<'txn, 'db, T>,
-    },
-    FunctionScan {
-        source: Box<PlanNode<'txn, 'db, T>>,
-        fn_ptr: TableFnPtr<T>,
-    },
-}
-
-impl<T: Storage> Explain for Scan<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        match self {
-            Self::SeqScan { table } => {
-                write!(visitor, "SeqScan table={:?}", table.name());
-            }
-            Self::FunctionScan { source, .. } => {
-                visitor.write_str("FunctionScan");
-                source.visit(visitor);
-            }
+            parser::Statement::Describe(name) => self.rewrite_to(&format!(
+                "SELECT column_name, type, is_nullable, is_primary_key
+                FROM squalodon_columns()
+                WHERE table_name = {}",
+                lexer::quote(&name, '\'')
+            )),
+            parser::Statement::CreateTable(create_table) => self.bind_create_table(create_table),
+            parser::Statement::DropTable(drop_table) => self.bind_drop_table(drop_table),
+            parser::Statement::Select(select) => self.bind_select(select),
+            parser::Statement::Insert(insert) => self.bind_insert(insert),
+            parser::Statement::Update(update) => self.bind_update(update),
+            parser::Statement::Delete(delete) => self.bind_delete(delete),
         }
     }
-}
 
-pub struct Project<'txn, 'db, T: Storage> {
-    pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub exprs: Vec<Expression>,
-}
-
-impl<T: Storage> Explain for Project<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        let mut f = "Project ".to_owned();
-        for (i, expr) in self.exprs.iter().enumerate() {
-            if i == 0 {
-                write!(f, "{expr}").unwrap();
-            } else {
-                write!(f, ", {expr}").unwrap();
-            }
-        }
-        visitor.write_str(&f);
-        self.source.visit(visitor);
+    fn rewrite_to(&self, sql: &str) -> PlannerResult<Plan<'txn, 'db, T>> {
+        let mut parser = parser::Parser::new(sql);
+        let statement = parser.next().unwrap().unwrap();
+        assert!(parser.next().is_none());
+        self.bind(statement)
     }
-}
 
-pub struct Filter<'txn, 'db, T: Storage> {
-    pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub cond: Expression,
-}
-
-impl<T: Storage> Explain for Filter<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Filter {}", self.cond);
-        self.source.visit(visitor);
-    }
-}
-
-pub struct Sort<'txn, 'db, T: Storage> {
-    pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub order_by: Vec<OrderBy>,
-}
-
-impl<T: Storage> Explain for Sort<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        let mut f = "Sort by [".to_owned();
-        for (i, order_by) in self.order_by.iter().enumerate() {
-            if i == 0 {
-                write!(f, "{order_by}").unwrap();
-            } else {
-                write!(f, ", {order_by}").unwrap();
-            }
-        }
-        f.push(']');
-        visitor.write_str(&f);
-        self.source.visit(visitor);
-    }
-}
-
-pub struct Limit<'txn, 'db, T: Storage> {
-    pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub limit: Option<Expression>,
-    pub offset: Option<Expression>,
-}
-
-impl<T: Storage> Explain for Limit<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        let mut f = "Limit".to_owned();
-        if let Some(limit) = &self.limit {
-            write!(f, " limit={limit}").unwrap();
-        }
-        if let Some(offset) = &self.offset {
-            write!(f, " offset={offset}").unwrap();
-        }
-        visitor.write_str(&f);
-        self.source.visit(visitor);
-    }
-}
-
-pub struct OrderBy {
-    pub expr: Expression,
-    pub order: Order,
-    pub null_order: NullOrder,
-}
-
-impl std::fmt::Display for OrderBy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} {} {}", self.expr, self.order, self.null_order)
-    }
-}
-
-pub struct CrossProduct<'txn, 'db, T: Storage> {
-    pub left: Box<PlanNode<'txn, 'db, T>>,
-    pub right: Box<PlanNode<'txn, 'db, T>>,
-}
-
-impl<T: Storage> Explain for CrossProduct<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        visitor.write_str("CrossProduct");
-        self.left.visit(visitor);
-        self.right.visit(visitor);
-    }
-}
-
-pub struct Aggregate<'txn, 'db, T: Storage> {
-    pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub init_fn_ptrs: Vec<AggregateInitFnPtr>,
-}
-
-impl<T: Storage> Explain for Aggregate<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Aggregate #aggregated={}", self.init_fn_ptrs.len());
-        self.source.visit(visitor);
-    }
-}
-
-pub struct Insert<'txn, 'db, T: Storage> {
-    pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub table: Table<'txn, 'db, T>,
-}
-
-impl<T: Storage> Explain for Insert<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Insert table={:?}", self.table.name());
-        self.source.visit(visitor);
-    }
-}
-
-pub struct Update<'txn, 'db, T: Storage> {
-    pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub table: Table<'txn, 'db, T>,
-}
-
-impl<T: Storage> Explain for Update<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Update table={:?}", self.table.name());
-        self.source.visit(visitor);
-    }
-}
-
-pub struct Delete<'txn, 'db, T: Storage> {
-    pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub table: Table<'txn, 'db, T>,
-}
-
-impl<T: Storage> Explain for Delete<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Delete table={:?}", self.table.name());
-        self.source.visit(visitor);
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum Expression {
-    Constact(Value),
-    ColumnRef {
-        index: ColumnIndex,
-    },
-    UnaryOp {
-        op: UnaryOp,
-        expr: Box<Expression>,
-    },
-    BinaryOp {
-        op: BinaryOp,
-        lhs: Box<Expression>,
-        rhs: Box<Expression>,
-    },
-}
-
-impl std::fmt::Display for Expression {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Constact(value) => write!(f, "{value:?}"),
-            Self::ColumnRef { index } => write!(f, "{index}"),
-            Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
-            Self::BinaryOp { op, lhs, rhs } => {
-                write!(f, "({lhs} {op} {rhs})")
-            }
-        }
+    fn bind_explain(&self, statement: parser::Statement) -> PlannerResult<Plan<'txn, 'db, T>> {
+        let plan = self.bind(statement)?;
+        Ok(Plan {
+            node: PlanNode::Explain(Box::new(plan.node)),
+            schema: vec![Column::new("plan", Type::Text)].into(),
+        })
     }
 }
