@@ -80,7 +80,8 @@ impl<'txn> AggregateContext<'txn> {
         match expr {
             parser::Expression::Constant(_)
             | parser::Expression::ColumnRef(_)
-            | parser::Expression::ScalarSubquery(_) => Ok(source),
+            | parser::Expression::ScalarSubquery(_)
+            | parser::Expression::Exists(_) => Ok(source),
             parser::Expression::UnaryOp { expr, .. } => {
                 self.gather_aggregates_inner(catalog, source, expr, in_aggregate_args)
             }

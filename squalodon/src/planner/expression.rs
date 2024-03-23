@@ -209,7 +209,6 @@ impl<'txn, 'db, T: Storage> ExpressionBinder<'txn, 'db, T> {
                 }
 
                 let column_name = select.to_string();
-
                 let subquery_plan = Binder::new(self.catalog).bind_select(*select)?;
                 let [subquery_result_column] = subquery_plan
                     .schema
@@ -217,39 +216,66 @@ impl<'txn, 'db, T: Storage> ExpressionBinder<'txn, 'db, T> {
                     .try_into()
                     .map_err(|_| PlannerError::MultipleColumnsFromSubquery)?;
 
-                let subquery_node = PlanNode::Aggregate(planner::Aggregate::Ungrouped {
-                    source: Box::new(subquery_plan.node),
-                    init_functions: vec![init_agg],
-                });
-
-                let mut columns = source.schema.0.clone();
-                columns.push(planner::Column {
-                    table_name: None,
-                    column_name,
-                    ty: subquery_result_column.ty,
-                });
-
-                let plan = Plan {
-                    node: PlanNode::CrossProduct(planner::CrossProduct {
-                        left: Box::new(source.node),
-                        right: Box::new(subquery_node),
+                // Equivalent to `SELECT assert_single_row(subquery)`
+                let subquery_plan = Plan {
+                    node: PlanNode::Aggregate(planner::Aggregate::Ungrouped {
+                        source: Box::new(subquery_plan.node),
+                        init_functions: vec![init_agg],
                     }),
-                    schema: columns.into(),
-                };
-
-                // CrossProduct appends the subquery result column to the right
-                // of the source schema.
-                let column_index = ColumnIndex(source.schema.0.len());
-
-                Ok((
-                    plan,
-                    TypedExpression {
-                        expr: planner::Expression::ColumnRef {
-                            index: column_index,
-                        },
+                    schema: vec![planner::Column {
+                        table_name: None,
+                        column_name,
                         ty: subquery_result_column.ty,
-                    },
-                ))
+                    }]
+                    .into(),
+                };
+                Ok(attach_subquery(source, subquery_plan))
+            }
+            parser::Expression::Exists(select) => {
+                /// An aggregator that produces a boolean indicating whether
+                /// the subquery returns any rows.
+                #[derive(Default)]
+                struct Exists {
+                    yes: bool,
+                }
+
+                impl Aggregator for Exists {
+                    fn update(&mut self, _: &Value) -> ExecutorResult<()> {
+                        self.yes = true;
+                        Ok(())
+                    }
+
+                    fn finish(&self) -> Value {
+                        Value::from(self.yes)
+                    }
+                }
+
+                fn init_agg() -> Box<dyn Aggregator> {
+                    Box::<Exists>::default()
+                }
+
+                let column_name = format!("EXISTS ({select})");
+                let subquery_plan = Binder::new(self.catalog).bind_select(*select)?;
+
+                // Equivalent to `SELECT exists(SELECT * FROM subquery LIMIT 1)`
+                let subquery_node = PlanNode::Limit(planner::Limit {
+                    source: Box::new(subquery_plan.node),
+                    limit: Some(planner::Expression::Constact(1.into())),
+                    offset: None,
+                });
+                let subquery_plan = Plan {
+                    node: PlanNode::Aggregate(planner::Aggregate::Ungrouped {
+                        source: Box::new(subquery_node),
+                        init_functions: vec![init_agg],
+                    }),
+                    schema: vec![planner::Column {
+                        table_name: None,
+                        column_name,
+                        ty: Type::Boolean.into(),
+                    }]
+                    .into(),
+                };
+                Ok(attach_subquery(source, subquery_plan))
             }
         }
     }
@@ -272,4 +298,32 @@ impl<'txn, 'db, T: Storage> ExpressionBinder<'txn, 'db, T> {
             ty: column.ty,
         })
     }
+}
+
+/// Attaches a subquery to the source plan and returns the new plan and
+/// an expression that references the first column of the subquery.
+fn attach_subquery<'txn, 'db, T: Storage>(
+    source: Plan<'txn, 'db, T>,
+    subquery: Plan<'txn, 'db, T>,
+) -> (Plan<'txn, 'db, T>, TypedExpression) {
+    let subquery_column_index = ColumnIndex(source.schema.0.len());
+    let subquery_column_type = subquery.schema.0[0].ty;
+
+    let mut columns = source.schema.0;
+    columns.extend(subquery.schema.0);
+
+    let plan = Plan {
+        node: PlanNode::CrossProduct(planner::CrossProduct {
+            left: Box::new(source.node),
+            right: Box::new(subquery.node),
+        }),
+        schema: columns.into(),
+    };
+    let expr = TypedExpression {
+        expr: planner::Expression::ColumnRef {
+            index: subquery_column_index,
+        },
+        ty: subquery_column_type,
+    };
+    (plan, expr)
 }

@@ -19,6 +19,7 @@ pub enum Expression {
         args: FunctionArgs,
     },
     ScalarSubquery(Box<Select>),
+    Exists(Box<Select>),
 }
 
 impl std::fmt::Display for Expression {
@@ -30,6 +31,7 @@ impl std::fmt::Display for Expression {
             Self::BinaryOp { op, lhs, rhs } => write!(f, "({lhs} {op} {rhs})"),
             Self::Function { name, args } => write!(f, "{name}({args})"),
             Self::ScalarSubquery(select) => write!(f, "({select})"),
+            Self::Exists(select) => write!(f, "EXISTS ({select})"),
         }
     }
 }
@@ -252,6 +254,12 @@ impl Parser<'_> {
                     column_name: ident,
                 }),
             },
+            Token::Exists => {
+                self.expect(Token::LeftParen)?;
+                let select = self.parse_select()?;
+                self.expect(Token::RightParen)?;
+                Expression::Exists(Box::new(select))
+            }
             Token::LeftParen => {
                 let inner = match self.lexer.peek()? {
                     Token::Select | Token::Values => {
