@@ -2,6 +2,7 @@ use crate::{
     catalog::{AggregateFunction, Aggregator},
     executor::ExecutorResult,
     planner::PlannerResult,
+    types::NullableType,
     PlannerError, Type, Value,
 };
 use std::ops::Add;
@@ -12,8 +13,9 @@ pub fn load() -> impl Iterator<Item = (&'static str, AggregateFunction)> {
             "avg",
             AggregateFunction {
                 bind: |ty| match ty {
-                    Some(Type::Integer | Type::Real) | None => Ok(Some(Type::Real)),
-                    _ => Err(PlannerError::TypeError),
+                    NullableType::Null => Ok(NullableType::Null),
+                    NullableType::NonNull(ty) if ty.is_numeric() => Ok(Type::Real.into()),
+                    NullableType::NonNull(_) => Err(PlannerError::TypeError),
                 },
                 init: || Box::<Average>::default(),
             },
@@ -21,7 +23,7 @@ pub fn load() -> impl Iterator<Item = (&'static str, AggregateFunction)> {
         (
             "count",
             AggregateFunction {
-                bind: |_| Ok(Some(Type::Integer)),
+                bind: |_| Ok(Type::Integer.into()),
                 init: || Box::<Count>::default(),
             },
         ),
@@ -50,10 +52,11 @@ pub fn load() -> impl Iterator<Item = (&'static str, AggregateFunction)> {
     .into_iter()
 }
 
-fn bind_numeric(ty: Option<Type>) -> PlannerResult<Option<Type>> {
+fn bind_numeric(ty: NullableType) -> PlannerResult<NullableType> {
     match ty {
-        Some(Type::Integer | Type::Real) | None => Ok(ty),
-        _ => Err(PlannerError::TypeError),
+        NullableType::Null => Ok(NullableType::Null),
+        NullableType::NonNull(ty) if ty.is_numeric() => Ok(NullableType::NonNull(ty)),
+        NullableType::NonNull(_) => Err(PlannerError::TypeError),
     }
 }
 

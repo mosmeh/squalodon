@@ -4,6 +4,7 @@ use crate::{
     planner::{plan, Plan},
     rows::{Column, Rows},
     storage::{Storage, Transaction},
+    types::NullableType,
     Database, Result, Type,
 };
 
@@ -109,11 +110,14 @@ impl<'a, T: Storage> Connection<'a, T> {
         let Plan { node, schema } = plan;
         let columns: Vec<_> = schema
             .0
-            .iter()
+            .into_iter()
             .map(|column| {
                 Column {
-                    name: column.column_name.clone(),
-                    ty: column.ty.unwrap_or(Type::Integer), // Arbitrarily choose integer
+                    name: column.column_name,
+                    ty: match column.ty {
+                        NullableType::NonNull(ty) => ty,
+                        NullableType::Null => Type::Integer, // Arbitrarily choose INTEGER
+                    },
                 }
             })
             .collect();
@@ -124,9 +128,7 @@ impl<'a, T: Storage> Connection<'a, T> {
             let row = row?;
             assert_eq!(row.columns().len(), columns.len());
             for (value, column) in row.columns().iter().zip(&columns) {
-                if let Some(ty) = value.ty() {
-                    assert_eq!(column.ty, ty);
-                }
+                assert!(value.ty().is_compatible_with(column.ty));
             }
             rows.push(row);
         }

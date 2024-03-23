@@ -142,9 +142,7 @@ impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
     fn prepare_for_write(&self, row: &Row) -> StorageResult<Vec<u8>> {
         assert_eq!(row.columns().len(), self.def.columns.len());
         for (value, column) in row.columns().iter().zip(&self.def.columns) {
-            if let Some(ty) = value.ty() {
-                assert_eq!(ty, column.ty);
-            }
+            assert!(value.ty().is_compatible_with(column.ty));
         }
         let mut key = self.def.id.serialize().to_vec();
         let mut has_primary_key = false;

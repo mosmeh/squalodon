@@ -67,9 +67,8 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
                     Some(_) => return Err(PlannerError::DuplicateColumn(column_name)),
                     i @ None => *i = Some(index_in_source),
                 }
-                match actual_column.ty {
-                    Some(ty) if ty != expected_column.ty => return Err(PlannerError::TypeError),
-                    _ => (),
+                if !actual_column.ty.is_compatible_with(expected_column.ty) {
+                    return Err(PlannerError::TypeError);
                 }
             }
             let exprs = indices_in_source
@@ -84,9 +83,8 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
             })
         } else {
             for (actual, expected) in schema.0.iter().zip(table.columns()) {
-                match actual.ty {
-                    Some(actual) if actual != expected.ty => return Err(PlannerError::TypeError),
-                    _ => (),
+                if !actual.ty.is_compatible_with(expected.ty) {
+                    return Err(PlannerError::TypeError);
                 }
             }
             node

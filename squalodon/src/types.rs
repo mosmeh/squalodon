@@ -36,6 +36,27 @@ impl std::fmt::Display for Type {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum NullableType {
+    Null,
+    NonNull(Type),
+}
+
+impl From<Type> for NullableType {
+    fn from(ty: Type) -> Self {
+        Self::NonNull(ty)
+    }
+}
+
+impl NullableType {
+    pub fn is_compatible_with<T: Into<Self>>(self, other: T) -> bool {
+        match (self, other.into()) {
+            (Self::Null, _) | (_, Self::Null) => true,
+            (Self::NonNull(a), Self::NonNull(b)) => a == b,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub enum Value {
     Null,
@@ -70,13 +91,13 @@ impl std::fmt::Display for Value {
 }
 
 impl Value {
-    pub fn ty(&self) -> Option<Type> {
+    pub fn ty(&self) -> NullableType {
         match self {
-            Self::Null => None,
-            Self::Integer(_) => Some(Type::Integer),
-            Self::Real(_) => Some(Type::Real),
-            Self::Boolean(_) => Some(Type::Boolean),
-            Self::Text(_) => Some(Type::Text),
+            Self::Null => NullableType::Null,
+            Self::Integer(_) => Type::Integer.into(),
+            Self::Real(_) => Type::Real.into(),
+            Self::Boolean(_) => Type::Boolean.into(),
+            Self::Text(_) => Type::Text.into(),
         }
     }
 }

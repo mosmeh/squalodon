@@ -14,7 +14,7 @@ use crate::{
     lexer,
     parser::{self, ColumnRef},
     rows::ColumnIndex,
-    types::Type,
+    types::{NullableType, Type},
     CatalogError, Storage, StorageError,
 };
 use ddl::{CreateTable, DropTable};
@@ -148,7 +148,7 @@ impl<'txn, 'db, T: Storage> Plan<'txn, 'db, T> {
 pub struct Column {
     pub table_name: Option<String>,
     pub column_name: String,
-    pub ty: Option<Type>,
+    pub ty: NullableType,
 }
 
 impl Column {
@@ -156,7 +156,7 @@ impl Column {
         Self {
             table_name: None,
             column_name: name.to_owned(),
-            ty: Some(ty),
+            ty: ty.into(),
         }
     }
 }

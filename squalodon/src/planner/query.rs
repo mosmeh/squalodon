@@ -9,7 +9,8 @@ use crate::{
     planner,
     rows::ColumnIndex,
     storage::Table,
-    Storage, Type,
+    types::NullableType,
+    PlannerError, Storage, Type,
 };
 use std::fmt::Write;
 
@@ -383,7 +384,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
             .map(|column| planner::Column {
                 table_name: Some(table.name().to_owned()),
                 column_name: column.name,
-                ty: Some(column.ty),
+                ty: column.ty.into(),
             })
             .collect();
         Plan {
@@ -445,38 +446,39 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
     }
 
     fn bind_values(&self, values: parser::Values) -> PlannerResult<Plan<'txn, 'db, T>> {
-        let mut rows = Vec::with_capacity(values.rows.len());
-        let mut columns;
-        let mut rows_iter = values.rows.into_iter();
-        match rows_iter.next() {
-            Some(row) => {
-                let mut exprs = Vec::with_capacity(row.len());
-                columns = Vec::with_capacity(row.len());
-                let row = row.into_iter().enumerate();
-                for (i, expr) in row {
-                    let TypedExpression { expr, ty } = self.bind_expr_without_source(expr)?;
-                    exprs.push(expr);
-                    columns.push(planner::Column {
-                        table_name: None,
-                        column_name: format!("column{}", i + 1),
-                        ty,
-                    });
-                }
-                rows.push(exprs);
-            }
-            None => return Ok(Plan::empty_source()),
+        if values.rows.is_empty() {
+            return Ok(Plan::empty_source());
         }
-        for row in rows_iter {
-            assert_eq!(row.len(), columns.len());
-            let mut exprs = Vec::with_capacity(row.len());
-            for (expr, column) in row.into_iter().zip(columns.iter()) {
-                let expr = self
-                    .bind_expr_without_source(expr)?
-                    .expect_type(column.ty)?;
+
+        let mut rows = Vec::with_capacity(values.rows.len());
+        let num_columns = values.rows[0].len();
+        let mut column_types = vec![NullableType::Null; num_columns];
+        for row in values.rows {
+            assert_eq!(row.len(), num_columns);
+            let mut exprs = Vec::with_capacity(num_columns);
+            for (expr, column_type) in row.into_iter().zip(column_types.iter_mut()) {
+                let TypedExpression { expr, ty } = self.bind_expr_without_source(expr)?;
+                if !ty.is_compatible_with(*column_type) {
+                    return Err(PlannerError::TypeError);
+                }
+                if matches!(column_type, NullableType::Null) {
+                    *column_type = ty;
+                }
                 exprs.push(expr);
             }
             rows.push(exprs);
         }
+
+        let columns: Vec<_> = column_types
+            .into_iter()
+            .enumerate()
+            .map(|(i, ty)| planner::Column {
+                table_name: None,
+                column_name: format!("column{}", i + 1),
+                ty,
+            })
+            .collect();
+
         let node = PlanNode::Values(planner::Values { rows });
         Ok(Plan {
             node,

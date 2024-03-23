@@ -4,7 +4,7 @@ use crate::{
     planner::{self, PlannerResult},
     rows::ColumnIndex,
     storage::{self, Storage, Transaction},
-    types::Type,
+    types::{NullableType, Type},
     Row, Value,
 };
 use serde::{Deserialize, Serialize};
@@ -85,7 +85,7 @@ pub struct AggregateFunction {
     pub init: AggregateInitFnPtr,
 }
 
-pub type AggregateBindFnPtr = fn(Option<Type>) -> PlannerResult<Option<Type>>;
+pub type AggregateBindFnPtr = fn(NullableType) -> PlannerResult<NullableType>;
 pub type AggregateInitFnPtr = fn() -> Box<dyn Aggregator>;
 
 pub trait Aggregator {

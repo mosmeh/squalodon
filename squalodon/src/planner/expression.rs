@@ -5,7 +5,7 @@ use crate::{
     parser::{self, BinaryOp, UnaryOp},
     planner,
     rows::ColumnIndex,
-    types::Type,
+    types::{NullableType, Type},
     Storage, Value,
 };
 
@@ -41,20 +41,19 @@ impl std::fmt::Display for Expression {
 
 pub struct TypedExpression {
     pub expr: planner::Expression,
-    pub ty: Option<Type>,
+    pub ty: NullableType,
 }
 
 impl TypedExpression {
-    pub fn expect_type<T: Into<Option<Type>>>(
+    pub fn expect_type<T: Into<NullableType>>(
         self,
         expected: T,
     ) -> PlannerResult<planner::Expression> {
-        if let (Some(actual), Some(expected)) = (self.ty, expected.into()) {
-            if actual != expected {
-                return Err(PlannerError::TypeError);
-            }
+        if self.ty.is_compatible_with(expected.into()) {
+            Ok(self.expr)
+        } else {
+            Err(PlannerError::TypeError)
         }
-        Ok(self.expr)
     }
 }
 
@@ -120,9 +119,13 @@ impl<'txn, 'db, T: Storage> ExpressionBinder<'txn, 'db, T> {
             parser::Expression::UnaryOp { op, expr } => {
                 let (plan, TypedExpression { expr, ty }) = self.bind(source, *expr)?;
                 let ty = match (op, ty) {
-                    (UnaryOp::Not, _) => Some(Type::Boolean),
-                    (UnaryOp::Plus | UnaryOp::Minus, Some(ty)) if ty.is_numeric() => Some(ty),
-                    (UnaryOp::Plus | UnaryOp::Minus, None) => None,
+                    (_, NullableType::Null) => NullableType::Null,
+                    (UnaryOp::Not, _) => NullableType::NonNull(Type::Boolean),
+                    (UnaryOp::Plus | UnaryOp::Minus, NullableType::NonNull(ty))
+                        if ty.is_numeric() =>
+                    {
+                        NullableType::NonNull(ty)
+                    }
                     _ => return Err(PlannerError::TypeError),
                 };
                 let expr = planner::Expression::UnaryOp {
@@ -140,14 +143,17 @@ impl<'txn, 'db, T: Storage> ExpressionBinder<'txn, 'db, T> {
                     | BinaryOp::Mul
                     | BinaryOp::Div
                     | BinaryOp::Mod => match (lhs.ty, rhs.ty) {
-                        (Some(Type::Integer), Some(Type::Integer)) => Some(Type::Integer),
-                        (Some(ty), Some(Type::Real)) | (Some(Type::Real), Some(ty))
+                        (NullableType::Null, _) | (_, NullableType::Null) => NullableType::Null,
+                        (
+                            NullableType::NonNull(Type::Integer),
+                            NullableType::NonNull(Type::Integer),
+                        ) => NullableType::NonNull(Type::Integer),
+                        (NullableType::NonNull(ty), NullableType::NonNull(Type::Real))
+                        | (NullableType::NonNull(Type::Real), NullableType::NonNull(ty))
                             if ty.is_numeric() =>
                         {
-                            Some(Type::Real)
+                            NullableType::NonNull(Type::Real)
                         }
-                        (None, _) => rhs.ty,
-                        (_, None) => lhs.ty,
                         _ => return Err(PlannerError::TypeError),
                     },
                     BinaryOp::Eq
@@ -158,13 +164,19 @@ impl<'txn, 'db, T: Storage> ExpressionBinder<'txn, 'db, T> {
                     | BinaryOp::Ge
                     | BinaryOp::And
                     | BinaryOp::Or => match (lhs.ty, rhs.ty) {
-                        (Some(lhs_ty), Some(rhs_ty)) if lhs_ty != rhs_ty => {
-                            return Err(PlannerError::TypeError)
+                        (NullableType::Null, _) | (_, NullableType::Null) => NullableType::Null,
+                        (NullableType::NonNull(lhs_ty), NullableType::NonNull(rhs_ty))
+                            if lhs_ty == rhs_ty =>
+                        {
+                            NullableType::NonNull(Type::Boolean)
                         }
-                        _ => Some(Type::Boolean),
+                        _ => return Err(PlannerError::TypeError),
                     },
                     BinaryOp::Concat => match (lhs.ty, rhs.ty) {
-                        (Some(Type::Text) | None, Some(Type::Text) | None) => Some(Type::Text),
+                        (NullableType::Null, _) | (_, NullableType::Null) => NullableType::Null,
+                        (NullableType::NonNull(Type::Text), NullableType::NonNull(Type::Text)) => {
+                            NullableType::NonNull(Type::Text)
+                        }
                         _ => return Err(PlannerError::TypeError),
                     },
                 };
