@@ -36,6 +36,9 @@ pub enum PlannerError {
     #[error("Aggregate function is not allowed in this context")]
     AggregateNotAllowed,
 
+    #[error("Subquery returns more than one column")]
+    MultipleColumnsFromSubquery,
+
     #[error("Type error")]
     TypeError,
 
@@ -58,6 +61,7 @@ pub fn plan<'txn, 'db, T: Storage>(
     binder::Binder::new(catalog).bind(statement)
 }
 
+#[derive(Clone)]
 pub struct PlanSchema(pub Vec<Column>);
 
 impl PlanSchema {
@@ -183,7 +187,7 @@ pub enum PlanNode<'txn, 'db, T: Storage> {
     Filter(Filter<'txn, 'db, T>),
     Sort(Sort<'txn, 'db, T>),
     Limit(Limit<'txn, 'db, T>),
-    Join(Join<'txn, 'db, T>),
+    CrossProduct(CrossProduct<'txn, 'db, T>),
     Aggregate(Aggregate<'txn, 'db, T>),
     Insert(Insert<'txn, 'db, T>),
     Update(Update<'txn, 'db, T>),
@@ -211,7 +215,7 @@ impl<T: Storage> Explain for PlanNode<'_, '_, T> {
             Self::Filter(n) => n.visit(visitor),
             Self::Sort(n) => n.visit(visitor),
             Self::Limit(n) => n.visit(visitor),
-            Self::Join(n) => n.visit(visitor),
+            Self::CrossProduct(n) => n.visit(visitor),
             Self::Aggregate(n) => n.visit(visitor),
             Self::Insert(n) => n.visit(visitor),
             Self::Update(n) => n.visit(visitor),
@@ -384,23 +388,16 @@ impl std::fmt::Display for OrderBy {
     }
 }
 
-pub enum Join<'txn, 'db, T: Storage> {
-    NestedLoop {
-        left: Box<PlanNode<'txn, 'db, T>>,
-        right: Box<PlanNode<'txn, 'db, T>>,
-        on: Expression,
-    },
+pub struct CrossProduct<'txn, 'db, T: Storage> {
+    pub left: Box<PlanNode<'txn, 'db, T>>,
+    pub right: Box<PlanNode<'txn, 'db, T>>,
 }
 
-impl<T: Storage> Explain for Join<'_, '_, T> {
+impl<T: Storage> Explain for CrossProduct<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
-        match self {
-            Self::NestedLoop { left, right, on } => {
-                write!(visitor, "NestedLoopJoin on={on}");
-                left.visit(visitor);
-                right.visit(visitor);
-            }
-        }
+        visitor.write_str("CrossProduct");
+        self.left.visit(visitor);
+        self.right.visit(visitor);
     }
 }
 

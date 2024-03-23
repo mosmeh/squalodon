@@ -16,6 +16,9 @@ pub enum ExecutorError {
     #[error("Type error")]
     TypeError,
 
+    #[error("Subquery returned more than one row")]
+    MultipleRowsFromSubquery,
+
     #[error("Storage error: {0}")]
     Storage(#[from] StorageError),
 
@@ -129,7 +132,7 @@ enum ExecutorNode<'txn, 'db, T: Storage> {
     Filter(Filter<'txn, 'db, T>),
     Sort(Sort),
     Limit(Limit<'txn, 'db, T>),
-    NestedLoopJoin(NestedLoopJoin<'txn, 'db, T>),
+    CrossProduct(CrossProduct<'txn, 'db, T>),
     Aggregate(Aggregate),
     Insert(Insert<'txn, 'db, T>),
     Update(Update<'txn, 'db, T>),
@@ -184,8 +187,8 @@ impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
                 limit,
                 offset,
             }) => Self::Limit(Limit::new(Self::new(ctx, *source)?, limit, offset)?),
-            PlanNode::Join(planner::Join::NestedLoop { left, right, on }) => Self::NestedLoopJoin(
-                NestedLoopJoin::new(Self::new(ctx, *left)?, Self::new(ctx, *right)?, on)?,
+            PlanNode::CrossProduct(planner::CrossProduct { left, right }) => Self::CrossProduct(
+                CrossProduct::new(Self::new(ctx, *left)?, Self::new(ctx, *right)?)?,
             ),
             PlanNode::Aggregate(planner::Aggregate {
                 source,
@@ -218,7 +221,7 @@ impl<T: Storage> Node for ExecutorNode<'_, '_, T> {
             Self::Filter(e) => e.next_row(),
             Self::Sort(e) => e.next_row(),
             Self::Limit(e) => e.next_row(),
-            Self::NestedLoopJoin(e) => e.next_row(),
+            Self::CrossProduct(e) => e.next_row(),
             Self::Aggregate(e) => e.next_row(),
             Self::Insert(e) => e.next_row(),
             Self::Update(e) => e.next_row(),
@@ -446,31 +449,28 @@ impl<T: Storage> Node for Limit<'_, '_, T> {
     }
 }
 
-struct NestedLoopJoin<'txn, 'db, T: Storage> {
+struct CrossProduct<'txn, 'db, T: Storage> {
     outer_source: Box<ExecutorNode<'txn, 'db, T>>,
     outer_row: Option<Row>,
     inner_rows: Vec<Row>,
     inner_cursor: usize,
-    on: Expression,
 }
 
-impl<'txn, 'db, T: Storage> NestedLoopJoin<'txn, 'db, T> {
+impl<'txn, 'db, T: Storage> CrossProduct<'txn, 'db, T> {
     fn new(
         outer_source: ExecutorNode<'txn, 'db, T>,
         inner_source: ExecutorNode<'txn, 'db, T>,
-        on: Expression,
     ) -> ExecutorResult<Self> {
         Ok(Self {
             outer_source: outer_source.into(),
             outer_row: None,
             inner_rows: inner_source.collect::<ExecutorResult<_>>()?,
             inner_cursor: 0,
-            on,
         })
     }
 }
 
-impl<T: Storage> Node for NestedLoopJoin<'_, '_, T> {
+impl<T: Storage> Node for CrossProduct<'_, '_, T> {
     fn next_row(&mut self) -> Output {
         if self.inner_rows.is_empty() {
             return Err(NodeError::EndOfRows);
@@ -480,18 +480,11 @@ impl<T: Storage> Node for NestedLoopJoin<'_, '_, T> {
                 Some(row) => row,
                 None => self.outer_row.insert(self.outer_source.next_row()?),
             };
-            while let Some(inner_row) = self.inner_rows.get(self.inner_cursor) {
+            if let Some(inner_row) = self.inner_rows.get(self.inner_cursor) {
                 let mut row = outer_row.clone();
                 row.0.extend(inner_row.0.clone());
-                match self.on.eval(&row)? {
-                    Value::Boolean(true) => {
-                        self.inner_cursor += 1;
-                        return Ok(row);
-                    }
-                    Value::Boolean(false) => (),
-                    _ => return Err(ExecutorError::TypeError.into()),
-                }
                 self.inner_cursor += 1;
+                return Ok(row);
             }
             self.outer_row = None;
             self.inner_cursor = 0;

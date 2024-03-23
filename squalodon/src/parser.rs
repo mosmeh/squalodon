@@ -59,7 +59,7 @@ pub struct DropTable {
     pub if_exists: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Select {
     pub projections: Vec<Projection>,
     pub from: TableRef,
@@ -71,7 +71,52 @@ pub struct Select {
     pub offset: Option<Expression>,
 }
 
-#[derive(Debug)]
+impl std::fmt::Display for Select {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SELECT ")?;
+        for (i, projection) in self.projections.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            projection.fmt(f)?;
+        }
+        f.write_str(" FROM ")?;
+        self.from.fmt(f)?;
+        if let Some(where_clause) = &self.where_clause {
+            write!(f, " WHERE {where_clause}")?;
+        }
+        if !self.group_by.is_empty() {
+            f.write_str(" GROUP BY ")?;
+            for (i, expr) in self.group_by.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(", ")?;
+                }
+                expr.fmt(f)?;
+            }
+        }
+        if let Some(having) = &self.having {
+            write!(f, " HAVING {having}")?;
+        }
+        if !self.order_by.is_empty() {
+            f.write_str(" ORDER BY ")?;
+            for (i, order_by) in self.order_by.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(", ")?;
+                }
+                order_by.fmt(f)?;
+            }
+        }
+        if let Some(limit) = &self.limit {
+            write!(f, " LIMIT {limit}")?;
+        }
+        if let Some(offset) = &self.offset {
+            write!(f, " OFFSET {offset}")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Projection {
     Wildcard,
     Expression {
@@ -80,7 +125,22 @@ pub enum Projection {
     },
 }
 
-#[derive(Debug)]
+impl std::fmt::Display for Projection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Wildcard => f.write_str("*"),
+            Self::Expression { expr, alias } => {
+                expr.fmt(f)?;
+                if let Some(alias) = alias {
+                    write!(f, " AS {alias}")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TableRef {
     BaseTable { name: String },
     Join(Box<Join>),
@@ -89,23 +149,87 @@ pub enum TableRef {
     Values(Values),
 }
 
-#[derive(Debug)]
+impl std::fmt::Display for TableRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BaseTable { name } => f.write_str(name),
+            Self::Join(join) => join.fmt(f),
+            Self::Subquery(select) => write!(f, "({select})"),
+            Self::Function { name, args } => {
+                write!(f, "{name}(")?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    arg.fmt(f)?;
+                }
+                f.write_str(")")
+            }
+            Self::Values(values) => write!(f, "({values})"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Join {
     pub left: TableRef,
     pub right: TableRef,
     pub on: Option<Expression>,
 }
 
-#[derive(Debug)]
+impl std::fmt::Display for Join {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.left.fmt(f)?;
+        match &self.on {
+            Some(on) => write!(f, " JOIN {} ON {on}", self.right),
+            None => write!(f, " CROSS JOIN {}", self.right),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Values {
     pub rows: Vec<Vec<Expression>>,
 }
 
-#[derive(Debug)]
+impl std::fmt::Display for Values {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("VALUES ")?;
+        for (i, row) in self.rows.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str("(")?;
+            for (j, expr) in row.iter().enumerate() {
+                if j > 0 {
+                    f.write_str(", ")?;
+                }
+                expr.fmt(f)?;
+            }
+            f.write_str(")")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OrderBy {
     pub expr: Expression,
     pub order: Order,
     pub null_order: NullOrder,
+}
+
+impl std::fmt::Display for OrderBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.expr.fmt(f)?;
+        if self.order != Order::default() {
+            write!(f, " {}", self.order)?;
+        }
+        if self.null_order != NullOrder::default() {
+            write!(f, " {}", self.null_order)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -151,6 +275,7 @@ pub enum Expression {
         name: String,
         args: Vec<Expression>,
     },
+    ScalarSubquery(Box<Select>),
 }
 
 impl std::fmt::Display for Expression {
@@ -170,6 +295,7 @@ impl std::fmt::Display for Expression {
                 }
                 f.write_str(")")
             }
+            Self::ScalarSubquery(select) => write!(f, "({select})"),
         }
     }
 }
@@ -299,7 +425,7 @@ impl BinaryOp {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Order {
     Asc,
     Desc,
@@ -320,7 +446,7 @@ impl std::fmt::Display for Order {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NullOrder {
     NullsFirst,
     NullsLast,
@@ -837,9 +963,15 @@ impl<'a> Parser<'a> {
                 }),
             },
             Token::LeftParen => {
-                let expr = self.parse_expr()?;
+                let inner = match self.lexer.peek()? {
+                    Token::Select | Token::Values => {
+                        let select = self.parse_select()?;
+                        Expression::ScalarSubquery(Box::new(select))
+                    }
+                    _ => self.parse_expr()?,
+                };
                 self.expect(Token::RightParen)?;
-                expr
+                inner
             }
             token => return Err(unexpected(&token)),
         };
