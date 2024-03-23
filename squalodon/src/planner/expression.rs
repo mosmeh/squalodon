@@ -261,13 +261,12 @@ impl<'txn, 'db, T: Storage> ExpressionBinder<'txn, 'db, T> {
     fn resolve_aggregate(
         &self,
         name: String,
-        args: Vec<parser::Expression>,
+        args: parser::FunctionArgs,
     ) -> PlannerResult<TypedExpression> {
         let Some(aggregate_ctx) = &self.aggregate_ctx else {
             return Err(PlannerError::AggregateNotAllowed);
         };
-        let [arg] = args.try_into().map_err(|_| PlannerError::ArityError)?;
-        let (index, column) = aggregate_ctx.resolve_aggregate(name, arg).unwrap();
+        let (index, column) = aggregate_ctx.resolve_aggregate(name, args).unwrap();
         Ok(TypedExpression {
             expr: planner::Expression::ColumnRef { index },
             ty: column.ty,

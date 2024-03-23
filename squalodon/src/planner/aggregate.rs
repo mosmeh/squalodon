@@ -6,7 +6,7 @@ use crate::{
     catalog::{AggregateFunction, AggregateInitFnPtr, CatalogRef},
     parser, planner,
     rows::ColumnIndex,
-    CatalogError, Storage,
+    CatalogError, Storage, Type,
 };
 use std::collections::HashMap;
 
@@ -67,22 +67,38 @@ impl<'txn> AggregateContext<'txn> {
                     Err(err) => return Err(err.into()),
                 };
                 if in_aggregate_args {
+                    // Nested aggregate functions are not allowed.
                     return Err(PlannerError::AggregateNotAllowed);
                 }
-                let [arg] = args.as_slice() else {
-                    return Err(PlannerError::ArityError);
+
+                let (plan, bound_expr) = match args {
+                    parser::FunctionArgs::Wildcard if name.eq_ignore_ascii_case("count") => {
+                        // `count(*)` is a special case equivalent to `count(1)`.
+                        (
+                            source,
+                            TypedExpression {
+                                expr: planner::Expression::Constact(1.into()),
+                                ty: Type::Integer.into(),
+                            },
+                        )
+                    }
+                    parser::FunctionArgs::Expressions(args) if args.len() == 1 => {
+                        let plan = self.gather_aggregates_inner(catalog, source, &args[0], true)?;
+                        ExpressionBinder::new(catalog).bind(plan, args[0].clone())?
+                    }
+                    _ => return Err(PlannerError::ArityError),
                 };
-                let plan = self.gather_aggregates_inner(catalog, source, arg, true)?;
+
                 let aggregate = AggregateCall {
                     function_name: name.clone(),
-                    arg: arg.clone(),
+                    args: args.clone(),
                 };
                 let std::collections::hash_map::Entry::Vacant(entry) =
                     self.aggregate_calls.entry(aggregate)
                 else {
                     return Ok(plan);
                 };
-                let (plan, bound_expr) = ExpressionBinder::new(catalog).bind(plan, arg.clone())?;
+
                 let index = self.bound_aggregates.len();
                 self.bound_aggregates.push(BoundAggregate {
                     function,
@@ -157,11 +173,12 @@ impl<'txn> AggregateContext<'txn> {
     pub fn resolve_aggregate(
         &self,
         function_name: String,
-        arg: parser::Expression,
+        args: parser::FunctionArgs,
     ) -> Option<(ColumnIndex, &planner::Column)> {
-        let index = self
-            .aggregate_calls
-            .get(&AggregateCall { function_name, arg });
+        let index = self.aggregate_calls.get(&AggregateCall {
+            function_name,
+            args,
+        });
         index.map(|&index| {
             let bound_aggregate = &self.bound_aggregates[index];
             (ColumnIndex(index), &bound_aggregate.result_column)
@@ -172,7 +189,7 @@ impl<'txn> AggregateContext<'txn> {
 #[derive(PartialEq, Eq, Hash)]
 struct AggregateCall {
     function_name: String,
-    arg: parser::Expression,
+    args: parser::FunctionArgs,
 }
 
 struct BoundAggregate<'a> {

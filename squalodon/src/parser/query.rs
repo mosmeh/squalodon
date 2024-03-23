@@ -358,8 +358,14 @@ impl Parser<'_> {
         match self.lexer.peek()? {
             Token::Identifier(_) => {
                 let name = self.expect_identifier()?;
-                if *self.lexer.peek()? == Token::LeftParen {
-                    let args = self.parse_args()?;
+                if self.lexer.consume_if_eq(Token::LeftParen)? {
+                    let args = if self.lexer.consume_if_eq(Token::RightParen)? {
+                        Vec::new()
+                    } else {
+                        let args = self.parse_comma_separated(Self::parse_expr)?;
+                        self.expect(Token::RightParen)?;
+                        args
+                    };
                     Ok(TableRef::Function { name, args })
                 } else {
                     Ok(TableRef::BaseTable { name })

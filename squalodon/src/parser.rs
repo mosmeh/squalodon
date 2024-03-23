@@ -4,7 +4,7 @@ mod modification;
 mod query;
 
 pub use ddl::{Constraint, CreateTable, DropTable};
-pub use expression::{BinaryOp, ColumnRef, Expression, UnaryOp};
+pub use expression::{BinaryOp, ColumnRef, Expression, FunctionArgs, UnaryOp};
 pub use modification::{Delete, Insert, Update};
 pub use query::{Join, NullOrder, Order, OrderBy, Projection, Select, TableRef, Values};
 
@@ -140,16 +140,6 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(items)
-    }
-
-    fn parse_args(&mut self) -> ParserResult<Vec<Expression>> {
-        self.expect(Token::LeftParen)?;
-        if self.lexer.consume_if_eq(Token::RightParen)? {
-            return Ok(Vec::new());
-        }
-        let args = self.parse_comma_separated(Self::parse_expr)?;
-        self.expect(Token::RightParen)?;
-        Ok(args)
     }
 
     fn expect(&mut self, expected: Token) -> ParserResult<()> {

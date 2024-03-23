@@ -16,7 +16,7 @@ pub enum Expression {
     },
     Function {
         name: String,
-        args: Vec<Expression>,
+        args: FunctionArgs,
     },
     ScalarSubquery(Box<Select>),
 }
@@ -28,16 +28,7 @@ impl std::fmt::Display for Expression {
             Self::ColumnRef(column_ref) => column_ref.fmt(f),
             Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
             Self::BinaryOp { op, lhs, rhs } => write!(f, "({lhs} {op} {rhs})"),
-            Self::Function { name, args } => {
-                write!(f, "{name}(")?;
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        f.write_str(", ")?;
-                    }
-                    arg.fmt(f)?;
-                }
-                f.write_str(")")
-            }
+            Self::Function { name, args } => write!(f, "{name}({args})"),
             Self::ScalarSubquery(select) => write!(f, "({select})"),
         }
     }
@@ -168,6 +159,29 @@ impl BinaryOp {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum FunctionArgs {
+    Wildcard,
+    Expressions(Vec<Expression>),
+}
+
+impl std::fmt::Display for FunctionArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Wildcard => f.write_str("*"),
+            Self::Expressions(args) => {
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    arg.fmt(f)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 impl Parser<'_> {
     pub fn parse_expr(&mut self) -> ParserResult<Expression> {
         self.parse_sub_expr(0)
@@ -214,7 +228,15 @@ impl Parser<'_> {
             Token::String(s) => Expression::Constant(Value::Text(s)),
             Token::Identifier(ident) => match self.lexer.peek()? {
                 Token::LeftParen => {
-                    let args = self.parse_args()?;
+                    self.lexer.consume()?;
+                    let args = if self.lexer.consume_if_eq(Token::Asterisk)? {
+                        FunctionArgs::Wildcard
+                    } else if self.lexer.consume_if_eq(Token::RightParen)? {
+                        FunctionArgs::Expressions(Vec::new())
+                    } else {
+                        FunctionArgs::Expressions(self.parse_comma_separated(Self::parse_expr)?)
+                    };
+                    self.expect(Token::RightParen)?;
                     Expression::Function { name: ident, args }
                 }
                 Token::Dot => {
