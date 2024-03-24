@@ -49,6 +49,14 @@ pub enum Error {
     #[error("Column index out of range")]
     ColumnIndexOutOfRange,
 
+    #[error("Unknown prepared statement {0:?}")]
+    UnknownPreparedStatement(String),
+
+    #[error(
+        "Wrong number of parameters for prepared statement: expected {expected}, got {actual}"
+    )]
+    ParameterCountMismatch { expected: usize, actual: usize },
+
     #[error(transparent)]
     TryFromValue(#[from] TryFromValueError),
 }

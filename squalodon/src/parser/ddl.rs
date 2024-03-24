@@ -1,7 +1,7 @@
 use super::{unexpected, Parser, ParserResult, Statement};
 use crate::{catalog::Column, lexer::Token, types::Type};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CreateTable {
     pub name: String,
     pub if_not_exists: bool,
@@ -9,13 +9,13 @@ pub struct CreateTable {
     pub constraints: Vec<Constraint>,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Constraint {
     PrimaryKey(Vec<String>),
     NotNull(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DropTable {
     pub name: String,
     pub if_exists: bool,

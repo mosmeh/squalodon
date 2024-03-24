@@ -1,5 +1,6 @@
 use super::{unexpected, Parser, ParserResult, Select};
 use crate::{lexer::Token, types::Value};
+use std::num::NonZeroUsize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Expression {
@@ -20,6 +21,7 @@ pub enum Expression {
     },
     ScalarSubquery(Box<Select>),
     Exists(Box<Select>),
+    Parameter(NonZeroUsize),
 }
 
 impl std::fmt::Display for Expression {
@@ -32,6 +34,7 @@ impl std::fmt::Display for Expression {
             Self::Function { name, args } => write!(f, "{name}({args})"),
             Self::ScalarSubquery(select) => write!(f, "({select})"),
             Self::Exists(select) => write!(f, "EXISTS ({select})"),
+            Self::Parameter(i) => write!(f, "${i}"),
         }
     }
 }
@@ -270,6 +273,10 @@ impl Parser<'_> {
                 };
                 self.expect(Token::RightParen)?;
                 inner
+            }
+            Token::Parameter(i) => {
+                self.max_param_id = self.max_param_id.max(Some(i));
+                Expression::Parameter(i)
             }
             token => return Err(unexpected(&token)),
         };

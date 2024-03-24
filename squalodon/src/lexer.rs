@@ -1,4 +1,4 @@
-use std::str::Chars;
+use std::{num::NonZeroUsize, str::Chars};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LexerError {
@@ -39,6 +39,7 @@ macro_rules! keywords {
             RealLiteral(f64),
             String(String),
             Identifier(String),
+            Parameter(NonZeroUsize),
             Comment(String),
             Whitespace(char),
             Eof,
@@ -86,6 +87,7 @@ macro_rules! keywords {
                     Self::RealLiteral(r) => r.fmt(f),
                     Self::String(s) => s.fmt(f),
                     Self::Identifier(i) => i.fmt(f),
+                    Self::Parameter(p) => write!(f, "${}", p),
                     Self::Comment(c) => write!(f, "--{}", c),
                     Self::Whitespace(c) => c.fmt(f),
                     Self::Eof => f.write_str("EOF"),
@@ -96,6 +98,7 @@ macro_rules! keywords {
 }
 
 keywords! {
+    All
     And
     As
     Asc
@@ -105,10 +108,12 @@ keywords! {
     Commit
     Create
     Cross
+    Deallocate
     Delete
     Desc
     Describe
     Drop
+    Execute
     Exists
     Explain
     False
@@ -132,6 +137,7 @@ keywords! {
     On
     Or
     Order
+    Prepare
     Primary
     Real
     Rollback
@@ -309,7 +315,15 @@ impl<'a> Inner<'a> {
                     Token::Identifier(s)
                 }))
             }
-            _ => Ok(if self.consume_if_eq('%') {
+            _ => Ok(if self.consume_if_eq('$') {
+                let id_str = self.consume_while(|ch| ch.is_ascii_digit());
+                let id = id_str.parse().map_err(|_| {
+                    let mut s = "$".to_owned();
+                    s.push_str(&id_str);
+                    LexerError::UnknownToken(s)
+                })?;
+                Token::Parameter(id)
+            } else if self.consume_if_eq('%') {
                 Token::Percent
             } else if self.consume_if_eq('(') {
                 Token::LeftParen

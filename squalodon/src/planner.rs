@@ -15,9 +15,11 @@ use crate::{
     parser::{self, ColumnRef},
     rows::ColumnIndex,
     types::{NullableType, Type},
-    CatalogError, Storage, StorageError,
+    CatalogError, Storage, StorageError, Value,
 };
 use ddl::{CreateTable, DropTable};
+use expression::TypedExpression;
+use std::num::NonZeroUsize;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlannerError {
@@ -54,6 +56,9 @@ pub enum PlannerError {
     #[error("Arity error")]
     ArityError,
 
+    #[error("Parameter ${0} not provided")]
+    ParameterNotProvided(NonZeroUsize),
+
     #[error("Storage error: {0}")]
     Storage(#[from] StorageError),
 
@@ -63,11 +68,20 @@ pub enum PlannerError {
 
 pub type PlannerResult<T> = std::result::Result<T, PlannerError>;
 
+pub fn bind_expr<'txn, T: Storage>(
+    catalog: &'txn CatalogRef<'txn, '_, T>,
+    expr: parser::Expression,
+) -> PlannerResult<Expression> {
+    let TypedExpression { expr, .. } = Binder::new(catalog).bind_expr_without_source(expr)?;
+    Ok(expr)
+}
+
 pub fn plan<'txn, 'db, T: Storage>(
     catalog: &'txn CatalogRef<'txn, 'db, T>,
     statement: parser::Statement,
+    params: Vec<Value>,
 ) -> PlannerResult<Plan<'txn, 'db, T>> {
-    Binder::new(catalog).bind(statement)
+    Binder::new(catalog).with_params(params).bind(statement)
 }
 
 #[derive(Clone)]
@@ -236,17 +250,28 @@ impl<T: Storage> Explain for PlanNode<'_, '_, T> {
 
 struct Binder<'txn, 'db, T: Storage> {
     catalog: &'txn CatalogRef<'txn, 'db, T>,
+    params: Vec<Value>,
 }
 
 impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
     fn new(catalog: &'txn CatalogRef<'txn, 'db, T>) -> Self {
-        Self { catalog }
+        Self {
+            catalog,
+            params: Vec::new(),
+        }
+    }
+
+    fn with_params(self, params: Vec<Value>) -> Self {
+        Self { params, ..self }
     }
 
     fn bind(&self, statement: parser::Statement) -> PlannerResult<Plan<'txn, 'db, T>> {
         match statement {
             parser::Statement::Explain(statement) => self.bind_explain(*statement),
-            parser::Statement::Transaction(_) => unreachable!("handled before binding"),
+            parser::Statement::Prepare(_)
+            | parser::Statement::Execute(_)
+            | parser::Statement::Deallocate(_)
+            | parser::Statement::Transaction(_) => unreachable!("handled before binding"),
             parser::Statement::ShowTables => {
                 self.rewrite_to("SELECT * FROM squalodon_tables() ORDER BY name")
             }

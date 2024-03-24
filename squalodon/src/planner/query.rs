@@ -180,16 +180,16 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         // We need to determine whether the query is an aggregate query or not.
         // We search for all occurrences of aggregate functions in the query.
         if let Some(having) = &select.having {
-            plan = aggregate_ctx.gather_aggregates(self.catalog, plan, having)?;
+            plan = aggregate_ctx.gather_aggregates(self, plan, having)?;
         }
         for order_by in &select.order_by {
-            plan = aggregate_ctx.gather_aggregates(self.catalog, plan, &order_by.expr)?;
+            plan = aggregate_ctx.gather_aggregates(self, plan, &order_by.expr)?;
         }
         for projection in &select.projections {
             match projection {
                 parser::Projection::Wildcard => (),
                 parser::Projection::Expression { expr, .. } => {
-                    plan = aggregate_ctx.gather_aggregates(self.catalog, plan, expr)?;
+                    plan = aggregate_ctx.gather_aggregates(self, plan, expr)?;
                 }
             }
         }
@@ -197,14 +197,14 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         // The query is an aggregate query if there are any aggregate functions
         // or if there is a GROUP BY clause.
         if aggregate_ctx.has_aggregates() || !select.group_by.is_empty() {
-            plan = aggregate_ctx.bind_aggregates(self.catalog, plan, select.group_by)?;
+            plan = aggregate_ctx.bind_aggregates(self, plan, select.group_by)?;
         }
 
         // HAVING, ORDER BY and SELECT expressions can reference
         // the aggregated expressions. They are bound with the special
         // binder that allows them to reference the aggregated expressions.
         let aggregated_expr_binder =
-            ExpressionBinder::new(self.catalog).with_aggregate_context(aggregate_ctx);
+            ExpressionBinder::new(self).with_aggregate_context(aggregate_ctx);
 
         if let Some(having) = select.having {
             plan = self.bind_having(&aggregated_expr_binder, plan, having)?;
@@ -233,7 +233,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
     #[allow(clippy::unused_self)]
     fn bind_having(
         &self,
-        expr_binder: &ExpressionBinder<'txn, 'db, T>,
+        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
         expr: parser::Expression,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
@@ -250,7 +250,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
     #[allow(clippy::unused_self)]
     fn bind_projections(
         &self,
-        expr_binder: &ExpressionBinder<'txn, 'db, T>,
+        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
         projections: Vec<parser::Projection>,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
@@ -304,7 +304,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
     #[allow(clippy::unused_self)]
     fn bind_order_by(
         &self,
-        expr_binder: &ExpressionBinder<'txn, 'db, T>,
+        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
         order_by: Vec<parser::OrderBy>,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {

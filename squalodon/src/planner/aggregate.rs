@@ -1,9 +1,9 @@
 use super::{
     expression::{ExpressionBinder, TypedExpression},
-    Explain, ExplainVisitor, Plan, PlanNode, PlannerError, PlannerResult,
+    Binder, Explain, ExplainVisitor, Plan, PlanNode, PlannerError, PlannerResult,
 };
 use crate::{
-    catalog::{AggregateFunction, AggregateInitFnPtr, CatalogRef},
+    catalog::{AggregateFunction, AggregateInitFnPtr},
     parser, planner,
     rows::ColumnIndex,
     CatalogError, Storage, Type,
@@ -63,16 +63,16 @@ impl<'txn> AggregateContext<'txn> {
 
     pub fn gather_aggregates<'db, T: Storage>(
         &mut self,
-        catalog: &'txn CatalogRef<'txn, 'db, T>,
+        binder: &Binder<'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
         expr: &parser::Expression,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
-        self.gather_aggregates_inner(catalog, source, expr, false)
+        self.gather_aggregates_inner(binder, source, expr, false)
     }
 
     fn gather_aggregates_inner<'db, T: Storage>(
         &mut self,
-        catalog: &'txn CatalogRef<'txn, 'db, T>,
+        binder: &Binder<'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
         expr: &parser::Expression,
         in_aggregate_args: bool,
@@ -81,16 +81,17 @@ impl<'txn> AggregateContext<'txn> {
             parser::Expression::Constant(_)
             | parser::Expression::ColumnRef(_)
             | parser::Expression::ScalarSubquery(_)
-            | parser::Expression::Exists(_) => Ok(source),
+            | parser::Expression::Exists(_)
+            | parser::Expression::Parameter(_) => Ok(source),
             parser::Expression::UnaryOp { expr, .. } => {
-                self.gather_aggregates_inner(catalog, source, expr, in_aggregate_args)
+                self.gather_aggregates_inner(binder, source, expr, in_aggregate_args)
             }
             parser::Expression::BinaryOp { lhs, rhs, .. } => {
-                let plan = self.gather_aggregates_inner(catalog, source, lhs, in_aggregate_args)?;
-                self.gather_aggregates_inner(catalog, plan, rhs, in_aggregate_args)
+                let plan = self.gather_aggregates_inner(binder, source, lhs, in_aggregate_args)?;
+                self.gather_aggregates_inner(binder, plan, rhs, in_aggregate_args)
             }
             parser::Expression::Function { ref name, ref args } => {
-                let function = match catalog.aggregate_function(name) {
+                let function = match binder.catalog.aggregate_function(name) {
                     Ok(func) => func,
                     Err(CatalogError::UnknownEntry(_, _)) => return Ok(source),
                     Err(err) => return Err(err.into()),
@@ -112,8 +113,8 @@ impl<'txn> AggregateContext<'txn> {
                         )
                     }
                     parser::FunctionArgs::Expressions(args) if args.len() == 1 => {
-                        let plan = self.gather_aggregates_inner(catalog, source, &args[0], true)?;
-                        ExpressionBinder::new(catalog).bind(plan, args[0].clone())?
+                        let plan = self.gather_aggregates_inner(binder, source, &args[0], true)?;
+                        ExpressionBinder::new(binder).bind(plan, args[0].clone())?
                     }
                     _ => return Err(PlannerError::ArityError),
                 };
@@ -146,7 +147,7 @@ impl<'txn> AggregateContext<'txn> {
 
     pub fn bind_aggregates<'db, T: Storage>(
         &self,
-        catalog: &'txn CatalogRef<'txn, 'db, T>,
+        binder: &Binder<'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
         group_by: Vec<parser::Expression>,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
@@ -162,7 +163,7 @@ impl<'txn> AggregateContext<'txn> {
         }
 
         // The rest of the columns are the columns in the GROUP BY clause.
-        let expr_binder = ExpressionBinder::new(catalog);
+        let expr_binder = ExpressionBinder::new(binder);
         for group_by in &group_by {
             let (new_plan, TypedExpression { expr, ty }) =
                 expr_binder.bind(plan, group_by.clone())?;

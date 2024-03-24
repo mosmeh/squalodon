@@ -1,16 +1,18 @@
 use crate::{
     executor::{Executor, ExecutorContext},
-    parser::{Parser, ParserResult, Statement, TransactionControl},
-    planner::{plan, Plan},
+    parser::{Deallocate, Expression, Parser, ParserResult, Statement, TransactionControl},
+    planner::{self, Plan},
     rows::{Column, Rows},
     storage::{Storage, Transaction},
     types::NullableType,
-    Database, Result, Type,
+    Database, Error, Result, Row, Type,
 };
+use std::collections::HashMap;
 
 pub struct Connection<'a, T: Storage> {
     db: &'a Database<T>,
     txn_status: TransactionState<'a, T>,
+    prepared_statements: HashMap<String, Statement>,
 }
 
 impl<'a, T: Storage> Connection<'a, T> {
@@ -18,6 +20,7 @@ impl<'a, T: Storage> Connection<'a, T> {
         Self {
             db,
             txn_status: TransactionState::Inactive,
+            prepared_statements: HashMap::new(),
         }
     }
 
@@ -41,18 +44,64 @@ impl<'a, T: Storage> Connection<'a, T> {
     }
 
     fn execute_statement(&mut self, statement: Statement) -> Result<Rows> {
-        if let Statement::Transaction(txn_control) = statement {
-            self.handle_transaction_control(txn_control)?;
-            return Ok(Rows::empty());
+        self.execute_statement_with_params(statement, Vec::new())
+    }
+
+    fn execute_statement_with_params(
+        &mut self,
+        statement: Statement,
+        params: Vec<Expression>,
+    ) -> Result<Rows> {
+        match statement {
+            Statement::Prepare(prepare) => {
+                // Perform only parsing and no planning for now.
+                self.prepared_statements
+                    .insert(prepare.name, *prepare.statement);
+                return Ok(Rows::empty());
+            }
+            Statement::Execute(execute) => {
+                let prepared_statement = self
+                    .prepared_statements
+                    .get(&execute.name)
+                    .ok_or_else(|| Error::UnknownPreparedStatement(execute.name))?;
+                return self
+                    .execute_statement_with_params(prepared_statement.clone(), execute.params);
+            }
+            Statement::Deallocate(deallocate) => match deallocate {
+                Deallocate::All => {
+                    self.prepared_statements.clear();
+                    return Ok(Rows::empty());
+                }
+                Deallocate::Name(name) => {
+                    return if self.prepared_statements.remove(&name).is_some() {
+                        Ok(Rows::empty())
+                    } else {
+                        Err(Error::UnknownPreparedStatement(name))
+                    };
+                }
+            },
+            Statement::Transaction(txn_control) => {
+                self.handle_transaction_control(txn_control)?;
+                return Ok(Rows::empty());
+            }
+            _ => (),
         }
+
         let mut implicit_txn = None;
         let txn = match &self.txn_status {
             TransactionState::Active(txn) => txn,
             TransactionState::Aborted => return Err(TransactionError::TransactionAborted.into()),
             TransactionState::Inactive => implicit_txn.insert(self.db.storage.transaction()),
         };
+
         let catalog = self.db.catalog.with(txn);
-        let plan = plan(&catalog, statement)?;
+
+        let mut param_values = Vec::with_capacity(params.len());
+        for expr in params {
+            param_values.push(planner::bind_expr(&catalog, expr)?.eval(&Row::empty())?);
+        }
+
+        let plan = planner::plan(&catalog, statement, param_values)?;
         match self.execute_plan(txn, plan) {
             Ok(rows) => {
                 if let Some(txn) = implicit_txn {

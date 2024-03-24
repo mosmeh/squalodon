@@ -1,27 +1,27 @@
 use super::{Expression, Parser, ParserResult, Select};
 use crate::lexer::Token;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Insert {
     pub table_name: String,
     pub column_names: Option<Vec<String>>,
     pub select: Select,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Update {
     pub table_name: String,
     pub sets: Vec<Set>,
     pub where_clause: Option<Expression>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Set {
     pub column_name: String,
     pub expr: Expression,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Delete {
     pub table_name: String,
     pub where_clause: Option<Expression>,
