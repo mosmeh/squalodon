@@ -1,44 +1,80 @@
-use super::{ExecutorNode, Node, NodeError, Output};
-use crate::{storage::Table, Storage};
+use super::{ExecutorNode, ExecutorResult, IntoOutput, Node, Output};
+use crate::{storage::Table, Row, Storage};
 
-pub struct Insert<'txn, 'db, T: Storage> {
-    pub source: Box<ExecutorNode<'txn, 'db, T>>,
-    pub table: Table<'txn, 'db, T>,
+pub struct Insert {
+    row: Option<Row>,
 }
 
-impl<T: Storage> Node for Insert<'_, '_, T> {
-    fn next_row(&mut self) -> Output {
-        for row in self.source.by_ref() {
-            self.table.insert(&row?)?;
+impl Insert {
+    pub fn new<T: Storage>(
+        source: Box<ExecutorNode<'_, '_, T>>,
+        table: Table<'_, '_, T>,
+    ) -> ExecutorResult<Self> {
+        let mut count = 0;
+        for row in source {
+            table.insert(&row?)?;
+            count += 1;
         }
-        Err(NodeError::EndOfRows)
+        Ok(Self {
+            row: Some(Row(vec![count.into()])),
+        })
     }
 }
 
-pub struct Update<'txn, 'db, T: Storage> {
-    pub source: Box<ExecutorNode<'txn, 'db, T>>,
-    pub table: Table<'txn, 'db, T>,
-}
-
-impl<T: Storage> Node for Update<'_, '_, T> {
+impl Node for Insert {
     fn next_row(&mut self) -> Output {
-        for row in self.source.by_ref() {
-            self.table.update(&row?)?;
-        }
-        Err(NodeError::EndOfRows)
+        self.row.take().into_output()
     }
 }
 
-pub struct Delete<'txn, 'db, T: Storage> {
-    pub source: Box<ExecutorNode<'txn, 'db, T>>,
-    pub table: Table<'txn, 'db, T>,
+pub struct Update {
+    row: Option<Row>,
 }
 
-impl<T: Storage> Node for Delete<'_, '_, T> {
-    fn next_row(&mut self) -> Output {
-        for row in self.source.by_ref() {
-            self.table.delete(&row?)?;
+impl Update {
+    pub fn new<T: Storage>(
+        source: Box<ExecutorNode<'_, '_, T>>,
+        table: Table<'_, '_, T>,
+    ) -> ExecutorResult<Self> {
+        let mut count = 0;
+        for row in source {
+            table.update(&row?)?;
+            count += 1;
         }
-        Err(NodeError::EndOfRows)
+        Ok(Self {
+            row: Some(Row(vec![count.into()])),
+        })
+    }
+}
+
+impl Node for Update {
+    fn next_row(&mut self) -> Output {
+        self.row.take().into_output()
+    }
+}
+
+pub struct Delete {
+    row: Option<Row>,
+}
+
+impl Delete {
+    pub fn new<T: Storage>(
+        source: Box<ExecutorNode<'_, '_, T>>,
+        table: Table<'_, '_, T>,
+    ) -> ExecutorResult<Self> {
+        let mut count = 0;
+        for row in source {
+            table.delete(&row?)?;
+            count += 1;
+        }
+        Ok(Self {
+            row: Some(Row(vec![count.into()])),
+        })
+    }
+}
+
+impl Node for Delete {
+    fn next_row(&mut self) -> Output {
+        self.row.take().into_output()
     }
 }

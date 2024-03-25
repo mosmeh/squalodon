@@ -24,23 +24,38 @@ impl<'a, T: Storage> Connection<'a, T> {
         }
     }
 
-    pub fn execute<P: Params>(&mut self, sql: &str, params: P) -> Result<()> {
-        self.query(sql, params)?;
-        Ok(())
-    }
-
-    pub fn query<P: Params>(&mut self, sql: &str, params: P) -> Result<Rows> {
-        let mut parser = Parser::new(sql);
-        let statement = parser.next().transpose()?.ok_or(Error::NoStatement)?;
-        if parser.next().is_some() {
-            return Err(Error::MultipleStatements);
-        }
+    /// Execute a single SQL statement.
+    ///
+    /// On success, returns the number of rows that were changed, inserted,
+    /// or deleted.
+    pub fn execute<P: Params>(&mut self, sql: &str, params: P) -> Result<usize> {
+        let statement = parse_statement(sql)?;
+        let is_modification = statement.is_modification();
         let params = params
             .into_values()
             .into_iter()
             .map(Expression::Constant)
             .collect();
-        self.execute_statement(statement, params)
+        let mut rows = self.execute_statement(statement, params)?;
+        let num_affected_rows = if is_modification {
+            rows.next().map_or(0, |row| row.get(0).unwrap())
+        } else {
+            0
+        };
+        Ok(num_affected_rows)
+    }
+
+    /// Execute a single SQL query, returning the resulting rows.
+    pub fn query<P: Params>(&mut self, sql: &str, params: P) -> Result<Rows> {
+        let statement = parse_statement(sql)?;
+        let is_modification = statement.is_modification();
+        let params = params
+            .into_values()
+            .into_iter()
+            .map(Expression::Constant)
+            .collect();
+        let rows = self.execute_statement(statement, params)?;
+        Ok(if is_modification { Rows::empty() } else { rows })
     }
 
     fn execute_statement(&mut self, statement: Statement, params: Vec<Expression>) -> Result<Rows> {
@@ -201,4 +216,13 @@ pub enum TransactionError {
 
     #[error("The current transaction has been aborted. Commands are ignored until end of transaction block.")]
     TransactionAborted,
+}
+
+fn parse_statement(sql: &str) -> Result<Statement> {
+    let mut parser = Parser::new(sql);
+    let statement = parser.next().transpose()?.ok_or(Error::NoStatement)?;
+    if parser.next().is_some() {
+        return Err(Error::MultipleStatements);
+    }
+    Ok(statement)
 }

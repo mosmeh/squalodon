@@ -89,10 +89,13 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
             }
             node
         };
-        Ok(Plan::sink(PlanNode::Insert(Insert {
-            source: Box::new(node),
-            table,
-        })))
+        Ok(Plan {
+            node: PlanNode::Insert(Insert {
+                source: Box::new(node),
+                table,
+            }),
+            schema: vec![planner::Column::new("count", planner::Type::Integer)].into(),
+        })
     }
 
     pub fn bind_update(&self, update: parser::Update) -> PlannerResult<Plan<'txn, 'db, T>> {
@@ -131,10 +134,13 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
             source: Box::new(plan.node),
             exprs,
         });
-        Ok(Plan::sink(PlanNode::Update(Update {
-            source: Box::new(node),
-            table,
-        })))
+        Ok(Plan {
+            node: PlanNode::Update(Update {
+                source: Box::new(node),
+                table,
+            }),
+            schema: vec![planner::Column::new("count", planner::Type::Integer)].into(),
+        })
     }
 
     pub fn bind_delete(&self, delete: parser::Delete) -> PlannerResult<Plan<'txn, 'db, T>> {
@@ -143,9 +149,12 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         if let Some(where_clause) = delete.where_clause {
             plan = self.bind_where_clause(plan, where_clause)?;
         }
-        Ok(Plan::sink(PlanNode::Delete(Delete {
-            source: Box::new(plan.node),
-            table,
-        })))
+        Ok(Plan {
+            node: PlanNode::Delete(Delete {
+                source: Box::new(plan.node),
+                table,
+            }),
+            schema: vec![planner::Column::new("count", planner::Type::Integer)].into(),
+        })
     }
 }

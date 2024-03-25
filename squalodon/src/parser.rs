@@ -42,6 +42,12 @@ pub enum Statement {
     Delete(Delete),
 }
 
+impl Statement {
+    pub fn is_modification(&self) -> bool {
+        matches!(self, Self::Insert(_) | Self::Update(_) | Self::Delete(_))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Prepare {
     pub name: String,

@@ -140,9 +140,9 @@ enum ExecutorNode<'txn, 'db, T: Storage> {
     CrossProduct(CrossProduct<'txn, 'db, T>),
     UngroupedAggregate(UngroupedAggregate),
     HashAggregate(HashAggregate),
-    Insert(Insert<'txn, 'db, T>),
-    Update(Update<'txn, 'db, T>),
-    Delete(Delete<'txn, 'db, T>),
+    Insert(Insert),
+    Update(Update),
+    Delete(Delete),
 }
 
 impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
@@ -210,18 +210,15 @@ impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
                 Self::new(ctx, *source)?,
                 &init_functions,
             )?),
-            PlanNode::Insert(planner::Insert { source, table }) => Self::Insert(Insert {
-                source: Box::new(Self::new(ctx, *source)?),
-                table,
-            }),
-            PlanNode::Update(planner::Update { source, table }) => Self::Update(Update {
-                source: Box::new(Self::new(ctx, *source)?),
-                table,
-            }),
-            PlanNode::Delete(planner::Delete { source, table }) => Self::Delete(Delete {
-                source: Box::new(Self::new(ctx, *source)?),
-                table,
-            }),
+            PlanNode::Insert(planner::Insert { source, table }) => {
+                Self::Insert(Insert::new(Box::new(Self::new(ctx, *source)?), table)?)
+            }
+            PlanNode::Update(planner::Update { source, table }) => {
+                Self::Update(Update::new(Box::new(Self::new(ctx, *source)?), table)?)
+            }
+            PlanNode::Delete(planner::Delete { source, table }) => {
+                Self::Delete(Delete::new(Box::new(Self::new(ctx, *source)?), table)?)
+            }
         };
         Ok(executor)
     }
