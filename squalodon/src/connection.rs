@@ -1,10 +1,10 @@
 use crate::{
     executor::{Executor, ExecutorContext},
-    parser::{Deallocate, Expression, Parser, ParserResult, Statement, TransactionControl},
+    parser::{Deallocate, Expression, Parser, Statement, TransactionControl},
     planner::{self, Plan},
     rows::{Column, Rows},
     storage::{Storage, Transaction},
-    types::NullableType,
+    types::{NullableType, Params},
     Database, Error, Result, Row, Type,
 };
 use std::collections::HashMap;
@@ -24,34 +24,26 @@ impl<'a, T: Storage> Connection<'a, T> {
         }
     }
 
-    pub fn execute(&mut self, sql: &str) -> Result<()> {
-        let parser = Parser::new(sql);
-        for statement in parser {
-            self.execute_statement(statement?)?;
-        }
+    pub fn execute<P: Params>(&mut self, sql: &str, params: P) -> Result<()> {
+        self.query(sql, params)?;
         Ok(())
     }
 
-    pub fn query(&mut self, sql: &str) -> Result<Rows> {
-        let mut statements = Parser::new(sql).collect::<ParserResult<Vec<_>>>()?;
-        let Some(last_statement) = statements.pop() else {
-            return Ok(Rows::empty());
-        };
-        for statement in statements {
-            self.execute_statement(statement)?;
+    pub fn query<P: Params>(&mut self, sql: &str, params: P) -> Result<Rows> {
+        let mut parser = Parser::new(sql);
+        let statement = parser.next().transpose()?.ok_or(Error::NoStatement)?;
+        if parser.next().is_some() {
+            return Err(Error::MultipleStatements);
         }
-        self.execute_statement(last_statement)
+        let params = params
+            .into_values()
+            .into_iter()
+            .map(Expression::Constant)
+            .collect();
+        self.execute_statement(statement, params)
     }
 
-    fn execute_statement(&mut self, statement: Statement) -> Result<Rows> {
-        self.execute_statement_with_params(statement, Vec::new())
-    }
-
-    fn execute_statement_with_params(
-        &mut self,
-        statement: Statement,
-        params: Vec<Expression>,
-    ) -> Result<Rows> {
+    fn execute_statement(&mut self, statement: Statement, params: Vec<Expression>) -> Result<Rows> {
         match statement {
             Statement::Prepare(prepare) => {
                 // Perform only parsing and no planning for now.
@@ -64,8 +56,7 @@ impl<'a, T: Storage> Connection<'a, T> {
                     .prepared_statements
                     .get(&execute.name)
                     .ok_or_else(|| Error::UnknownPreparedStatement(execute.name))?;
-                return self
-                    .execute_statement_with_params(prepared_statement.clone(), execute.params);
+                return self.execute_statement(prepared_statement.clone(), execute.params);
             }
             Statement::Deallocate(deallocate) => match deallocate {
                 Deallocate::All => {

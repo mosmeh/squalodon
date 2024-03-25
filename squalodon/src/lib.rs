@@ -18,7 +18,7 @@ pub use parser::ParserError;
 pub use planner::PlannerError;
 pub use rows::{Column, Row, Rows};
 pub(crate) use storage::StorageError;
-pub use types::{TryFromValueError, Type, Value};
+pub use types::{Null, Params, TryFromValueError, Type, Value};
 
 use catalog::Catalog;
 use storage::Storage;
@@ -45,6 +45,12 @@ pub enum Error {
 
     #[error("Invalid encoding")]
     InvalidEncoding,
+
+    #[error("The query contains no statement")]
+    NoStatement,
+
+    #[error("The query contains multiple statements")]
+    MultipleStatements,
 
     #[error("Column index out of range")]
     ColumnIndexOutOfRange,

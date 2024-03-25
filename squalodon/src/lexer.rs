@@ -202,6 +202,10 @@ impl<'a> Lexer<'a> {
     }
 }
 
+/// An iterator that yields segments of SQL.
+///
+/// When encountering an error, the iterator will yield the error and
+/// the remaining part of the input string.
 pub struct Segmenter<'a> {
     sql: &'a str,
     inner: Inner<'a>,
@@ -217,12 +221,13 @@ impl<'a> Segmenter<'a> {
 }
 
 impl<'a> Iterator for Segmenter<'a> {
-    type Item = Result<Segment<'a>, &'a str>;
+    type Item = Result<Segment<'a>, (LexerError, &'a str)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let prev_pos = self.inner.pos();
-        let Ok(token) = self.inner.consume_token() else {
-            return Some(Err(&self.sql[prev_pos..]));
+        let token = match self.inner.consume_token() {
+            Ok(token) => token,
+            Err(e) => return Some(Err((e, &self.sql[prev_pos..]))),
         };
         let kind = match token {
             token if token.is_literal() => SegmentKind::Literal,
@@ -444,17 +449,4 @@ impl<'a> Inner<'a> {
 
 pub fn is_valid_identifier_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '$' || ch == '_'
-}
-
-pub(crate) fn quote(s: &str, quote: char) -> String {
-    let mut quoted = String::new();
-    quoted.push(quote);
-    for ch in s.chars() {
-        if ch == quote {
-            quoted.push(quote);
-        }
-        quoted.push(ch);
-    }
-    quoted.push(quote);
-    quoted
 }

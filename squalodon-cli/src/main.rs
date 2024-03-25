@@ -12,7 +12,7 @@ use rustyline::{
     Helper,
 };
 use squalodon::{
-    lexer::{is_valid_identifier_char, SegmentKind, Segmenter},
+    lexer::{is_valid_identifier_char, LexerError, SegmentKind, Segmenter},
     storage::{Memory, Storage},
     Connection, Database, Rows,
 };
@@ -46,12 +46,15 @@ fn main() -> Result<()> {
 fn run<T: Storage>(args: Args, storage: T) -> Result<()> {
     let db = Database::new(storage)?;
     let mut conn = db.connect();
+
     if let Some(init) = args.init {
         let init = std::fs::read_to_string(init)?;
-        conn.execute(&init)?;
+        run_sql(&mut conn, &init, false)?;
     }
+
     let mut rl = rustyline::Editor::new()?;
     rl.set_helper(Some(RustylineHelper::new(db.connect())));
+
     let mut buf = String::new();
     loop {
         let prompt = if buf.is_empty() { "> " } else { ". " };
@@ -68,14 +71,61 @@ fn run<T: Storage>(args: Args, storage: T) -> Result<()> {
             buf.push('\n');
             continue;
         }
-        rl.add_history_entry(&buf)?;
-        let result = conn.query(&buf);
-        buf.clear();
+
+        // When the line ends with a semicolon, there are two possibilities:
+        // - The semicolon finishes a statement.
+        // - The semicolon is inside a string literal.
+
+        if run_sql(&mut conn, &buf, true)? {
+            rl.add_history_entry(&buf)?;
+            buf.clear();
+        }
+    }
+}
+
+/// Run SQL statements.
+///
+/// If `only_complete` is `true` and the SQL is incomplete,
+/// this function returns `Ok(false)` without executing the SQL.
+fn run_sql<T: Storage>(conn: &mut Connection<T>, sql: &str, only_complete: bool) -> Result<bool> {
+    let segmenter = Segmenter::new(sql);
+    let mut statements = Vec::new();
+    let mut current_statement = String::new();
+    for segment in segmenter {
+        match segment {
+            Ok(segment) => {
+                match segment.kind() {
+                    SegmentKind::Comment => (),
+                    SegmentKind::Operator if segment.slice() == ";" => {
+                        // This semicolon finishes a statement.
+                        statements.push(std::mem::take(&mut current_statement));
+                    }
+                    _ => current_statement.push_str(segment.slice()),
+                }
+            }
+            Err((e, remaining)) => {
+                if only_complete && matches!(e, LexerError::UnexpectedEof) {
+                    return Ok(false);
+                }
+                // Let the database handle the parse error.
+                current_statement.push_str(remaining);
+                break;
+            }
+        }
+    }
+    statements.push(current_statement);
+    for statement in statements {
+        let statement = statement.trim();
+        if statement.is_empty() {
+            continue;
+        }
+        let result = conn.query(statement, []);
         match result {
             Ok(rows) => write_table(&mut std::io::stdout().lock(), rows)?,
             Err(e) => eprintln!("{e}"),
         }
     }
+    Ok(true)
 }
 
 fn write_table<W: Write>(out: &mut W, rows: Rows) -> std::io::Result<()> {
@@ -145,15 +195,19 @@ impl<T: Storage> Completer for RustylineHelper<'_, T> {
         let (start, word) = extract_word(line, pos, None, |ch| !is_valid_identifier_char(ch));
         let mut candidates = Vec::new();
         let mut conn = self.conn.borrow_mut();
-        let rows = conn.query("SELECT * FROM squalodon_keywords()").unwrap();
+        let rows = conn
+            .query("SELECT keyword FROM squalodon_keywords()", [])
+            .unwrap();
         let uppercase_word = word.to_ascii_uppercase();
         for row in rows {
             let keyword: String = row.get(0).unwrap();
             if keyword.starts_with(&uppercase_word) {
-                candidates.push(keyword.to_string());
+                candidates.push(keyword);
             }
         }
-        let rows = conn.query("SELECT * FROM squalodon_tables()").unwrap();
+        let rows = conn
+            .query("SELECT name FROM squalodon_tables()", [])
+            .unwrap();
         for row in rows {
             let table_name: String = row.get(0).unwrap();
             if table_name.starts_with(word) {
@@ -196,7 +250,7 @@ impl<T: Storage> Highlighter for RustylineHelper<'_, T> {
                         }
                     }
                 }
-                Err(remaining) => {
+                Err((_, remaining)) => {
                     highlighted.push_str(remaining);
                     break;
                 }

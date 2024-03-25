@@ -159,6 +159,14 @@ impl From<&str> for Value {
     }
 }
 
+pub struct Null;
+
+impl From<Null> for Value {
+    fn from(_: Null) -> Self {
+        Self::Null
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum TryFromValueError {
     #[error("Incompatible type")]
@@ -176,6 +184,21 @@ macro_rules! impl_try_from_value {
             fn try_from(value: Value) -> Result<Self, TryFromValueError> {
                 match value {
                     Value::$variant(v) => v.try_into().map_err(|_| TryFromValueError::OutOfRange),
+                    _ => Err(TryFromValueError::IncompatibleType),
+                }
+            }
+        }
+
+        impl TryFrom<Value> for Option<$ty> {
+            type Error = TryFromValueError;
+
+            fn try_from(value: Value) -> Result<Self, TryFromValueError> {
+                match value {
+                    Value::Null => Ok(None),
+                    Value::$variant(v) => v
+                        .try_into()
+                        .map_err(|_| TryFromValueError::OutOfRange)
+                        .map(Some),
                     _ => Err(TryFromValueError::IncompatibleType),
                 }
             }
@@ -199,3 +222,54 @@ impl_try_from_value!(f64, Real);
 impl_try_from_value!(bool, Boolean);
 impl_try_from_value!(String, Text);
 impl_try_from_value!(Vec<u8>, Text);
+
+impl TryFrom<Value> for Null {
+    type Error = TryFromValueError;
+
+    fn try_from(value: Value) -> Result<Self, TryFromValueError> {
+        match value {
+            Value::Null => Ok(Self),
+            _ => Err(TryFromValueError::IncompatibleType),
+        }
+    }
+}
+
+pub trait Params {
+    fn into_values(self) -> Vec<Value>;
+}
+
+impl<T: Into<Value>> Params for T {
+    fn into_values(self) -> Vec<Value> {
+        vec![self.into()]
+    }
+}
+
+impl Params for Vec<Value> {
+    fn into_values(self) -> Vec<Value> {
+        self
+    }
+}
+
+impl Params for &[Value] {
+    fn into_values(self) -> Vec<Value> {
+        self.to_vec()
+    }
+}
+
+impl Params for &[&Value] {
+    fn into_values(self) -> Vec<Value> {
+        self.iter().map(|v| (*v).clone()).collect()
+    }
+}
+
+impl<const N: usize> Params for [Value; N] {
+    fn into_values(self) -> Vec<Value> {
+        self.to_vec()
+    }
+}
+
+impl<const N: usize> Params for &[Value; N] {
+    fn into_values(self) -> Vec<Value> {
+        self.to_vec()
+    }
+}

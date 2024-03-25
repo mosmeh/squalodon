@@ -11,10 +11,9 @@ pub use query::{CrossProduct, Filter, Limit, OrderBy, Project, Scan, Sort, Value
 
 use crate::{
     catalog::CatalogRef,
-    lexer,
     parser::{self, ColumnRef},
     rows::ColumnIndex,
-    types::{NullableType, Type},
+    types::{NullableType, Params, Type},
     CatalogError, Storage, StorageError, Value,
 };
 use ddl::{CreateTable, DropTable};
@@ -261,8 +260,11 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         }
     }
 
-    fn with_params(self, params: Vec<Value>) -> Self {
-        Self { params, ..self }
+    fn with_params(&self, params: Vec<Value>) -> Self {
+        Self {
+            catalog: self.catalog,
+            params,
+        }
     }
 
     fn bind(&self, statement: parser::Statement) -> PlannerResult<Plan<'txn, 'db, T>> {
@@ -273,14 +275,17 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
             | parser::Statement::Deallocate(_)
             | parser::Statement::Transaction(_) => unreachable!("handled before binding"),
             parser::Statement::ShowTables => {
-                self.rewrite_to("SELECT * FROM squalodon_tables() ORDER BY name")
+                self.rewrite_to("SELECT * FROM squalodon_tables() ORDER BY name", [])
             }
-            parser::Statement::Describe(name) => self.rewrite_to(&format!(
-                "SELECT column_name, type, is_nullable, is_primary_key
-                FROM squalodon_columns()
-                WHERE table_name = {}",
-                lexer::quote(&name, '\'')
-            )),
+            parser::Statement::Describe(name) => {
+                self.catalog.table(name.clone())?; // Check if the table exists
+                self.rewrite_to(
+                    "SELECT column_name, type, is_nullable, is_primary_key
+                    FROM squalodon_columns()
+                    WHERE table_name = $1",
+                    Value::from(name),
+                )
+            }
             parser::Statement::CreateTable(create_table) => self.bind_create_table(create_table),
             parser::Statement::DropTable(drop_table) => self.bind_drop_table(drop_table),
             parser::Statement::Select(select) => self.bind_select(select),
@@ -290,11 +295,11 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         }
     }
 
-    fn rewrite_to(&self, sql: &str) -> PlannerResult<Plan<'txn, 'db, T>> {
+    fn rewrite_to<P: Params>(&self, sql: &str, params: P) -> PlannerResult<Plan<'txn, 'db, T>> {
         let mut parser = parser::Parser::new(sql);
         let statement = parser.next().unwrap().unwrap();
         assert!(parser.next().is_none());
-        self.bind(statement)
+        self.with_params(params.into_values()).bind(statement)
     }
 
     fn bind_explain(&self, statement: parser::Statement) -> PlannerResult<Plan<'txn, 'db, T>> {
