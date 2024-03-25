@@ -1,7 +1,7 @@
 use super::{
     aggregate::AggregateContext,
     expression::{ExpressionBinder, TypedExpression},
-    Binder, Explain, ExplainVisitor, Plan, PlanNode, PlannerResult,
+    Explain, ExplainVisitor, Plan, PlanNode, Planner, PlannerResult,
 };
 use crate::{
     catalog::TableFnPtr,
@@ -168,11 +168,11 @@ impl<T: Storage> Explain for CrossProduct<'_, '_, T> {
     }
 }
 
-impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
-    pub fn bind_select(&self, select: parser::Select) -> PlannerResult<Plan<'txn, 'db, T>> {
-        let mut plan = self.bind_table_ref(select.from)?;
+impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
+    pub fn plan_select(&self, select: parser::Select) -> PlannerResult<Plan<'txn, 'db, T>> {
+        let mut plan = self.plan_table_ref(select.from)?;
         if let Some(where_clause) = select.where_clause {
-            plan = self.bind_where_clause(plan, where_clause)?;
+            plan = self.plan_where_clause(plan, where_clause)?;
         }
 
         let mut aggregate_ctx = AggregateContext::default();
@@ -197,7 +197,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         // The query is an aggregate query if there are any aggregate functions
         // or if there is a GROUP BY clause.
         if aggregate_ctx.has_aggregates() || !select.group_by.is_empty() {
-            plan = aggregate_ctx.bind_aggregates(self, plan, select.group_by)?;
+            plan = aggregate_ctx.plan_aggregates(self, plan, select.group_by)?;
         }
 
         // HAVING, ORDER BY and SELECT expressions can reference
@@ -207,15 +207,15 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
             ExpressionBinder::new(self).with_aggregate_context(aggregate_ctx);
 
         if let Some(having) = select.having {
-            plan = self.bind_having(&aggregated_expr_binder, plan, having)?;
+            plan = self.plan_having(&aggregated_expr_binder, plan, having)?;
         }
-        let plan = self.bind_order_by(&aggregated_expr_binder, plan, select.order_by)?;
-        let plan = self.bind_limit(plan, select.limit, select.offset)?;
-        let plan = self.bind_projections(&aggregated_expr_binder, plan, select.projections)?;
+        let plan = self.plan_order_by(&aggregated_expr_binder, plan, select.order_by)?;
+        let plan = self.plan_limit(plan, select.limit, select.offset)?;
+        let plan = self.plan_projections(&aggregated_expr_binder, plan, select.projections)?;
         Ok(plan)
     }
 
-    pub fn bind_where_clause(
+    pub fn plan_where_clause(
         &self,
         source: Plan<'txn, 'db, T>,
         expr: parser::Expression,
@@ -231,7 +231,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
     }
 
     #[allow(clippy::unused_self)]
-    fn bind_having(
+    fn plan_having(
         &self,
         expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
@@ -248,7 +248,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
     }
 
     #[allow(clippy::unused_self)]
-    fn bind_projections(
+    fn plan_projections(
         &self,
         expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
@@ -302,7 +302,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
     }
 
     #[allow(clippy::unused_self)]
-    fn bind_order_by(
+    fn plan_order_by(
         &self,
         expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
@@ -330,7 +330,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         }))
     }
 
-    fn bind_limit(
+    fn plan_limit(
         &self,
         source: Plan<'txn, 'db, T>,
         limit: Option<parser::Expression>,
@@ -363,20 +363,20 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         Ok(Some(expr))
     }
 
-    fn bind_table_ref(&self, table_ref: parser::TableRef) -> PlannerResult<Plan<'txn, 'db, T>> {
+    fn plan_table_ref(&self, table_ref: parser::TableRef) -> PlannerResult<Plan<'txn, 'db, T>> {
         match table_ref {
             parser::TableRef::BaseTable { name } => {
-                Ok(self.bind_base_table(self.catalog.table(name)?))
+                Ok(self.plan_base_table(self.catalog.table(name)?))
             }
-            parser::TableRef::Join(join) => self.bind_join(*join),
-            parser::TableRef::Subquery(select) => self.bind_select(*select),
-            parser::TableRef::Function { name, args } => self.bind_table_function(name, args),
-            parser::TableRef::Values(values) => self.bind_values(values),
+            parser::TableRef::Join(join) => self.plan_join(*join),
+            parser::TableRef::Subquery(select) => self.plan_select(*select),
+            parser::TableRef::Function { name, args } => self.plan_table_function(name, args),
+            parser::TableRef::Values(values) => self.plan_values(values),
         }
     }
 
     #[allow(clippy::unused_self)]
-    pub fn bind_base_table(&self, table: Table<'txn, 'db, T>) -> Plan<'txn, 'db, T> {
+    pub fn plan_base_table(&self, table: Table<'txn, 'db, T>) -> Plan<'txn, 'db, T> {
         let columns: Vec<_> = table
             .columns()
             .iter()
@@ -393,9 +393,9 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         }
     }
 
-    fn bind_join(&self, join: parser::Join) -> PlannerResult<Plan<'txn, 'db, T>> {
-        let left = self.bind_table_ref(join.left)?;
-        let right = self.bind_table_ref(join.right)?;
+    fn plan_join(&self, join: parser::Join) -> PlannerResult<Plan<'txn, 'db, T>> {
+        let left = self.plan_table_ref(join.left)?;
+        let right = self.plan_table_ref(join.right)?;
         let mut schema = left.schema;
         schema.0.extend(right.schema.0);
         let plan = Plan {
@@ -418,7 +418,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         }))
     }
 
-    fn bind_table_function(
+    fn plan_table_function(
         &self,
         name: String,
         args: Vec<parser::Expression>,
@@ -445,7 +445,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         })
     }
 
-    fn bind_values(&self, values: parser::Values) -> PlannerResult<Plan<'txn, 'db, T>> {
+    fn plan_values(&self, values: parser::Values) -> PlannerResult<Plan<'txn, 'db, T>> {
         if values.rows.is_empty() {
             return Ok(Plan::empty_source());
         }

@@ -71,7 +71,7 @@ pub fn bind_expr<'txn, T: Storage>(
     catalog: &'txn CatalogRef<'txn, '_, T>,
     expr: parser::Expression,
 ) -> PlannerResult<Expression> {
-    let TypedExpression { expr, .. } = Binder::new(catalog).bind_expr_without_source(expr)?;
+    let TypedExpression { expr, .. } = Planner::new(catalog).bind_expr_without_source(expr)?;
     Ok(expr)
 }
 
@@ -80,7 +80,7 @@ pub fn plan<'txn, 'db, T: Storage>(
     statement: parser::Statement,
     params: Vec<Value>,
 ) -> PlannerResult<Plan<'txn, 'db, T>> {
-    Binder::new(catalog).with_params(params).bind(statement)
+    Planner::new(catalog).with_params(params).plan(statement)
 }
 
 #[derive(Clone)]
@@ -247,12 +247,12 @@ impl<T: Storage> Explain for PlanNode<'_, '_, T> {
     }
 }
 
-struct Binder<'txn, 'db, T: Storage> {
+struct Planner<'txn, 'db, T: Storage> {
     catalog: &'txn CatalogRef<'txn, 'db, T>,
     params: Vec<Value>,
 }
 
-impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
+impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
     fn new(catalog: &'txn CatalogRef<'txn, 'db, T>) -> Self {
         Self {
             catalog,
@@ -267,13 +267,13 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         }
     }
 
-    fn bind(&self, statement: parser::Statement) -> PlannerResult<Plan<'txn, 'db, T>> {
+    fn plan(&self, statement: parser::Statement) -> PlannerResult<Plan<'txn, 'db, T>> {
         match statement {
-            parser::Statement::Explain(statement) => self.bind_explain(*statement),
+            parser::Statement::Explain(statement) => self.plan_explain(*statement),
             parser::Statement::Prepare(_)
             | parser::Statement::Execute(_)
             | parser::Statement::Deallocate(_)
-            | parser::Statement::Transaction(_) => unreachable!("handled before binding"),
+            | parser::Statement::Transaction(_) => unreachable!("handled before planning"),
             parser::Statement::ShowTables => {
                 self.rewrite_to("SELECT * FROM squalodon_tables() ORDER BY name", [])
             }
@@ -286,12 +286,12 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
                     Value::from(name),
                 )
             }
-            parser::Statement::CreateTable(create_table) => self.bind_create_table(create_table),
-            parser::Statement::DropTable(drop_table) => self.bind_drop_table(drop_table),
-            parser::Statement::Select(select) => self.bind_select(select),
-            parser::Statement::Insert(insert) => self.bind_insert(insert),
-            parser::Statement::Update(update) => self.bind_update(update),
-            parser::Statement::Delete(delete) => self.bind_delete(delete),
+            parser::Statement::CreateTable(create_table) => self.plan_create_table(create_table),
+            parser::Statement::DropTable(drop_table) => self.plan_drop_table(drop_table),
+            parser::Statement::Select(select) => self.plan_select(select),
+            parser::Statement::Insert(insert) => self.plan_insert(insert),
+            parser::Statement::Update(update) => self.plan_update(update),
+            parser::Statement::Delete(delete) => self.plan_delete(delete),
         }
     }
 
@@ -299,11 +299,11 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         let mut parser = parser::Parser::new(sql);
         let statement = parser.next().unwrap().unwrap();
         assert!(parser.next().is_none());
-        self.with_params(params.into_values()).bind(statement)
+        self.with_params(params.into_values()).plan(statement)
     }
 
-    fn bind_explain(&self, statement: parser::Statement) -> PlannerResult<Plan<'txn, 'db, T>> {
-        let plan = self.bind(statement)?;
+    fn plan_explain(&self, statement: parser::Statement) -> PlannerResult<Plan<'txn, 'db, T>> {
+        let plan = self.plan(statement)?;
         Ok(Plan {
             node: PlanNode::Explain(Box::new(plan.node)),
             schema: vec![Column::new("plan", Type::Text)].into(),

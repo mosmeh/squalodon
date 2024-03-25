@@ -1,4 +1,4 @@
-use super::{Binder, Explain, ExplainVisitor, Plan, PlanNode, PlannerError, PlannerResult};
+use super::{Explain, ExplainVisitor, Plan, PlanNode, Planner, PlannerError, PlannerResult};
 use crate::{catalog, parser, planner, rows::ColumnIndex, CatalogError, Storage};
 use std::collections::HashSet;
 
@@ -24,8 +24,8 @@ impl Explain for DropTable {
     }
 }
 
-impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
-    pub fn bind_create_table(
+impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
+    pub fn plan_create_table(
         &self,
         create_table: parser::CreateTable,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
@@ -90,7 +90,7 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         Ok(Plan::sink(PlanNode::CreateTable(create_table)))
     }
 
-    pub fn bind_drop_table(
+    pub fn plan_drop_table(
         &self,
         drop_table: parser::DropTable,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {

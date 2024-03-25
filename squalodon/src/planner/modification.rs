@@ -1,4 +1,4 @@
-use super::{Binder, Explain, ExplainVisitor, Plan, PlanNode, PlannerError, PlannerResult};
+use super::{Explain, ExplainVisitor, Plan, PlanNode, Planner, PlannerError, PlannerResult};
 use crate::{parser, planner, rows::ColumnIndex, storage::Table, Storage};
 
 pub struct Insert<'txn, 'db, T: Storage> {
@@ -37,10 +37,10 @@ impl<T: Storage> Explain for Delete<'_, '_, T> {
     }
 }
 
-impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
-    pub fn bind_insert(&self, insert: parser::Insert) -> PlannerResult<Plan<'txn, 'db, T>> {
+impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
+    pub fn plan_insert(&self, insert: parser::Insert) -> PlannerResult<Plan<'txn, 'db, T>> {
         let table = self.catalog.table(insert.table_name)?;
-        let Plan { node, schema } = self.bind_select(insert.select)?;
+        let Plan { node, schema } = self.plan_select(insert.select)?;
         if table.columns().len() != schema.0.len() {
             return Err(PlannerError::ColumnCountMismatch {
                 expected: table.columns().len(),
@@ -98,11 +98,11 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         })
     }
 
-    pub fn bind_update(&self, update: parser::Update) -> PlannerResult<Plan<'txn, 'db, T>> {
+    pub fn plan_update(&self, update: parser::Update) -> PlannerResult<Plan<'txn, 'db, T>> {
         let table = self.catalog.table(update.table_name)?;
-        let mut plan = self.bind_base_table(table.clone());
+        let mut plan = self.plan_base_table(table.clone());
         if let Some(where_clause) = update.where_clause {
-            plan = self.bind_where_clause(plan, where_clause)?;
+            plan = self.plan_where_clause(plan, where_clause)?;
         }
         let mut exprs = vec![None; table.columns().len()];
         for set in update.sets {
@@ -143,11 +143,11 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
         })
     }
 
-    pub fn bind_delete(&self, delete: parser::Delete) -> PlannerResult<Plan<'txn, 'db, T>> {
+    pub fn plan_delete(&self, delete: parser::Delete) -> PlannerResult<Plan<'txn, 'db, T>> {
         let table = self.catalog.table(delete.table_name)?;
-        let mut plan = self.bind_base_table(table.clone());
+        let mut plan = self.plan_base_table(table.clone());
         if let Some(where_clause) = delete.where_clause {
-            plan = self.bind_where_clause(plan, where_clause)?;
+            plan = self.plan_where_clause(plan, where_clause)?;
         }
         Ok(Plan {
             node: PlanNode::Delete(Delete {

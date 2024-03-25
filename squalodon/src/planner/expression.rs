@@ -1,4 +1,4 @@
-use super::{aggregate::AggregateContext, Binder, Plan, PlanNode, PlannerError, PlannerResult};
+use super::{aggregate::AggregateContext, Plan, PlanNode, Planner, PlannerError, PlannerResult};
 use crate::{
     catalog::Aggregator,
     executor::{ExecutorError, ExecutorResult},
@@ -67,7 +67,7 @@ impl TypedExpression {
     }
 }
 
-impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
+impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
     pub fn bind_expr(
         &self,
         source: Plan<'txn, 'db, T>,
@@ -85,14 +85,14 @@ impl<'txn, 'db, T: Storage> Binder<'txn, 'db, T> {
 }
 
 pub struct ExpressionBinder<'a, 'txn, 'db, T: Storage> {
-    binder: &'a Binder<'txn, 'db, T>,
+    planner: &'a Planner<'txn, 'db, T>,
     aggregate_ctx: Option<AggregateContext<'txn>>,
 }
 
 impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
-    pub fn new(binder: &'a Binder<'txn, 'db, T>) -> Self {
+    pub fn new(planner: &'a Planner<'txn, 'db, T>) -> Self {
         Self {
-            binder,
+            planner,
             aggregate_ctx: None,
         }
     }
@@ -191,7 +191,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
             parser::Expression::Function { name, args } => {
                 // We currently assume all functions in expressions are
                 // aggregate functions.
-                self.binder.catalog.aggregate_function(&name)?;
+                self.planner.catalog.aggregate_function(&name)?;
                 Ok((source, self.resolve_aggregate(name, args)?))
             }
             parser::Expression::ScalarSubquery(select) => {
@@ -222,7 +222,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                 }
 
                 let column_name = select.to_string();
-                let subquery_plan = self.binder.bind_select(*select)?;
+                let subquery_plan = self.planner.plan_select(*select)?;
                 let [subquery_result_column] = subquery_plan
                     .schema
                     .0
@@ -268,7 +268,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                 }
 
                 let column_name = format!("EXISTS ({select})");
-                let subquery_plan = self.binder.bind_select(*select)?;
+                let subquery_plan = self.planner.plan_select(*select)?;
 
                 // Equivalent to `SELECT exists(SELECT * FROM subquery LIMIT 1)`
                 let subquery_node = PlanNode::Limit(planner::Limit {
@@ -291,7 +291,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                 Ok(attach_subquery(source, subquery_plan))
             }
             parser::Expression::Parameter(i) => {
-                let value = match self.binder.params.get(i.get() - 1) {
+                let value = match self.planner.params.get(i.get() - 1) {
                     Some(value) => value.clone(),
                     None => return Err(PlannerError::ParameterNotProvided(i)),
                 };
