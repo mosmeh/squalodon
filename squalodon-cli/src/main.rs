@@ -16,7 +16,7 @@ use squalodon::{
     storage::{Memory, Storage},
     Connection, Database, Rows,
 };
-use std::{cell::RefCell, io::Write, path::PathBuf};
+use std::{cell::RefCell, path::PathBuf};
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Parser, Debug)]
@@ -60,14 +60,26 @@ fn run<T: Storage>(args: Args, storage: T) -> Result<()> {
         let prompt = if buf.is_empty() { "> " } else { ". " };
         let line = match rl.readline(prompt) {
             Ok(line) => line,
-            Err(ReadlineError::Eof | ReadlineError::Interrupted) => return Ok(()),
+            Err(ReadlineError::Eof) => break,
+            Err(ReadlineError::Interrupted) => return Ok(()),
             Err(e) => return Err(e.into()),
         };
-        if buf.is_empty() && line.trim().is_empty() {
-            continue;
+        let trimmed_line = line.trim();
+        if buf.is_empty() {
+            if trimmed_line.is_empty() {
+                continue;
+            }
+            if line.starts_with('.') {
+                rl.add_history_entry(&line)?;
+                match run_metacommand(&mut conn, trimmed_line) {
+                    Ok(()) => (),
+                    Err(e) => eprintln!("{e}"),
+                }
+                continue;
+            }
         }
         buf.push_str(&line);
-        if !line.trim_end().ends_with(';') {
+        if !trimmed_line.ends_with(';') {
             buf.push('\n');
             continue;
         }
@@ -81,13 +93,12 @@ fn run<T: Storage>(args: Args, storage: T) -> Result<()> {
             buf.clear();
         }
     }
+    run_sql(&mut conn, &buf, false)?;
+
+    Ok(())
 }
 
-/// Run SQL statements.
-///
-/// If `only_complete` is `true` and the SQL is incomplete,
-/// this function returns `Ok(false)` without executing the SQL.
-fn run_sql<T: Storage>(conn: &mut Connection<T>, sql: &str, only_complete: bool) -> Result<bool> {
+fn run_sql<T: Storage>(conn: &mut Connection<T>, sql: &str, repl: bool) -> Result<bool> {
     let segmenter = Segmenter::new(sql);
     let mut statements = Vec::new();
     let mut current_statement = String::new();
@@ -104,7 +115,7 @@ fn run_sql<T: Storage>(conn: &mut Connection<T>, sql: &str, only_complete: bool)
                 }
             }
             Err((e, remaining)) => {
-                if only_complete && matches!(e, LexerError::UnexpectedEof) {
+                if repl && matches!(e, LexerError::UnexpectedEof) {
                     return Ok(false);
                 }
                 // Let the database handle the parse error.
@@ -119,16 +130,122 @@ fn run_sql<T: Storage>(conn: &mut Connection<T>, sql: &str, only_complete: bool)
         if statement.is_empty() {
             continue;
         }
-        let result = conn.query(statement, []);
-        match result {
+        match conn.query(statement, []) {
             Ok(rows) => write_table(&mut std::io::stdout().lock(), rows)?,
+            Err(e) if repl => {
+                eprintln!("{e}");
+                return Ok(true);
+            }
             Err(e) => eprintln!("{e}"),
         }
     }
     Ok(true)
 }
 
-fn write_table<W: Write>(out: &mut W, rows: Rows) -> std::io::Result<()> {
+#[derive(Parser, Debug)]
+enum Metacommand {
+    /// Import data from FILENAME into TABLE
+    #[clap(name = ".import")]
+    Import {
+        /// Use \037 and \036 as column and row separators
+        #[arg(long, group = "format")]
+        ascii: bool,
+
+        /// Use , and \n as column and row separators
+        #[arg(long, group = "format")]
+        csv: bool,
+
+        /// Use \t and \n as column and row separators
+        #[arg(long, group = "format")]
+        tsv: bool,
+
+        /// Skip the first line
+        #[arg(long)]
+        skip_header: bool,
+
+        filename: PathBuf,
+        table: String,
+    },
+
+    /// Read input from FILENAME
+    #[clap(name = ".read")]
+    Read { filename: PathBuf },
+}
+
+fn run_metacommand<T: Storage>(conn: &mut Connection<T>, line: &str) -> Result<()> {
+    let parts = std::iter::once("\0").chain(line.split_ascii_whitespace());
+    match Metacommand::try_parse_from(parts)? {
+        Metacommand::Import {
+            ascii,
+            csv,
+            tsv,
+            skip_header,
+            filename,
+            table,
+        } => {
+            let mut builder = csv::ReaderBuilder::new();
+            if ascii {
+                builder
+                    .delimiter(b'\x1f')
+                    .terminator(csv::Terminator::Any(b'\x1e'));
+            } else if csv {
+                // Default
+            } else if tsv {
+                builder.delimiter(b'\t');
+            }
+            let reader = builder.has_headers(skip_header).from_path(filename)?;
+            conn.execute("BEGIN", [])?;
+            match insert_into_table(conn, reader, &table) {
+                Ok(()) => {
+                    conn.execute("COMMIT", [])?;
+                }
+                Err(e) => {
+                    conn.execute("ROLLBACK", [])?;
+                    return Err(e);
+                }
+            }
+        }
+        Metacommand::Read { filename } => {
+            let sql = std::fs::read_to_string(filename)?;
+            run_sql(conn, &sql, false)?;
+        }
+    }
+    Ok(())
+}
+
+/// Insert rows read from a CSV reader into a table.
+///
+/// Returns the number of rows inserted.
+fn insert_into_table<T: Storage>(
+    conn: &mut Connection<T>,
+    mut reader: csv::Reader<std::fs::File>,
+    table: &str,
+) -> Result<()> {
+    use std::fmt::Write;
+
+    let mut sql = None;
+    for record in reader.records() {
+        let record = record?;
+        let sql = sql.get_or_insert_with(|| {
+            let mut sql = "INSERT INTO ".to_owned();
+            sql.push_str(&squalodon::lexer::quote(table, '"'));
+            sql.push_str(" VALUES (");
+            for i in 0..record.len() {
+                if i > 0 {
+                    sql.push(',');
+                }
+                write!(&mut sql, "${}", i + 1).unwrap();
+            }
+            sql.push(')');
+            sql
+        });
+        let params: Vec<_> = record.into_iter().map(Into::into).collect();
+        conn.execute(sql, params)?;
+    }
+    Ok(())
+}
+
+fn write_table<W: std::io::Write>(out: &mut W, rows: Rows) -> std::io::Result<()> {
     let columns = rows.columns();
     if columns.is_empty() {
         return Ok(());

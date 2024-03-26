@@ -450,3 +450,16 @@ impl<'a> Inner<'a> {
 pub fn is_valid_identifier_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '$' || ch == '_'
 }
+
+pub fn quote(s: &str, quote: char) -> String {
+    let mut quoted = String::new();
+    quoted.push(quote);
+    for ch in s.chars() {
+        if ch == quote {
+            quoted.push(quote);
+        }
+        quoted.push(ch);
+    }
+    quoted.push(quote);
+    quoted
+}
