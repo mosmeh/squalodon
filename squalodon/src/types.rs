@@ -55,6 +55,17 @@ impl NullableType {
             (Self::NonNull(a), Self::NonNull(b)) => a == b,
         }
     }
+
+    pub fn can_cast_to<T: Into<Self>>(self, other: T) -> bool {
+        match (self, other.into()) {
+            (Self::Null | Self::NonNull(Type::Text), _)
+            | (_, Self::Null | Self::NonNull(Type::Text))
+            | (Self::NonNull(Type::Integer), Self::NonNull(Type::Real | Type::Boolean))
+            | (Self::NonNull(Type::Real | Type::Boolean), Self::NonNull(Type::Integer)) => true,
+            (Self::NonNull(a), Self::NonNull(b)) if a == b => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]

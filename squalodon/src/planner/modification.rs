@@ -1,4 +1,7 @@
-use super::{Explain, ExplainVisitor, Plan, PlanNode, Planner, PlannerError, PlannerResult};
+use super::{
+    expression::TypedExpression, Explain, ExplainVisitor, Plan, PlanNode, Planner, PlannerError,
+    PlannerResult,
+};
 use crate::{parser, planner, rows::ColumnIndex, storage::Table, Storage};
 
 pub struct Insert<'txn, 'db, T: Storage> {
@@ -47,48 +50,57 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
                 actual: schema.0.len(),
             });
         }
-        let node = if let Some(column_names) = insert.column_names {
+        let column_mapping: Vec<_> = if let Some(column_names) = insert.column_names {
             if table.columns().len() != column_names.len() {
                 return Err(PlannerError::ColumnCountMismatch {
                     expected: table.columns().len(),
                     actual: column_names.len(),
                 });
             }
-            let mut indices_in_source = vec![None; table.columns().len()];
+            let mut mapping = vec![None; table.columns().len()];
             let iter = column_names.into_iter().zip(schema.0).enumerate();
-            for (index_in_source, (column_name, actual_column)) in iter {
-                let (index_in_table, expected_column) = table
+            for (source_index, (column_name, source_column)) in iter {
+                let (dest_index, dest_column) = table
                     .columns()
                     .iter()
                     .enumerate()
                     .find(|(_, column)| column.name == column_name)
                     .ok_or_else(|| PlannerError::UnknownColumn(column_name.clone()))?;
-                match &mut indices_in_source[index_in_table] {
+                match &mut mapping[dest_index] {
                     Some(_) => return Err(PlannerError::DuplicateColumn(column_name)),
-                    i @ None => *i = Some(index_in_source),
-                }
-                if !actual_column.ty.is_compatible_with(expected_column.ty) {
-                    return Err(PlannerError::TypeError);
+                    i @ None => *i = Some((source_index, source_column, dest_column)),
                 }
             }
-            let exprs = indices_in_source
-                .into_iter()
-                .map(|i| planner::Expression::ColumnRef {
-                    index: ColumnIndex(i.unwrap()),
-                })
-                .collect();
-            PlanNode::Project(planner::Project {
-                source: Box::new(node),
-                exprs,
-            })
+            mapping.into_iter().map(Option::unwrap).collect()
         } else {
-            for (actual, expected) in schema.0.iter().zip(table.columns()) {
-                if !actual.ty.is_compatible_with(expected.ty) {
+            schema
+                .0
+                .into_iter()
+                .zip(table.columns())
+                .enumerate()
+                .map(|(i, (source_column, dest_column))| (i, source_column, dest_column))
+                .collect()
+        };
+        let mut exprs = Vec::with_capacity(table.columns().len());
+        for (source_index, source_column, dest_column) in column_mapping {
+            let mut expr = planner::Expression::ColumnRef {
+                index: ColumnIndex(source_index),
+            };
+            if !source_column.ty.is_compatible_with(dest_column.ty) {
+                if !source_column.ty.can_cast_to(dest_column.ty) {
                     return Err(PlannerError::TypeError);
                 }
+                expr = planner::Expression::Cast {
+                    expr: Box::new(expr),
+                    ty: dest_column.ty,
+                };
             }
-            node
-        };
+            exprs.push(expr);
+        }
+        let node = PlanNode::Project(planner::Project {
+            source: Box::new(node),
+            exprs,
+        });
         Ok(Plan {
             node: PlanNode::Insert(Insert {
                 source: Box::new(node),
@@ -106,20 +118,34 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         }
         let mut exprs = vec![None; table.columns().len()];
         for set in update.sets {
-            let (index, column) = plan.schema.resolve_column(&planner::ColumnRef {
-                table_name: Some(table.name().to_owned()),
-                column_name: set.column_name.clone(),
-            })?;
-            let expr = &mut exprs[index.0];
-            match expr {
-                Some(_) => return Err(PlannerError::DuplicateColumn(column.column_name.clone())),
-                None => {
-                    let expected_type = column.ty;
-                    let (new_plan, bound_expr) = self.bind_expr(plan, set.expr)?;
-                    *expr = bound_expr.expect_type(expected_type)?.into();
-                    plan = new_plan;
-                }
+            let (dest_index, column) = table
+                .columns()
+                .iter()
+                .enumerate()
+                .find(|(_, column)| column.name == set.column_name)
+                .ok_or_else(|| PlannerError::UnknownColumn(set.column_name))?;
+            let expr = &mut exprs[dest_index];
+            if expr.is_some() {
+                return Err(PlannerError::DuplicateColumn(column.name.clone()));
             }
+            let (
+                new_plan,
+                TypedExpression {
+                    expr: mut bound_expr,
+                    ty,
+                },
+            ) = self.bind_expr(plan, set.expr)?;
+            plan = new_plan;
+            if !ty.is_compatible_with(column.ty) {
+                if !ty.can_cast_to(column.ty) {
+                    return Err(PlannerError::TypeError);
+                }
+                bound_expr = planner::Expression::Cast {
+                    expr: Box::new(bound_expr),
+                    ty: column.ty,
+                };
+            }
+            *expr = Some(bound_expr);
         }
         let exprs = exprs
             .into_iter()
