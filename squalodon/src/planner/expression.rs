@@ -15,6 +15,10 @@ pub enum Expression {
     ColumnRef {
         index: ColumnIndex,
     },
+    Cast {
+        expr: Box<Expression>,
+        ty: Type,
+    },
     UnaryOp {
         op: UnaryOp,
         expr: Box<Expression>,
@@ -31,6 +35,7 @@ impl std::fmt::Display for Expression {
         match self {
             Self::Constact(value) => write!(f, "{value:?}"),
             Self::ColumnRef { index } => write!(f, "{index}"),
+            Self::Cast { expr, ty } => write!(f, "CAST({expr} AS {ty})"),
             Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
             Self::BinaryOp { op, lhs, rhs } => {
                 write!(f, "({lhs} {op} {rhs})")
@@ -116,6 +121,15 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                 let expr = planner::Expression::ColumnRef { index };
                 let ty = column.ty;
                 Ok((source, TypedExpression { expr, ty }))
+            }
+            parser::Expression::Cast { expr, ty } => {
+                let (plan, TypedExpression { expr, .. }) = self.bind(source, *expr)?;
+                let expr = planner::Expression::Cast {
+                    expr: expr.into(),
+                    ty,
+                };
+                let ty = ty.into();
+                Ok((plan, TypedExpression { expr, ty }))
             }
             parser::Expression::UnaryOp { op, expr } => {
                 let (plan, TypedExpression { expr, ty }) = self.bind(source, *expr)?;

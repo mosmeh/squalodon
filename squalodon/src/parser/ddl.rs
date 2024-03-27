@@ -1,5 +1,5 @@
 use super::{unexpected, Parser, ParserResult, Statement};
-use crate::{catalog::Column, lexer::Token, types::Type};
+use crate::{catalog::Column, lexer::Token};
 
 #[derive(Debug, Clone)]
 pub struct CreateTable {
@@ -58,13 +58,7 @@ impl Parser<'_> {
                 }
                 Token::Identifier(_) => {
                     let name = self.expect_identifier()?;
-                    let ty = match self.lexer.consume()? {
-                        Token::Integer => Type::Integer,
-                        Token::Real => Type::Real,
-                        Token::Boolean => Type::Boolean,
-                        Token::Text => Type::Text,
-                        token => return Err(unexpected(&token)),
-                    };
+                    let ty = self.parse_type()?;
                     loop {
                         match self.lexer.peek()? {
                             Token::Primary => {

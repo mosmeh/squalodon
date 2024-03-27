@@ -1,11 +1,15 @@
 use super::{unexpected, Parser, ParserResult, Select};
-use crate::{lexer::Token, types::Value};
+use crate::{lexer::Token, types::Value, Type};
 use std::num::NonZeroUsize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Expression {
     Constant(Value),
     ColumnRef(ColumnRef),
+    Cast {
+        expr: Box<Expression>,
+        ty: Type,
+    },
     UnaryOp {
         op: UnaryOp,
         expr: Box<Expression>,
@@ -29,6 +33,7 @@ impl std::fmt::Display for Expression {
         match self {
             Self::Constant(value) => value.fmt(f),
             Self::ColumnRef(column_ref) => column_ref.fmt(f),
+            Self::Cast { expr, ty } => write!(f, "CAST({expr} AS {ty})"),
             Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
             Self::BinaryOp { op, lhs, rhs } => write!(f, "({lhs} {op} {rhs})"),
             Self::Function { name, args } => write!(f, "{name}({args})"),
@@ -257,6 +262,17 @@ impl Parser<'_> {
                     column_name: ident,
                 }),
             },
+            Token::Cast => {
+                self.expect(Token::LeftParen)?;
+                let expr = self.parse_expr()?;
+                self.expect(Token::As)?;
+                let ty = self.parse_type()?;
+                self.expect(Token::RightParen)?;
+                Expression::Cast {
+                    expr: Box::new(expr),
+                    ty,
+                }
+            }
             Token::Exists => {
                 self.expect(Token::LeftParen)?;
                 let select = self.parse_select()?;

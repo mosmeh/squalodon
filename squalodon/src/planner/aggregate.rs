@@ -80,6 +80,7 @@ impl<'txn> AggregateContext<'txn> {
         match expr {
             parser::Expression::Constant(_)
             | parser::Expression::ColumnRef(_)
+            | parser::Expression::Cast { .. }
             | parser::Expression::ScalarSubquery(_)
             | parser::Expression::Exists(_)
             | parser::Expression::Parameter(_) => Ok(source),
