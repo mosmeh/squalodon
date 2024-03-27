@@ -3,7 +3,7 @@ use crate::{
     executor::ExecutorResult,
     planner::PlannerResult,
     types::NullableType,
-    PlannerError, Type, Value,
+    ExecutorError, PlannerError, Type, Value,
 };
 use std::ops::Add;
 
@@ -69,8 +69,8 @@ struct Average {
 impl Aggregator for Average {
     fn update(&mut self, value: &Value) -> ExecutorResult<()> {
         if !matches!(value, Value::Null) {
-            self.sum += value;
-            self.count += 1;
+            self.sum.checked_update(value, i64::checked_add, f64::add)?;
+            self.count = self.count.checked_add(1).ok_or(ExecutorError::OutOfRange)?;
         }
         Ok(())
     }
@@ -90,7 +90,7 @@ struct Count {
 impl Aggregator for Count {
     fn update(&mut self, value: &Value) -> ExecutorResult<()> {
         if !matches!(value, Value::Null) {
-            self.count += 1;
+            self.count = self.count.checked_add(1).ok_or(ExecutorError::OutOfRange)?;
         }
         Ok(())
     }
@@ -144,7 +144,7 @@ struct Sum {
 impl Aggregator for Sum {
     fn update(&mut self, value: &Value) -> ExecutorResult<()> {
         if !matches!(value, Value::Null) {
-            self.sum += value;
+            self.sum.checked_update(value, i64::checked_add, f64::add)?;
         }
         Ok(())
     }
@@ -178,12 +178,6 @@ impl From<Number> for Value {
     }
 }
 
-impl std::ops::AddAssign<&Value> for Number {
-    fn add_assign(&mut self, rhs: &Value) {
-        self.update(rhs, i64::add, f64::add);
-    }
-}
-
 impl Number {
     fn as_f64(&self) -> Option<f64> {
         match self {
@@ -198,12 +192,24 @@ impl Number {
         I: FnOnce(i64, i64) -> i64,
         R: FnOnce(f64, f64) -> f64,
     {
+        self.checked_update(rhs, |a, b| Some(integer_f(a, b)), real_f)
+            .unwrap();
+    }
+
+    fn checked_update<I, R>(&mut self, rhs: &Value, integer_f: I, real_f: R) -> ExecutorResult<()>
+    where
+        I: FnOnce(i64, i64) -> Option<i64>,
+        R: FnOnce(f64, f64) -> f64,
+    {
         match (self, rhs) {
             (s @ Self::Null, Value::Integer(x)) => *s = Self::Integer(*x),
             (s @ Self::Null, Value::Real(x)) => *s = Self::Real(*x),
-            (Self::Integer(s), Value::Integer(x)) => *s = integer_f(*s, *x),
+            (Self::Integer(s), Value::Integer(x)) => {
+                *s = integer_f(*s, *x).ok_or(ExecutorError::OutOfRange)?;
+            }
             (Self::Real(s), Value::Real(x)) => *s = real_f(*s, *x),
             _ => unreachable!("Unexpected non-numeric value or mixed types in a single column"),
         }
+        Ok(())
     }
 }
