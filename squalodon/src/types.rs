@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Type {
     Integer,
     Real,
@@ -98,6 +98,47 @@ impl Value {
             Self::Real(_) => Type::Real.into(),
             Self::Boolean(_) => Type::Boolean.into(),
             Self::Text(_) => Type::Text.into(),
+        }
+    }
+
+    pub fn cast(&self, ty: Type) -> Option<Self> {
+        match (self, ty) {
+            (Self::Null, _) => Some(Self::Null),
+            (Self::Integer(_), Type::Integer)
+            | (Self::Real(_), Type::Real)
+            | (Self::Boolean(_), Type::Boolean)
+            | (Self::Text(_), Type::Text) => Some(self.clone()),
+            (Self::Integer(i), Type::Real) => Some(Self::Real(*i as f64)),
+            (Self::Integer(i), Type::Boolean) => Some(Self::Boolean(*i != 0)),
+            (Self::Integer(i), Type::Text) => Some(Self::Text(i.to_string())),
+            (Self::Real(r), Type::Integer) => Some(Self::Integer(r.round() as i64)),
+            (Self::Real(r), Type::Text) => Some(Self::Text(r.to_string())),
+            (Self::Boolean(b), Type::Integer) => Some(Self::Integer(i64::from(*b))),
+            (Self::Boolean(b), Type::Text) => Some(Self::Text(b.to_string())),
+            (Self::Text(s), Type::Integer) => s.parse().ok().map(Self::Integer),
+            (Self::Text(s), Type::Real) => s.parse().ok().map(Self::Real),
+            (Self::Text(s), Type::Boolean) => {
+                if s == "1"
+                    || s.eq_ignore_ascii_case("t")
+                    || s.eq_ignore_ascii_case("true")
+                    || s.eq_ignore_ascii_case("y")
+                    || s.eq_ignore_ascii_case("yes")
+                    || s.eq_ignore_ascii_case("on")
+                {
+                    Some(Self::Boolean(true))
+                } else if s == "0"
+                    || s.eq_ignore_ascii_case("f")
+                    || s.eq_ignore_ascii_case("false")
+                    || s.eq_ignore_ascii_case("n")
+                    || s.eq_ignore_ascii_case("no")
+                    || s.eq_ignore_ascii_case("off")
+                {
+                    Some(Self::Boolean(false))
+                } else {
+                    None
+                }
+            }
+            _ => None,
         }
     }
 }

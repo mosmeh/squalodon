@@ -83,7 +83,7 @@ impl<'txn> AggregateContext<'txn> {
             | parser::Expression::ScalarSubquery(_)
             | parser::Expression::Exists(_)
             | parser::Expression::Parameter(_) => Ok(source),
-            parser::Expression::UnaryOp { expr, .. } => {
+            parser::Expression::Cast { expr, .. } | parser::Expression::UnaryOp { expr, .. } => {
                 self.gather_aggregates_inner(planner, source, expr, in_aggregate_args)
             }
             parser::Expression::BinaryOp { lhs, rhs, .. } => {

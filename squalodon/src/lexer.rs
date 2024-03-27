@@ -105,6 +105,7 @@ keywords! {
     Begin
     Boolean
     By
+    Cast
     Commit
     Create
     Cross

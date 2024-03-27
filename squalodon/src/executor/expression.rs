@@ -7,13 +7,13 @@ use crate::{
 
 impl Expression {
     pub fn eval(&self, row: &Row) -> ExecutorResult<Value> {
-        let value = match self {
-            Self::Constact(v) => v.clone(),
-            Self::ColumnRef { index } => row[index].clone(),
-            Self::UnaryOp { op, expr } => eval_unary_op(*op, row, expr)?,
-            Self::BinaryOp { op, lhs, rhs } => eval_binary_op(*op, row, lhs, rhs)?,
-        };
-        Ok(value)
+        match self {
+            Self::Constact(v) => Ok(v.clone()),
+            Self::ColumnRef { index } => Ok(row[index].clone()),
+            Self::Cast { expr, ty } => expr.eval(row)?.cast(*ty).ok_or(ExecutorError::TypeError),
+            Self::UnaryOp { op, expr } => eval_unary_op(*op, row, expr),
+            Self::BinaryOp { op, lhs, rhs } => eval_binary_op(*op, row, lhs, rhs),
+        }
     }
 }
 

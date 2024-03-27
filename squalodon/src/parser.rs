@@ -8,7 +8,10 @@ pub use expression::{BinaryOp, ColumnRef, Expression, FunctionArgs, UnaryOp};
 pub use modification::{Delete, Insert, Update};
 pub use query::{Join, NullOrder, Order, OrderBy, Projection, Select, TableRef, Values};
 
-use crate::lexer::{Lexer, LexerError, Token};
+use crate::{
+    lexer::{Lexer, LexerError, Token},
+    Type,
+};
 use std::num::NonZeroUsize;
 
 #[derive(thiserror::Error, Debug)]
@@ -193,6 +196,17 @@ impl<'a> Parser<'a> {
         } else {
             Deallocate::Name(self.expect_identifier()?)
         })
+    }
+
+    fn parse_type(&mut self) -> ParserResult<Type> {
+        let ty = match self.lexer.consume()? {
+            Token::Integer => Type::Integer,
+            Token::Real => Type::Real,
+            Token::Boolean => Type::Boolean,
+            Token::Text => Type::Text,
+            token => return Err(unexpected(&token)),
+        };
+        Ok(ty)
     }
 
     fn parse_comma_separated<T, F>(&mut self, mut f: F) -> ParserResult<Vec<T>>
