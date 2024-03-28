@@ -3,6 +3,7 @@ use crate::{lexer::Token, ParserError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Select {
+    pub distinct: Option<Distinct>,
     pub projections: Vec<Projection>,
     pub from: TableRef,
     pub where_clause: Option<Expression>,
@@ -16,6 +17,10 @@ pub struct Select {
 impl std::fmt::Display for Select {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("SELECT ")?;
+        if let Some(distinct) = &self.distinct {
+            distinct.fmt(f)?;
+            f.write_str(" ")?;
+        }
         for (i, projection) in self.projections.iter().enumerate() {
             if i > 0 {
                 f.write_str(", ")?;
@@ -53,6 +58,28 @@ impl std::fmt::Display for Select {
         }
         if let Some(offset) = &self.offset {
             write!(f, " OFFSET {offset}")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Distinct {
+    pub on: Option<Vec<Expression>>,
+}
+
+impl std::fmt::Display for Distinct {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DISTINCT")?;
+        if let Some(on) = &self.on {
+            f.write_str(" ON (")?;
+            for (i, expr) in on.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(", ")?;
+                }
+                expr.fmt(f)?;
+            }
+            f.write_str(")")?;
         }
         Ok(())
     }
@@ -218,6 +245,7 @@ impl std::fmt::Display for NullOrder {
 
 impl Parser<'_> {
     pub fn parse_select(&mut self) -> ParserResult<Select> {
+        let mut distinct = None;
         let projections;
         let from;
         let mut where_clause = None;
@@ -226,6 +254,9 @@ impl Parser<'_> {
         match self.lexer.peek()? {
             Token::Select => {
                 self.lexer.consume()?;
+                if *self.lexer.peek()? == Token::Distinct {
+                    distinct = Some(self.parse_distinct()?);
+                }
                 projections = self.parse_comma_separated(Self::parse_projection)?;
                 from = (*self.lexer.peek()? == Token::From)
                     .then(|| self.parse_from())
@@ -278,6 +309,7 @@ impl Parser<'_> {
             .then(|| self.parse_expr())
             .transpose()?;
         Ok(Select {
+            distinct,
             projections,
             from,
             where_clause,
@@ -289,18 +321,19 @@ impl Parser<'_> {
         })
     }
 
-    fn parse_from(&mut self) -> ParserResult<TableRef> {
-        self.expect(Token::From)?;
-        let mut table_ref = self.parse_table_ref()?;
-        while self.lexer.consume_if_eq(Token::Comma)? {
-            // Equivalent to CROSS JOIN
-            table_ref = TableRef::Join(Box::new(Join {
-                left: table_ref,
-                right: self.parse_table_ref()?,
-                on: None,
-            }));
-        }
-        Ok(table_ref)
+    fn parse_distinct(&mut self) -> ParserResult<Distinct> {
+        self.expect(Token::Distinct)?;
+        let on = self
+            .lexer
+            .consume_if_eq(Token::On)?
+            .then(|| -> ParserResult<_> {
+                self.expect(Token::LeftParen)?;
+                let exprs = self.parse_comma_separated(Self::parse_expr)?;
+                self.expect(Token::RightParen)?;
+                Ok(exprs)
+            })
+            .transpose()?;
+        Ok(Distinct { on })
     }
 
     fn parse_projection(&mut self) -> ParserResult<Projection> {
@@ -318,6 +351,20 @@ impl Parser<'_> {
             };
             Ok(Projection::Expression { expr, alias })
         }
+    }
+
+    fn parse_from(&mut self) -> ParserResult<TableRef> {
+        self.expect(Token::From)?;
+        let mut table_ref = self.parse_table_ref()?;
+        while self.lexer.consume_if_eq(Token::Comma)? {
+            // Equivalent to CROSS JOIN
+            table_ref = TableRef::Join(Box::new(Join {
+                left: table_ref,
+                right: self.parse_table_ref()?,
+                on: None,
+            }));
+        }
+        Ok(table_ref)
     }
 
     fn parse_table_ref(&mut self) -> ParserResult<TableRef> {

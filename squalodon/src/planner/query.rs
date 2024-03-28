@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{
     catalog::TableFnPtr,
-    parser::{self, NullOrder, Order},
+    parser::{self, Distinct, NullOrder, Order},
     planner,
     rows::ColumnIndex,
     storage::Table,
@@ -185,6 +185,11 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         for order_by in &select.order_by {
             plan = aggregate_ctx.gather_aggregates(self, plan, &order_by.expr)?;
         }
+        if let Some(Distinct { on: Some(on) }) = &select.distinct {
+            for expr in on {
+                plan = aggregate_ctx.gather_aggregates(self, plan, expr)?;
+            }
+        }
         for projection in &select.projections {
             match projection {
                 parser::Projection::Wildcard => (),
@@ -211,7 +216,12 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         }
         let plan = self.plan_order_by(&aggregated_expr_binder, plan, select.order_by)?;
         let plan = self.plan_limit(plan, select.limit, select.offset)?;
-        let plan = self.plan_projections(&aggregated_expr_binder, plan, select.projections)?;
+        let plan = self.plan_projections(
+            &aggregated_expr_binder,
+            plan,
+            select.projections,
+            select.distinct,
+        )?;
         Ok(plan)
     }
 
@@ -253,6 +263,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
         projections: Vec<parser::Projection>,
+        distinct: Option<Distinct>,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
         let mut plan = source;
         let mut exprs = Vec::new();
@@ -292,11 +303,54 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
                 }
             }
         }
-        Ok(Plan {
-            node: PlanNode::Project(planner::Project {
+        let node = match distinct {
+            Some(Distinct { on: Some(on) }) => {
+                let aggregate_columns = (0..columns.len())
+                    .map(|_| planner::AggregateColumn::NonAggregated)
+                    .chain((0..on.len()).map(|_| planner::AggregateColumn::GroupBy))
+                    .collect();
+                for expr in on {
+                    let (new_plan, TypedExpression { expr, .. }) = expr_binder.bind(plan, expr)?;
+                    plan = new_plan;
+                    exprs.push(expr);
+                }
+                let node = PlanNode::Project(planner::Project {
+                    source: Box::new(plan.node),
+                    exprs,
+                });
+                let node = PlanNode::Aggregate(planner::Aggregate::Hash {
+                    source: Box::new(node),
+                    aggregate_columns,
+                });
+                PlanNode::Project(planner::Project {
+                    source: Box::new(node),
+                    exprs: (0..columns.len())
+                        .map(|i| planner::Expression::ColumnRef {
+                            index: ColumnIndex(i),
+                        })
+                        .collect(),
+                })
+            }
+            Some(Distinct { on: None }) => {
+                let node = PlanNode::Project(planner::Project {
+                    source: Box::new(plan.node),
+                    exprs,
+                });
+                PlanNode::Aggregate(planner::Aggregate::Hash {
+                    source: Box::new(node),
+                    aggregate_columns: columns
+                        .iter()
+                        .map(|_| planner::AggregateColumn::GroupBy)
+                        .collect(),
+                })
+            }
+            None => PlanNode::Project(planner::Project {
                 source: Box::new(plan.node),
                 exprs,
             }),
+        };
+        Ok(Plan {
+            node,
             schema: columns.into(),
         })
     }

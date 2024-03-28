@@ -205,10 +205,10 @@ impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
             )?),
             PlanNode::Aggregate(planner::Aggregate::Hash {
                 source,
-                init_functions,
+                aggregate_columns,
             }) => Self::HashAggregate(HashAggregate::new(
                 Self::new(ctx, *source)?,
-                &init_functions,
+                aggregate_columns,
             )?),
             PlanNode::Insert(planner::Insert { source, table }) => {
                 Self::Insert(Insert::new(Box::new(Self::new(ctx, *source)?), table)?)

@@ -17,7 +17,7 @@ pub enum Aggregate<'txn, 'db, T: Storage> {
     },
     Hash {
         source: Box<PlanNode<'txn, 'db, T>>,
-        init_functions: Vec<AggregateInitFnPtr>,
+        aggregate_columns: Vec<AggregateColumn>,
     },
 }
 
@@ -30,24 +30,37 @@ impl<T: Storage> Explain for Aggregate<'_, '_, T> {
             } => {
                 write!(
                     visitor,
-                    "UngroupedAggregate #aggregated={}",
+                    "UngroupedAggregate #columns={}",
                     init_functions.len()
                 );
                 source.visit(visitor);
             }
             Self::Hash {
                 source,
-                init_functions,
+                aggregate_columns,
             } => {
-                write!(
-                    visitor,
-                    "HashAggregate #aggregated={}",
-                    init_functions.len()
-                );
+                let mut s = "HashAggregate ".to_owned();
+                for (i, column) in aggregate_columns.iter().enumerate() {
+                    if i > 0 {
+                        s.push_str(", ");
+                    }
+                    s.push_str(match column {
+                        AggregateColumn::Aggregated(_) => "Aggregated",
+                        AggregateColumn::GroupBy => "GroupBy",
+                        AggregateColumn::NonAggregated => "NonAggregated",
+                    });
+                }
+                visitor.write_str(&s);
                 source.visit(visitor);
             }
         }
     }
+}
+
+pub enum AggregateColumn {
+    Aggregated(AggregateInitFnPtr),
+    GroupBy,
+    NonAggregated,
 }
 
 #[derive(Default)]
@@ -186,21 +199,26 @@ impl<'txn> AggregateContext<'txn> {
             exprs,
         });
 
-        let init_functions = self
-            .bound_aggregates
-            .iter()
-            .map(|bound_aggregate| bound_aggregate.function.init)
-            .collect();
-
         let node = if group_by.is_empty() {
+            let init_functions = self
+                .bound_aggregates
+                .iter()
+                .map(|bound_aggregate| bound_aggregate.function.init)
+                .collect();
             Aggregate::Ungrouped {
                 source: Box::new(node),
                 init_functions,
             }
         } else {
+            let aggregate_columns = self
+                .bound_aggregates
+                .iter()
+                .map(|bound_aggregate| AggregateColumn::Aggregated(bound_aggregate.function.init))
+                .chain(group_by.iter().map(|_| AggregateColumn::GroupBy))
+                .collect();
             Aggregate::Hash {
                 source: Box::new(node),
-                init_functions,
+                aggregate_columns,
             }
         };
         Ok(Plan {
