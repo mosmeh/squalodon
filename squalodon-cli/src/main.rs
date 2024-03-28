@@ -45,11 +45,11 @@ fn main() -> Result<()> {
 
 fn run<T: Storage>(args: Args, storage: T) -> Result<()> {
     let db = Database::new(storage)?;
-    let mut conn = db.connect();
+    let conn = db.connect();
 
     if let Some(init) = args.init {
         let init = std::fs::read_to_string(init)?;
-        run_sql(&mut conn, &init, false)?;
+        run_sql(&conn, &init, false)?;
     }
 
     let mut rl = rustyline::Editor::new()?;
@@ -71,7 +71,7 @@ fn run<T: Storage>(args: Args, storage: T) -> Result<()> {
             }
             if line.starts_with('.') {
                 rl.add_history_entry(&line)?;
-                match run_metacommand(&mut conn, trimmed_line) {
+                match run_metacommand(&conn, trimmed_line) {
                     Ok(()) => (),
                     Err(e) => eprintln!("{e}"),
                 }
@@ -88,17 +88,17 @@ fn run<T: Storage>(args: Args, storage: T) -> Result<()> {
         // - The semicolon finishes a statement.
         // - The semicolon is inside a string literal.
 
-        if run_sql(&mut conn, &buf, true)? {
+        if run_sql(&conn, &buf, true)? {
             rl.add_history_entry(&buf)?;
             buf.clear();
         }
     }
-    run_sql(&mut conn, &buf, false)?;
+    run_sql(&conn, &buf, false)?;
 
     Ok(())
 }
 
-fn run_sql<T: Storage>(conn: &mut Connection<T>, sql: &str, repl: bool) -> Result<bool> {
+fn run_sql<T: Storage>(conn: &Connection<T>, sql: &str, repl: bool) -> Result<bool> {
     let segmenter = Segmenter::new(sql);
     let mut statements = Vec::new();
     let mut current_statement = String::new();
@@ -172,7 +172,7 @@ enum Metacommand {
     Read { filename: PathBuf },
 }
 
-fn run_metacommand<T: Storage>(conn: &mut Connection<T>, line: &str) -> Result<()> {
+fn run_metacommand<T: Storage>(conn: &Connection<T>, line: &str) -> Result<()> {
     let parts = std::iter::once("\0").chain(line.split_ascii_whitespace());
     match Metacommand::try_parse_from(parts)? {
         Metacommand::Import {
@@ -217,30 +217,33 @@ fn run_metacommand<T: Storage>(conn: &mut Connection<T>, line: &str) -> Result<(
 ///
 /// Returns the number of rows inserted.
 fn insert_into_table<T: Storage>(
-    conn: &mut Connection<T>,
+    conn: &Connection<T>,
     mut reader: csv::Reader<std::fs::File>,
     table: &str,
 ) -> Result<()> {
     use std::fmt::Write;
 
-    let mut sql = None;
+    let mut statement = None;
     for record in reader.records() {
         let record = record?;
-        let sql = sql.get_or_insert_with(|| {
-            let mut sql = "INSERT INTO ".to_owned();
-            sql.push_str(&squalodon::lexer::quote(table, '"'));
-            sql.push_str(" VALUES (");
-            for i in 0..record.len() {
-                if i > 0 {
-                    sql.push(',');
+        let statement = match &statement {
+            Some(statement) => statement,
+            None => {
+                let mut sql = "INSERT INTO ".to_owned();
+                sql.push_str(&squalodon::lexer::quote(table, '"'));
+                sql.push_str(" VALUES (");
+                for i in 0..record.len() {
+                    if i > 0 {
+                        sql.push(',');
+                    }
+                    write!(&mut sql, "${}", i + 1)?;
                 }
-                write!(&mut sql, "${}", i + 1).unwrap();
+                sql.push(')');
+                statement.insert(conn.prepare(&sql)?)
             }
-            sql.push(')');
-            sql
-        });
+        };
         let params: Vec<_> = record.into_iter().map(Into::into).collect();
-        conn.execute(sql, params)?;
+        statement.execute(params)?;
     }
     Ok(())
 }
@@ -311,7 +314,7 @@ impl<T: Storage> Completer for RustylineHelper<'_, T> {
     ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
         let (start, word) = extract_word(line, pos, None, |ch| !is_valid_identifier_char(ch));
         let mut candidates = Vec::new();
-        let mut conn = self.conn.borrow_mut();
+        let conn = self.conn.borrow_mut();
         let rows = conn
             .query("SELECT keyword FROM squalodon_keywords()", [])
             .unwrap();

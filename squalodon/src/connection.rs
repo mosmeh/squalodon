@@ -7,20 +7,20 @@ use crate::{
     types::{NullableType, Params},
     Database, Error, Result, Row, Type,
 };
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap};
 
-pub struct Connection<'a, T: Storage> {
-    db: &'a Database<T>,
-    txn_status: TransactionState<'a, T>,
-    prepared_statements: HashMap<String, Statement>,
+pub struct Connection<'db, T: Storage> {
+    db: &'db Database<T>,
+    txn_status: RefCell<TransactionState<'db, T>>,
+    prepared_statements: RefCell<HashMap<String, Statement>>,
 }
 
-impl<'a, T: Storage> Connection<'a, T> {
-    pub(crate) fn new(db: &'a Database<T>) -> Self {
+impl<'db, T: Storage> Connection<'db, T> {
+    pub(crate) fn new(db: &'db Database<T>) -> Self {
         Self {
             db,
-            txn_status: TransactionState::Inactive,
-            prepared_statements: HashMap::new(),
+            txn_status: TransactionState::Inactive.into(),
+            prepared_statements: HashMap::new().into(),
         }
     }
 
@@ -28,58 +28,58 @@ impl<'a, T: Storage> Connection<'a, T> {
     ///
     /// On success, returns the number of rows that were changed, inserted,
     /// or deleted.
-    pub fn execute<P: Params>(&mut self, sql: &str, params: P) -> Result<usize> {
-        let statement = parse_statement(sql)?;
-        let is_modification = statement.is_modification();
-        let params = params
-            .into_values()
-            .into_iter()
-            .map(Expression::Constant)
-            .collect();
-        let mut rows = self.execute_statement(statement, params)?;
-        let num_affected_rows = if is_modification {
-            rows.next().map_or(0, |row| row.get(0).unwrap())
-        } else {
-            0
-        };
-        Ok(num_affected_rows)
+    pub fn execute<P: Params>(&self, sql: &str, params: P) -> Result<usize> {
+        self.prepare(sql)?.execute(params)
     }
 
     /// Execute a single SQL query, returning the resulting rows.
-    pub fn query<P: Params>(&mut self, sql: &str, params: P) -> Result<Rows> {
-        let statement = parse_statement(sql)?;
-        let is_modification = statement.is_modification();
-        let params = params
-            .into_values()
-            .into_iter()
-            .map(Expression::Constant)
-            .collect();
-        let rows = self.execute_statement(statement, params)?;
-        Ok(if is_modification { Rows::empty() } else { rows })
+    pub fn query<P: Params>(&self, sql: &str, params: P) -> Result<Rows> {
+        self.prepare(sql)?.query(params)
     }
 
-    fn execute_statement(&mut self, statement: Statement, params: Vec<Expression>) -> Result<Rows> {
+    /// Prepare a single SQL statement.
+    pub fn prepare(&self, sql: &str) -> Result<PreparedStatement<'_, 'db, T>> {
+        let mut parser = Parser::new(sql);
+        let statement = parser.next().transpose()?.ok_or(Error::NoStatement)?;
+        if parser.next().is_some() {
+            return Err(Error::MultipleStatements);
+        }
+        Ok(PreparedStatement {
+            conn: self,
+            statement,
+        })
+    }
+
+    fn execute_statement(&self, statement: Statement, params: Vec<Expression>) -> Result<Rows> {
         match statement {
             Statement::Prepare(prepare) => {
                 // Perform only parsing and no planning for now.
                 self.prepared_statements
+                    .borrow_mut()
                     .insert(prepare.name, *prepare.statement);
                 return Ok(Rows::empty());
             }
             Statement::Execute(execute) => {
                 let prepared_statement = self
                     .prepared_statements
+                    .borrow()
                     .get(&execute.name)
-                    .ok_or_else(|| Error::UnknownPreparedStatement(execute.name))?;
-                return self.execute_statement(prepared_statement.clone(), execute.params);
+                    .ok_or_else(|| Error::UnknownPreparedStatement(execute.name))?
+                    .clone();
+                return self.execute_statement(prepared_statement, execute.params);
             }
             Statement::Deallocate(deallocate) => match deallocate {
                 Deallocate::All => {
-                    self.prepared_statements.clear();
+                    self.prepared_statements.borrow_mut().clear();
                     return Ok(Rows::empty());
                 }
                 Deallocate::Name(name) => {
-                    return if self.prepared_statements.remove(&name).is_some() {
+                    return if self
+                        .prepared_statements
+                        .borrow_mut()
+                        .remove(&name)
+                        .is_some()
+                    {
                         Ok(Rows::empty())
                     } else {
                         Err(Error::UnknownPreparedStatement(name))
@@ -94,7 +94,8 @@ impl<'a, T: Storage> Connection<'a, T> {
         }
 
         let mut implicit_txn = None;
-        let txn = match &self.txn_status {
+        let mut txn_status = self.txn_status.borrow_mut();
+        let txn = match &*txn_status {
             TransactionState::Active(txn) => txn,
             TransactionState::Aborted => return Err(TransactionError::TransactionAborted.into()),
             TransactionState::Inactive => implicit_txn.insert(self.db.storage.transaction()),
@@ -117,7 +118,7 @@ impl<'a, T: Storage> Connection<'a, T> {
             }
             Err(e) => {
                 if implicit_txn.is_none() {
-                    self.txn_status = TransactionState::Aborted;
+                    *txn_status = TransactionState::Aborted;
                 }
                 Err(e)
             }
@@ -125,15 +126,16 @@ impl<'a, T: Storage> Connection<'a, T> {
     }
 
     fn handle_transaction_control(
-        &mut self,
+        &self,
         txn_control: TransactionControl,
     ) -> std::result::Result<(), TransactionError> {
-        match (&self.txn_status, txn_control) {
+        let mut txn_status = self.txn_status.borrow_mut();
+        match (&*txn_status, txn_control) {
             (TransactionState::Active(_), TransactionControl::Begin) => {
                 Err(TransactionError::NestedTransaction)
             }
             (TransactionState::Active(_), TransactionControl::Commit) => {
-                match std::mem::replace(&mut self.txn_status, TransactionState::Inactive) {
+                match std::mem::replace(&mut *txn_status, TransactionState::Inactive) {
                     TransactionState::Active(txn) => txn.commit(),
                     _ => unreachable!(),
                 }
@@ -144,14 +146,14 @@ impl<'a, T: Storage> Connection<'a, T> {
                 TransactionState::Aborted,
                 TransactionControl::Commit | TransactionControl::Rollback,
             ) => {
-                self.txn_status = TransactionState::Inactive;
+                *txn_status = TransactionState::Inactive;
                 Ok(())
             }
             (TransactionState::Aborted, TransactionControl::Begin) => {
                 Err(TransactionError::TransactionAborted)
             }
             (TransactionState::Inactive, TransactionControl::Begin) => {
-                self.txn_status = TransactionState::Active(self.db.storage.transaction());
+                *txn_status = TransactionState::Active(self.db.storage.transaction());
                 Ok(())
             }
             (
@@ -161,7 +163,7 @@ impl<'a, T: Storage> Connection<'a, T> {
         }
     }
 
-    fn execute_plan(&self, txn: &T::Transaction<'a>, plan: Plan<'_, 'a, T>) -> Result<Rows> {
+    fn execute_plan(&self, txn: &T::Transaction<'db>, plan: Plan<'_, 'db, T>) -> Result<Rows> {
         let Plan { node, schema } = plan;
         let columns: Vec<_> = schema
             .0
@@ -218,11 +220,40 @@ pub enum TransactionError {
     TransactionAborted,
 }
 
-fn parse_statement(sql: &str) -> Result<Statement> {
-    let mut parser = Parser::new(sql);
-    let statement = parser.next().transpose()?.ok_or(Error::NoStatement)?;
-    if parser.next().is_some() {
-        return Err(Error::MultipleStatements);
+pub struct PreparedStatement<'conn, 'db, T: Storage> {
+    conn: &'conn Connection<'db, T>,
+    statement: Statement,
+}
+
+impl<T: Storage> PreparedStatement<'_, '_, T> {
+    pub fn execute<P: Params>(&self, params: P) -> Result<usize> {
+        let is_modification = self.statement.is_modification();
+        let params = params
+            .into_values()
+            .into_iter()
+            .map(Expression::Constant)
+            .collect();
+        let mut rows = self
+            .conn
+            .execute_statement(self.statement.clone(), params)?;
+        let num_affected_rows = if is_modification {
+            rows.next().map_or(0, |row| row.get(0).unwrap())
+        } else {
+            0
+        };
+        Ok(num_affected_rows)
     }
-    Ok(statement)
+
+    pub fn query<P: Params>(&self, params: P) -> Result<Rows> {
+        let is_modification = self.statement.is_modification();
+        let params = params
+            .into_values()
+            .into_iter()
+            .map(Expression::Constant)
+            .collect();
+        let rows = self
+            .conn
+            .execute_statement(self.statement.clone(), params)?;
+        Ok(if is_modification { Rows::empty() } else { rows })
+    }
 }
