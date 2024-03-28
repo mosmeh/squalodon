@@ -6,7 +6,7 @@ mod query;
 pub use ddl::{Constraint, CreateTable, DropTable};
 pub use expression::{BinaryOp, ColumnRef, Expression, FunctionArgs, UnaryOp};
 pub use modification::{Delete, Insert, Update};
-pub use query::{Join, NullOrder, Order, OrderBy, Projection, Select, TableRef, Values};
+pub use query::{Distinct, Join, NullOrder, Order, OrderBy, Projection, Select, TableRef, Values};
 
 use crate::{
     lexer::{Lexer, LexerError, Token},

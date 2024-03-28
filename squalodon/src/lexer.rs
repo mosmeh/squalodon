@@ -113,6 +113,7 @@ keywords! {
     Delete
     Desc
     Describe
+    Distinct
     Drop
     Execute
     Exists

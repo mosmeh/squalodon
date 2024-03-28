@@ -4,7 +4,7 @@ mod expression;
 mod modification;
 mod query;
 
-pub use aggregate::Aggregate;
+pub use aggregate::{Aggregate, AggregateColumn};
 pub use expression::Expression;
 pub use modification::{Delete, Insert, Update};
 pub use query::{CrossProduct, Filter, Limit, OrderBy, Project, Scan, Sort, Values};

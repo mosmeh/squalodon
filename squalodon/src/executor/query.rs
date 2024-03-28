@@ -1,8 +1,9 @@
 use super::{ExecutorContext, ExecutorNode, ExecutorResult, IntoOutput, Node, NodeError, Output};
 use crate::{
-    catalog::{AggregateInitFnPtr, TableFnPtr},
+    catalog::{AggregateInitFnPtr, Aggregator, TableFnPtr},
     memcomparable::MemcomparableSerde,
-    planner::{Expression, OrderBy},
+    planner::{AggregateColumn, Expression, OrderBy},
+    rows::ColumnIndex,
     storage::{self, Table},
     ExecutorError, Row, Storage, Value,
 };
@@ -270,6 +271,7 @@ impl UngroupedAggregate {
         let mut aggs: Vec<_> = init_functions.iter().map(|init| init()).collect();
         for row in source {
             let row = row?;
+            assert_eq!(row.0.len(), aggs.len());
             for (agg, value) in aggs.iter_mut().zip(&row.0) {
                 agg.update(value)?;
             }
@@ -291,35 +293,59 @@ pub struct HashAggregate {
 
 impl HashAggregate {
     pub fn new<T: Storage>(
-        mut source: ExecutorNode<'_, '_, T>,
-        init_functions: &[AggregateInitFnPtr],
+        source: ExecutorNode<'_, '_, T>,
+        columns: Vec<AggregateColumn>,
     ) -> ExecutorResult<Self> {
-        // The first `init_functions.len()` columns from `source` are
-        // the aggregated columns that are passed to the respective
-        // aggregate functions.
-        // The rest of the columns are the columns in the GROUP BY clause.
+        struct Group {
+            aggregators: Vec<Box<dyn Aggregator>>,
+            non_aggregated: Vec<Value>,
+        }
+
+        let mut aggregates = Vec::new();
+        let mut group_by = Vec::new();
+        let mut non_aggregated = Vec::new();
+        for (i, column) in columns.iter().enumerate() {
+            match column {
+                AggregateColumn::Aggregated(init) => aggregates.push((ColumnIndex(i), init)),
+                AggregateColumn::GroupBy => group_by.push(ColumnIndex(i)),
+                AggregateColumn::NonAggregated => non_aggregated.push(ColumnIndex(i)),
+            }
+        }
 
         let serde = MemcomparableSerde::new();
         let mut groups = HashMap::new();
-        for row in source.by_ref() {
+        for row in source {
             let row = row?;
+            assert_eq!(row.0.len(), columns.len());
             let mut key = Vec::new();
-            for value in &row.0[init_functions.len()..] {
-                serde.serialize_into(value, &mut key);
+            for column_index in &group_by {
+                serde.serialize_into(&row[column_index], &mut key);
             }
-            let aggs = groups
-                .entry(key)
-                .or_insert_with(|| init_functions.iter().map(|init| init()).collect::<Vec<_>>());
-            for (agg, value) in aggs.iter_mut().zip(&row.0) {
-                agg.update(value)?;
+            let group = groups.entry(key).or_insert_with(|| Group {
+                aggregators: aggregates.iter().map(|(_, init)| init()).collect(),
+                non_aggregated: Vec::with_capacity(non_aggregated.len()),
+            });
+            for (aggregator, (column_index, _)) in group.aggregators.iter_mut().zip(&aggregates) {
+                aggregator.update(&row[column_index])?;
+            }
+            for index in &non_aggregated {
+                group.non_aggregated.push(row[index].clone());
             }
         }
-        let rows = groups.into_iter().map(move |(key, aggs)| {
-            let row = aggs
-                .into_iter()
-                .map(|agg| agg.finish())
-                .chain(serde.deserialize_seq_from(&key))
-                .collect();
+        let rows = groups.into_iter().map(move |(key, group)| {
+            let mut aggregator_iter = group.aggregators.into_iter().map(|agg| agg.finish());
+            let mut group_by_iter = serde.deserialize_seq_from(&key);
+            let mut non_aggregated_iter = group.non_aggregated.into_iter();
+            let mut row = Vec::with_capacity(columns.len());
+            for column in &columns {
+                let value = match column {
+                    AggregateColumn::Aggregated(_) => aggregator_iter.next(),
+                    AggregateColumn::GroupBy => group_by_iter.next(),
+                    AggregateColumn::NonAggregated => non_aggregated_iter.next(),
+                }
+                .unwrap();
+                row.push(value);
+            }
             Row(row)
         });
         Ok(Self {
