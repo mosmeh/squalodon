@@ -12,7 +12,7 @@ mod rows;
 mod types;
 
 pub use catalog::CatalogError;
-pub use connection::{Connection, TransactionError};
+pub use connection::{Connection, PreparedStatement, TransactionError};
 pub use executor::ExecutorError;
 pub use parser::ParserError;
 pub use planner::PlannerError;
