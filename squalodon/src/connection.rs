@@ -102,14 +102,15 @@ impl<'db, T: Storage> Connection<'db, T> {
         };
 
         let catalog = self.db.catalog.with(txn);
+        let ctx = ExecutorContext::new(&catalog);
 
         let mut param_values = Vec::with_capacity(params.len());
         for expr in params {
-            param_values.push(planner::bind_expr(&catalog, expr)?.eval(&Row::empty())?);
+            param_values.push(planner::bind_expr(&catalog, expr)?.eval(&ctx, &Row::empty())?);
         }
 
         let plan = planner::plan(&catalog, statement, param_values)?;
-        match self.execute_plan(txn, plan) {
+        match execute_plan(&ctx, plan) {
             Ok(rows) => {
                 if let Some(txn) = implicit_txn {
                     txn.commit(); // Auto commit
@@ -162,38 +163,40 @@ impl<'db, T: Storage> Connection<'db, T> {
             ) => Err(TransactionError::NoActiveTransaction),
         }
     }
+}
 
-    fn execute_plan(&self, txn: &T::Transaction<'db>, plan: Plan<'_, 'db, T>) -> Result<Rows> {
-        let Plan { node, schema } = plan;
-        let columns: Vec<_> = schema
-            .0
-            .into_iter()
-            .map(|column| {
-                Column {
-                    name: column.column_name,
-                    ty: match column.ty {
-                        NullableType::NonNull(ty) => ty,
-                        NullableType::Null => Type::Integer, // Arbitrarily choose INTEGER
-                    },
-                }
-            })
-            .collect();
-        let ctx = ExecutorContext::new(self.db.catalog.with(txn));
-        let executor = Executor::new(&ctx, node)?;
-        let mut rows = Vec::new();
-        for row in executor {
-            let row = row?;
-            assert_eq!(row.columns().len(), columns.len());
-            for (value, column) in row.columns().iter().zip(&columns) {
-                assert!(value.ty().is_compatible_with(column.ty));
+fn execute_plan<'db, T: Storage>(
+    ctx: &ExecutorContext<'_, 'db, T>,
+    plan: Plan<'_, 'db, T>,
+) -> Result<Rows> {
+    let Plan { node, schema } = plan;
+    let columns: Vec<_> = schema
+        .0
+        .into_iter()
+        .map(|column| {
+            Column {
+                name: column.column_name,
+                ty: match column.ty {
+                    NullableType::NonNull(ty) => ty,
+                    NullableType::Null => Type::Integer, // Arbitrarily choose INTEGER
+                },
             }
-            rows.push(row);
-        }
-        Ok(Rows {
-            iter: rows.into_iter(),
-            columns,
         })
+        .collect();
+    let executor = Executor::new(ctx, node)?;
+    let mut rows = Vec::new();
+    for row in executor {
+        let row = row?;
+        assert_eq!(row.columns().len(), columns.len());
+        for (value, column) in row.columns().iter().zip(&columns) {
+            assert!(value.ty().is_compatible_with(column.ty));
+        }
+        rows.push(row);
     }
+    Ok(Rows {
+        iter: rows.into_iter(),
+        columns,
+    })
 }
 
 enum TransactionState<'a, T: Storage + 'a> {

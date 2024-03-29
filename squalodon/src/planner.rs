@@ -43,6 +43,9 @@ pub enum PlannerError {
     #[error("Primary key is required")]
     NoPrimaryKey,
 
+    #[error("Invalid argument")]
+    InvalidArgument,
+
     #[error("Aggregate function is not allowed in this context")]
     AggregateNotAllowed,
 
@@ -70,7 +73,7 @@ pub type PlannerResult<T> = std::result::Result<T, PlannerError>;
 pub fn bind_expr<'txn, T: Storage>(
     catalog: &'txn CatalogRef<'txn, '_, T>,
     expr: parser::Expression,
-) -> PlannerResult<Expression> {
+) -> PlannerResult<Expression<T>> {
     let TypedExpression { expr, .. } = Planner::new(catalog).bind_expr_without_source(expr)?;
     Ok(expr)
 }
@@ -203,7 +206,7 @@ pub enum PlanNode<'txn, 'db, T: Storage> {
     Explain(Box<PlanNode<'txn, 'db, T>>),
     CreateTable(CreateTable),
     DropTable(DropTable),
-    Values(Values),
+    Values(Values<T>),
     Scan(Scan<'txn, 'db, T>),
     Project(Project<'txn, 'db, T>),
     Filter(Filter<'txn, 'db, T>),

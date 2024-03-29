@@ -9,37 +9,37 @@ use crate::{
 };
 use std::collections::{HashMap, HashSet};
 
-#[derive(Default)]
-pub struct Values {
-    iter: std::vec::IntoIter<Vec<Expression>>,
+pub struct Values<'txn> {
+    rows: Box<dyn Iterator<Item = ExecutorResult<Row>> + 'txn>,
 }
 
-impl Values {
-    pub fn new(rows: Vec<Vec<Expression>>) -> Self {
+impl<'txn> Values<'txn> {
+    pub fn new<T: Storage>(
+        ctx: &'txn ExecutorContext<'txn, '_, T>,
+        rows: Vec<Vec<Expression<T>>>,
+    ) -> Self {
+        let rows = rows.into_iter().map(|row| {
+            let columns = row
+                .into_iter()
+                .map(|expr| expr.eval(ctx, &Row::empty()))
+                .collect::<ExecutorResult<_>>()?;
+            Ok(Row(columns))
+        });
         Self {
-            iter: rows.into_iter(),
+            rows: Box::new(rows),
         }
     }
 
     pub fn one_empty_row() -> Self {
         Self {
-            iter: vec![Vec::new()].into_iter(),
+            rows: Box::new(vec![Ok(Row::empty())].into_iter()),
         }
     }
 }
 
-impl Node for Values {
+impl Node for Values<'_> {
     fn next_row(&mut self) -> Output {
-        self.iter
-            .next()
-            .map(|row| -> ExecutorResult<Row> {
-                let columns = row
-                    .into_iter()
-                    .map(|expr| expr.eval(&Row::empty()))
-                    .collect::<ExecutorResult<_>>()?;
-                Ok(Row(columns))
-            })
-            .into_output()
+        self.rows.next().into_output()
     }
 }
 
@@ -94,8 +94,9 @@ impl<T: Storage> Node for FunctionScan<'_, '_, T> {
 }
 
 pub struct Project<'txn, 'db, T: Storage> {
+    pub ctx: &'txn ExecutorContext<'txn, 'db, T>,
     pub source: Box<ExecutorNode<'txn, 'db, T>>,
-    pub exprs: Vec<Expression>,
+    pub exprs: Vec<Expression<T>>,
 }
 
 impl<T: Storage> Node for Project<'_, '_, T> {
@@ -104,22 +105,23 @@ impl<T: Storage> Node for Project<'_, '_, T> {
         let columns = self
             .exprs
             .iter()
-            .map(|expr| expr.eval(&row))
+            .map(|expr| expr.eval(self.ctx, &row))
             .collect::<ExecutorResult<_>>()?;
         Ok(Row(columns))
     }
 }
 
 pub struct Filter<'txn, 'db, T: Storage> {
+    pub ctx: &'txn ExecutorContext<'txn, 'db, T>,
     pub source: Box<ExecutorNode<'txn, 'db, T>>,
-    pub cond: Expression,
+    pub cond: Expression<T>,
 }
 
 impl<T: Storage> Node for Filter<'_, '_, T> {
     fn next_row(&mut self) -> Output {
         loop {
             let row = self.source.next_row()?;
-            match self.cond.eval(&row)? {
+            match self.cond.eval(self.ctx, &row)? {
                 Value::Boolean(true) => return Ok(row),
                 Value::Boolean(false) => continue,
                 _ => return Err(ExecutorError::TypeError.into()),
@@ -134,15 +136,16 @@ pub struct Sort {
 
 impl Sort {
     pub fn new<T: Storage>(
+        ctx: &ExecutorContext<'_, '_, T>,
         source: ExecutorNode<'_, '_, T>,
-        order_by: Vec<OrderBy>,
+        order_by: Vec<OrderBy<T>>,
     ) -> ExecutorResult<Self> {
         let mut rows = Vec::new();
         for row in source {
             let row = row?;
             let mut sort_key = Vec::new();
             for order_by in &order_by {
-                let value = order_by.expr.eval(&row)?;
+                let value = order_by.expr.eval(ctx, &row)?;
                 MemcomparableSerde::new()
                     .order(order_by.order)
                     .null_order(order_by.null_order)
@@ -172,15 +175,19 @@ pub struct Limit<'txn, 'db, T: Storage> {
 
 impl<'txn, 'db, T: Storage> Limit<'txn, 'db, T> {
     pub fn new(
+        ctx: &'txn ExecutorContext<'txn, 'db, T>,
         source: ExecutorNode<'txn, 'db, T>,
-        limit: Option<Expression>,
-        offset: Option<Expression>,
+        limit: Option<Expression<T>>,
+        offset: Option<Expression<T>>,
     ) -> ExecutorResult<Self> {
-        fn eval(expr: Option<Expression>) -> ExecutorResult<Option<usize>> {
+        fn eval<T: Storage>(
+            ctx: &ExecutorContext<'_, '_, T>,
+            expr: Option<Expression<T>>,
+        ) -> ExecutorResult<Option<usize>> {
             let Some(expr) = expr else {
                 return Ok(None);
             };
-            let Value::Integer(i) = expr.eval(&Row::empty())? else {
+            let Value::Integer(i) = expr.eval(ctx, &Row::empty())? else {
                 return Err(ExecutorError::TypeError);
             };
             i.try_into()
@@ -189,8 +196,8 @@ impl<'txn, 'db, T: Storage> Limit<'txn, 'db, T> {
 
         Ok(Self {
             source: source.into(),
-            limit: eval(limit)?,
-            offset: eval(offset)?.unwrap_or(0),
+            limit: eval(ctx, limit)?,
+            offset: eval(ctx, offset)?.unwrap_or(0),
             cursor: 0,
         })
     }

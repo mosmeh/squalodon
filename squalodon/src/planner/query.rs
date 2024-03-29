@@ -14,12 +14,12 @@ use crate::{
 };
 use std::fmt::Write;
 
-pub struct Values {
-    pub rows: Vec<Vec<planner::Expression>>,
+pub struct Values<T: Storage> {
+    pub rows: Vec<Vec<planner::Expression<T>>>,
 }
 
-impl Values {
-    pub fn new(rows: Vec<Vec<planner::Expression>>) -> Self {
+impl<T: Storage> Values<T> {
+    pub fn new(rows: Vec<Vec<planner::Expression<T>>>) -> Self {
         Self { rows }
     }
 
@@ -28,16 +28,16 @@ impl Values {
     }
 }
 
-impl Explain for Values {
+impl<T: Storage> Explain for Values<T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
         let mut f = "Values ".to_owned();
         for (i, row) in self.rows.iter().enumerate() {
             f.push_str(if i == 0 { "(" } else { ", (" });
             for (j, value) in row.iter().enumerate() {
                 if j == 0 {
-                    write!(&mut f, "{value:?}").unwrap();
+                    write!(&mut f, "{value}").unwrap();
                 } else {
-                    write!(&mut f, ", {value:?}").unwrap();
+                    write!(&mut f, ", {value}").unwrap();
                 }
             }
             f.push(')');
@@ -72,7 +72,7 @@ impl<T: Storage> Explain for Scan<'_, '_, T> {
 
 pub struct Project<'txn, 'db, T: Storage> {
     pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub exprs: Vec<planner::Expression>,
+    pub exprs: Vec<planner::Expression<T>>,
 }
 
 impl<T: Storage> Explain for Project<'_, '_, T> {
@@ -92,7 +92,7 @@ impl<T: Storage> Explain for Project<'_, '_, T> {
 
 pub struct Filter<'txn, 'db, T: Storage> {
     pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub cond: planner::Expression,
+    pub cond: planner::Expression<T>,
 }
 
 impl<T: Storage> Explain for Filter<'_, '_, T> {
@@ -104,7 +104,7 @@ impl<T: Storage> Explain for Filter<'_, '_, T> {
 
 pub struct Sort<'txn, 'db, T: Storage> {
     pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub order_by: Vec<OrderBy>,
+    pub order_by: Vec<OrderBy<T>>,
 }
 
 impl<T: Storage> Explain for Sort<'_, '_, T> {
@@ -125,8 +125,8 @@ impl<T: Storage> Explain for Sort<'_, '_, T> {
 
 pub struct Limit<'txn, 'db, T: Storage> {
     pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub limit: Option<planner::Expression>,
-    pub offset: Option<planner::Expression>,
+    pub limit: Option<planner::Expression<T>>,
+    pub offset: Option<planner::Expression<T>>,
 }
 
 impl<T: Storage> Explain for Limit<'_, '_, T> {
@@ -143,13 +143,13 @@ impl<T: Storage> Explain for Limit<'_, '_, T> {
     }
 }
 
-pub struct OrderBy {
-    pub expr: planner::Expression,
+pub struct OrderBy<T: Storage> {
+    pub expr: planner::Expression<T>,
     pub order: Order,
     pub null_order: NullOrder,
 }
 
-impl std::fmt::Display for OrderBy {
+impl<T: Storage> std::fmt::Display for OrderBy<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} {} {}", self.expr, self.order, self.null_order)
     }
@@ -407,7 +407,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
     fn bind_limit_expr(
         &self,
         expr: Option<parser::Expression>,
-    ) -> PlannerResult<Option<planner::Expression>> {
+    ) -> PlannerResult<Option<planner::Expression<T>>> {
         let Some(expr) = expr else {
             return Ok(None);
         };

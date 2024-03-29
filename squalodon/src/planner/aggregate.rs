@@ -74,18 +74,26 @@ pub enum AggregateOp {
     Passthrough,
 }
 
-#[derive(Default)]
-pub struct AggregateContext<'txn> {
+pub struct AggregateContext<'txn, T: Storage> {
     aggregate_calls: HashMap<AggregateCall, usize>,
-    bound_aggregates: Vec<BoundAggregate<'txn>>,
+    bound_aggregates: Vec<BoundAggregate<'txn, T>>,
 }
 
-impl<'txn> AggregateContext<'txn> {
+impl<T: Storage> Default for AggregateContext<'_, T> {
+    fn default() -> Self {
+        Self {
+            aggregate_calls: HashMap::new(),
+            bound_aggregates: Vec::new(),
+        }
+    }
+}
+
+impl<'txn, T: Storage> AggregateContext<'txn, T> {
     pub fn has_aggregates(&self) -> bool {
         !self.aggregate_calls.is_empty()
     }
 
-    pub fn gather_aggregates<'db, T: Storage>(
+    pub fn gather_aggregates<'db>(
         &mut self,
         planner: &Planner<'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
@@ -94,7 +102,7 @@ impl<'txn> AggregateContext<'txn> {
         self.gather_aggregates_inner(planner, source, expr, false)
     }
 
-    fn gather_aggregates_inner<'db, T: Storage>(
+    fn gather_aggregates_inner<'db>(
         &mut self,
         planner: &Planner<'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
@@ -126,63 +134,87 @@ impl<'txn> AggregateContext<'txn> {
                 args,
                 is_distinct,
             } => {
-                let function = match planner.catalog.aggregate_function(name) {
-                    Ok(func) => func,
-                    Err(CatalogError::UnknownEntry(_, _)) => return Ok(source),
+                match planner.catalog.aggregate_function(name) {
+                    Ok(function) => {
+                        if in_aggregate_args {
+                            // Nested aggregate functions are not allowed.
+                            return Err(PlannerError::AggregateNotAllowed);
+                        }
+
+                        let (plan, bound_expr) = match args {
+                            parser::FunctionArgs::Wildcard
+                                if name.eq_ignore_ascii_case("count") =>
+                            {
+                                // `count(*)` is a special case equivalent to `count(1)`.
+                                (
+                                    source,
+                                    TypedExpression {
+                                        expr: planner::Expression::Constact(1.into()),
+                                        ty: Type::Integer.into(),
+                                    },
+                                )
+                            }
+                            parser::FunctionArgs::Expressions(args) if args.len() == 1 => {
+                                let plan =
+                                    self.gather_aggregates_inner(planner, source, &args[0], true)?;
+                                ExpressionBinder::new(planner).bind(plan, args[0].clone())?
+                            }
+                            _ => return Err(PlannerError::ArityError),
+                        };
+
+                        let aggregate = AggregateCall {
+                            function_name: name.clone(),
+                            args: args.clone(),
+                            is_distinct: *is_distinct,
+                        };
+                        let std::collections::hash_map::Entry::Vacant(entry) =
+                            self.aggregate_calls.entry(aggregate)
+                        else {
+                            return Ok(plan);
+                        };
+
+                        let index = self.bound_aggregates.len();
+                        self.bound_aggregates.push(BoundAggregate {
+                            function,
+                            arg: bound_expr.expr,
+                            is_distinct: *is_distinct,
+                            result_column: planner::Column {
+                                table_name: None,
+                                column_name: expr.to_string(),
+                                ty: (function.bind)(bound_expr.ty)?,
+                            },
+                        });
+                        entry.insert(index);
+                        return Ok(plan);
+                    }
+                    Err(CatalogError::UnknownEntry(_, _)) => (),
                     Err(err) => return Err(err.into()),
-                };
-                if in_aggregate_args {
-                    // Nested aggregate functions are not allowed.
-                    return Err(PlannerError::AggregateNotAllowed);
                 }
 
-                let (plan, bound_expr) = match args {
-                    parser::FunctionArgs::Wildcard if name.eq_ignore_ascii_case("count") => {
-                        // `count(*)` is a special case equivalent to `count(1)`.
-                        (
-                            source,
-                            TypedExpression {
-                                expr: planner::Expression::Constact(1.into()),
-                                ty: Type::Integer.into(),
-                            },
-                        )
+                planner.catalog.scalar_function(name)?; // Check if the function exists
+                if *is_distinct {
+                    return Err(PlannerError::InvalidArgument);
+                }
+                match args {
+                    parser::FunctionArgs::Wildcard => Err(PlannerError::InvalidArgument),
+                    parser::FunctionArgs::Expressions(args) => {
+                        let mut plan = source;
+                        for arg in args {
+                            plan = self.gather_aggregates_inner(
+                                planner,
+                                plan,
+                                arg,
+                                in_aggregate_args,
+                            )?;
+                        }
+                        Ok(plan)
                     }
-                    parser::FunctionArgs::Expressions(args) if args.len() == 1 => {
-                        let plan = self.gather_aggregates_inner(planner, source, &args[0], true)?;
-                        ExpressionBinder::new(planner).bind(plan, args[0].clone())?
-                    }
-                    _ => return Err(PlannerError::ArityError),
-                };
-
-                let aggregate = AggregateCall {
-                    function_name: name.clone(),
-                    args: args.clone(),
-                    is_distinct: *is_distinct,
-                };
-                let std::collections::hash_map::Entry::Vacant(entry) =
-                    self.aggregate_calls.entry(aggregate)
-                else {
-                    return Ok(plan);
-                };
-
-                let index = self.bound_aggregates.len();
-                self.bound_aggregates.push(BoundAggregate {
-                    function,
-                    arg: bound_expr.expr,
-                    is_distinct: *is_distinct,
-                    result_column: planner::Column {
-                        table_name: None,
-                        column_name: expr.to_string(),
-                        ty: (function.bind)(bound_expr.ty)?,
-                    },
-                });
-                entry.insert(index);
-                Ok(plan)
+                }
             }
         }
     }
 
-    pub fn plan_aggregates<'db, T: Storage>(
+    pub fn plan_aggregates<'db>(
         &self,
         planner: &Planner<'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
@@ -276,9 +308,9 @@ struct AggregateCall {
     is_distinct: bool,
 }
 
-struct BoundAggregate<'a> {
+struct BoundAggregate<'a, T: Storage> {
     function: &'a AggregateFunction,
-    arg: planner::Expression,
+    arg: planner::Expression<T>,
     is_distinct: bool,
     result_column: planner::Column,
 }

@@ -27,6 +27,7 @@ pub type CatalogResult<T> = std::result::Result<T, CatalogError>;
 #[derive(Debug)]
 pub enum CatalogEntryKind {
     Table,
+    ScalarFunction,
     AggregateFunction,
     TableFunction,
 }
@@ -35,6 +36,7 @@ impl std::fmt::Display for CatalogEntryKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Table => "table",
+            Self::ScalarFunction => "scalar function",
             Self::AggregateFunction => "aggregate function",
             Self::TableFunction => "table function",
         })
@@ -80,6 +82,14 @@ pub enum Constraint {
     NotNull(ColumnIndex),
 }
 
+pub struct ScalarFunction<T: Storage> {
+    pub bind: ScalarBindFnPtr,
+    pub eval: ScalarEvalFnPtr<T>,
+}
+
+pub type ScalarBindFnPtr = fn(&[NullableType]) -> PlannerResult<NullableType>;
+pub type ScalarEvalFnPtr<T> = fn(&ExecutorContext<'_, '_, T>, &[Value]) -> ExecutorResult<Value>;
+
 pub struct AggregateFunction {
     pub bind: AggregateBindFnPtr,
     pub init: AggregateInitFnPtr,
@@ -103,6 +113,7 @@ pub type TableFnPtr<T> =
 
 pub struct Catalog<T: Storage> {
     next_table_id: AtomicU64,
+    scalar_functions: HashMap<&'static str, ScalarFunction<T>>,
     aggregate_functions: HashMap<&'static str, AggregateFunction>,
     table_functions: HashMap<&'static str, TableFunction<T>>,
 }
@@ -123,6 +134,7 @@ impl<T: Storage> Catalog<T> {
 
         Ok(Self {
             next_table_id: (max_table_id + 1).into(),
+            scalar_functions: builtin::scalar_function::load().collect(),
             aggregate_functions: builtin::aggregate_function::load().collect(),
             table_functions: builtin::table_function::load().collect(),
         })
@@ -214,6 +226,12 @@ impl<'txn, 'db, T: Storage> CatalogRef<'txn, 'db, T> {
             self.txn.remove(key).unwrap();
         }
         Ok(())
+    }
+
+    pub fn scalar_function(&self, name: &str) -> CatalogResult<&ScalarFunction<T>> {
+        self.catalog.scalar_functions.get(name).ok_or_else(|| {
+            CatalogError::UnknownEntry(CatalogEntryKind::ScalarFunction, name.to_owned())
+        })
     }
 
     pub fn aggregate_function(&self, name: &str) -> CatalogResult<&AggregateFunction> {

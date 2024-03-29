@@ -1,41 +1,79 @@
 use super::{aggregate::AggregateContext, Plan, PlanNode, Planner, PlannerError, PlannerResult};
 use crate::{
-    catalog::Aggregator,
+    catalog::{Aggregator, ScalarEvalFnPtr},
     executor::{ExecutorError, ExecutorResult},
-    parser::{self, BinaryOp, UnaryOp},
+    parser::{self, BinaryOp, FunctionArgs, UnaryOp},
     planner::{self, aggregate::ApplyAggregateOp},
     rows::ColumnIndex,
     types::{NullableType, Type},
-    Storage, Value,
+    CatalogError, Storage, Value,
 };
 
-#[derive(Debug, Clone)]
-pub enum Expression {
+pub enum Expression<T: Storage> {
     Constact(Value),
     ColumnRef {
         index: ColumnIndex,
     },
     Cast {
-        expr: Box<Expression>,
+        expr: Box<Expression<T>>,
         ty: Type,
     },
     UnaryOp {
         op: UnaryOp,
-        expr: Box<Expression>,
+        expr: Box<Expression<T>>,
     },
     BinaryOp {
         op: BinaryOp,
-        lhs: Box<Expression>,
-        rhs: Box<Expression>,
+        lhs: Box<Expression<T>>,
+        rhs: Box<Expression<T>>,
     },
     Like {
-        str_expr: Box<Expression>,
-        pattern: Box<Expression>,
+        str_expr: Box<Expression<T>>,
+        pattern: Box<Expression<T>>,
         case_insensitive: bool,
+    },
+    Function {
+        eval: ScalarEvalFnPtr<T>,
+        args: Vec<Expression<T>>,
     },
 }
 
-impl std::fmt::Display for Expression {
+impl<T: Storage> Clone for Expression<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Constact(value) => Self::Constact(value.clone()),
+            Self::ColumnRef { index } => Self::ColumnRef { index: *index },
+            Self::Cast { expr, ty } => Self::Cast {
+                expr: expr.clone(),
+                ty: *ty,
+            },
+            Self::UnaryOp { op, expr } => Self::UnaryOp {
+                op: *op,
+                expr: expr.clone(),
+            },
+            Self::BinaryOp { op, lhs, rhs } => Self::BinaryOp {
+                op: *op,
+                lhs: lhs.clone(),
+                rhs: rhs.clone(),
+            },
+            Self::Like {
+                str_expr,
+                pattern,
+                case_insensitive,
+            } => Self::Like {
+                str_expr: str_expr.clone(),
+                pattern: pattern.clone(),
+                case_insensitive: *case_insensitive,
+            },
+            Self::Function { eval, args } => Self::Function {
+                eval: *eval,
+                args: args.clone(),
+            },
+        }
+    }
+}
+
+impl<T: Storage> std::fmt::Display for Expression<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Constact(value) => write!(f, "{value:?}"),
@@ -54,16 +92,26 @@ impl std::fmt::Display for Expression {
                 f.write_str(if *case_insensitive { "ILIKE" } else { "LIKE" })?;
                 write!(f, " {pattern})")
             }
+            Self::Function { eval, args } => {
+                write!(f, "({eval:?})(")?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{arg}")?;
+                }
+                f.write_str(")")
+            }
         }
     }
 }
 
-pub struct TypedExpression {
-    pub expr: planner::Expression,
+pub struct TypedExpression<T: Storage> {
+    pub expr: planner::Expression<T>,
     pub ty: NullableType,
 }
 
-impl From<Value> for TypedExpression {
+impl<T: Storage> From<Value> for TypedExpression<T> {
     fn from(value: Value) -> Self {
         let ty = value.ty();
         Self {
@@ -73,11 +121,11 @@ impl From<Value> for TypedExpression {
     }
 }
 
-impl TypedExpression {
-    pub fn expect_type<T: Into<NullableType>>(
+impl<T: Storage> TypedExpression<T> {
+    pub fn expect_type<I: Into<NullableType>>(
         self,
-        expected: T,
-    ) -> PlannerResult<planner::Expression> {
+        expected: I,
+    ) -> PlannerResult<planner::Expression<T>> {
         if self.ty.is_compatible_with(expected.into()) {
             Ok(self.expr)
         } else {
@@ -91,21 +139,21 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         &self,
         source: Plan<'txn, 'db, T>,
         expr: parser::Expression,
-    ) -> PlannerResult<(Plan<'txn, 'db, T>, TypedExpression)> {
+    ) -> PlannerResult<(Plan<'txn, 'db, T>, TypedExpression<T>)> {
         ExpressionBinder::new(self).bind(source, expr)
     }
 
     pub fn bind_expr_without_source(
         &self,
         expr: parser::Expression,
-    ) -> PlannerResult<TypedExpression> {
+    ) -> PlannerResult<TypedExpression<T>> {
         ExpressionBinder::new(self).bind_without_source(expr)
     }
 }
 
 pub struct ExpressionBinder<'a, 'txn, 'db, T: Storage> {
     planner: &'a Planner<'txn, 'db, T>,
-    aggregate_ctx: Option<AggregateContext<'txn>>,
+    aggregate_ctx: Option<AggregateContext<'txn, T>>,
 }
 
 impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
@@ -116,7 +164,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
         }
     }
 
-    pub fn with_aggregate_context(self, aggregate_ctx: AggregateContext<'txn>) -> Self {
+    pub fn with_aggregate_context(self, aggregate_ctx: AggregateContext<'txn, T>) -> Self {
         Self {
             aggregate_ctx: Some(aggregate_ctx),
             ..self
@@ -127,7 +175,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
         &self,
         source: Plan<'txn, 'db, T>,
         expr: parser::Expression,
-    ) -> PlannerResult<(Plan<'txn, 'db, T>, TypedExpression)> {
+    ) -> PlannerResult<(Plan<'txn, 'db, T>, TypedExpression<T>)> {
         match expr {
             parser::Expression::Constant(value) => Ok((source, value.into())),
             parser::Expression::ColumnRef(column_ref) => {
@@ -266,20 +314,47 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                 args,
                 is_distinct,
             } => {
-                // We currently assume all functions in expressions are
-                // aggregate functions.
-                self.planner.catalog.aggregate_function(&name)?; // Check if the function exists.
-                let Some(aggregate_ctx) = &self.aggregate_ctx else {
-                    return Err(PlannerError::AggregateNotAllowed);
+                match self.planner.catalog.aggregate_function(&name) {
+                    Ok(_) => {
+                        let Some(aggregate_ctx) = &self.aggregate_ctx else {
+                            return Err(PlannerError::AggregateNotAllowed);
+                        };
+                        let (index, column) = aggregate_ctx
+                            .resolve_aggregate(name, args, is_distinct)
+                            .expect("aggregate function should have been gathered in earlier step");
+                        let expr = TypedExpression {
+                            expr: planner::Expression::ColumnRef { index },
+                            ty: column.ty,
+                        };
+                        return Ok((source, expr));
+                    }
+                    Err(CatalogError::UnknownEntry(_, _)) => (),
+                    Err(e) => return Err(e.into()),
+                }
+
+                let function = self.planner.catalog.scalar_function(&name)?;
+                if is_distinct {
+                    return Err(PlannerError::InvalidArgument);
+                }
+                let args = match args {
+                    FunctionArgs::Expressions(args) => args,
+                    FunctionArgs::Wildcard => return Err(PlannerError::InvalidArgument),
                 };
-                let (index, column) = aggregate_ctx
-                    .resolve_aggregate(name, args, is_distinct)
-                    .expect("aggregate function should have been gathered in earlier step");
-                let expr = TypedExpression {
-                    expr: planner::Expression::ColumnRef { index },
-                    ty: column.ty,
+                let mut arg_exprs = Vec::with_capacity(args.len());
+                let mut arg_types = Vec::with_capacity(args.len());
+                let mut plan = source;
+                for arg in args {
+                    let (new_plan, TypedExpression { expr, ty }) = self.bind(plan, arg)?;
+                    plan = new_plan;
+                    arg_exprs.push(expr);
+                    arg_types.push(ty);
+                }
+                let ty = (function.bind)(&arg_types)?;
+                let expr = planner::Expression::Function {
+                    eval: function.eval,
+                    args: arg_exprs,
                 };
-                Ok((source, expr))
+                Ok((plan, TypedExpression { expr, ty }))
             }
             parser::Expression::ScalarSubquery(select) => {
                 /// An aggregator that asserts that the subquery returns
@@ -385,7 +460,10 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
         }
     }
 
-    pub fn bind_without_source(&self, expr: parser::Expression) -> PlannerResult<TypedExpression> {
+    pub fn bind_without_source(
+        &self,
+        expr: parser::Expression,
+    ) -> PlannerResult<TypedExpression<T>> {
         self.bind(Plan::empty_source(), expr).map(|(_, e)| e)
     }
 }
@@ -395,7 +473,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
 fn attach_subquery<'txn, 'db, T: Storage>(
     source: Plan<'txn, 'db, T>,
     subquery: Plan<'txn, 'db, T>,
-) -> (Plan<'txn, 'db, T>, TypedExpression) {
+) -> (Plan<'txn, 'db, T>, TypedExpression<T>) {
     let subquery_column_index = ColumnIndex(source.schema.0.len());
     let subquery_column_type = subquery.schema.0[0].ty;
 

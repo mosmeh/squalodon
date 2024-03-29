@@ -96,16 +96,16 @@ impl<E: Into<ExecutorError>> IntoOutput for Option<std::result::Result<Row, E>> 
 }
 
 pub struct ExecutorContext<'txn, 'db, T: Storage> {
-    catalog: CatalogRef<'txn, 'db, T>,
+    catalog: &'txn CatalogRef<'txn, 'db, T>,
 }
 
 impl<'txn, 'db: 'txn, T: Storage> ExecutorContext<'txn, 'db, T> {
-    pub fn new(catalog: CatalogRef<'txn, 'db, T>) -> Self {
+    pub fn new(catalog: &'txn CatalogRef<'txn, 'db, T>) -> Self {
         Self { catalog }
     }
 
     pub fn catalog(&self) -> &CatalogRef<'txn, 'db, T> {
-        &self.catalog
+        self.catalog
     }
 }
 
@@ -133,7 +133,7 @@ impl<T: Storage> Iterator for Executor<'_, '_, T> {
 }
 
 enum ExecutorNode<'txn, 'db, T: Storage> {
-    Values(Values),
+    Values(Values<'txn>),
     SeqScan(SeqScan<'txn>),
     FunctionScan(FunctionScan<'txn, 'db, T>),
     Project(Project<'txn, 'db, T>),
@@ -160,7 +160,7 @@ impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
                     .into_iter()
                     .map(|row| vec![Expression::Constact(Value::Text(row))])
                     .collect();
-                Self::Values(Values::new(rows))
+                Self::Values(Values::new(ctx, rows))
             }
             PlanNode::CreateTable(create_table) => {
                 ctx.catalog().create_table(
@@ -174,28 +174,30 @@ impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
                 ctx.catalog().drop_table(&drop_table.name)?;
                 Self::Values(Values::one_empty_row())
             }
-            PlanNode::Values(planner::Values { rows }) => Self::Values(Values::new(rows)),
+            PlanNode::Values(planner::Values { rows }) => Self::Values(Values::new(ctx, rows)),
             PlanNode::Scan(planner::Scan::SeqScan { table }) => Self::SeqScan(SeqScan::new(table)),
             PlanNode::Scan(planner::Scan::FunctionScan { source, fn_ptr }) => {
                 let source = Self::new(ctx, *source)?;
                 Self::FunctionScan(FunctionScan::new(ctx, source, fn_ptr))
             }
             PlanNode::Project(planner::Project { source, exprs }) => Self::Project(Project {
+                ctx,
                 source: Self::new(ctx, *source)?.into(),
                 exprs,
             }),
             PlanNode::Filter(planner::Filter { source, cond }) => Self::Filter(Filter {
+                ctx,
                 source: Self::new(ctx, *source)?.into(),
                 cond,
             }),
             PlanNode::Sort(planner::Sort { source, order_by }) => {
-                Self::Sort(Sort::new(Self::new(ctx, *source)?, order_by)?)
+                Self::Sort(Sort::new(ctx, Self::new(ctx, *source)?, order_by)?)
             }
             PlanNode::Limit(planner::Limit {
                 source,
                 limit,
                 offset,
-            }) => Self::Limit(Limit::new(Self::new(ctx, *source)?, limit, offset)?),
+            }) => Self::Limit(Limit::new(ctx, Self::new(ctx, *source)?, limit, offset)?),
             PlanNode::CrossProduct(planner::CrossProduct { left, right }) => Self::CrossProduct(
                 CrossProduct::new(Self::new(ctx, *left)?, Self::new(ctx, *right)?)?,
             ),

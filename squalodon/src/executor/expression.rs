@@ -1,29 +1,45 @@
-use super::ExecutorResult;
+use super::{ExecutorContext, ExecutorResult};
 use crate::{
     parser::{BinaryOp, UnaryOp},
     planner::Expression,
+    storage::Storage,
     ExecutorError, Row, Value,
 };
 
-impl Expression {
-    pub fn eval(&self, row: &Row) -> ExecutorResult<Value> {
+impl<T: Storage> Expression<T> {
+    pub fn eval(&self, ctx: &ExecutorContext<T>, row: &Row) -> ExecutorResult<Value> {
         match self {
             Self::Constact(v) => Ok(v.clone()),
             Self::ColumnRef { index } => Ok(row[index].clone()),
-            Self::Cast { expr, ty } => expr.eval(row)?.cast(*ty).ok_or(ExecutorError::TypeError),
-            Self::UnaryOp { op, expr } => eval_unary_op(*op, row, expr),
-            Self::BinaryOp { op, lhs, rhs } => eval_binary_op(*op, row, lhs, rhs),
+            Self::Cast { expr, ty } => expr
+                .eval(ctx, row)?
+                .cast(*ty)
+                .ok_or(ExecutorError::TypeError),
+            Self::UnaryOp { op, expr } => eval_unary_op(ctx, *op, row, expr),
+            Self::BinaryOp { op, lhs, rhs } => eval_binary_op(ctx, *op, row, lhs, rhs),
             Self::Like {
                 str_expr,
                 pattern,
                 case_insensitive,
-            } => eval_like(row, str_expr, pattern, *case_insensitive),
+            } => eval_like(ctx, row, str_expr, pattern, *case_insensitive),
+            Self::Function { eval, args } => {
+                let args: Vec<_> = args
+                    .iter()
+                    .map(|arg| arg.eval(ctx, row))
+                    .collect::<ExecutorResult<_>>()?;
+                eval(ctx, &args)
+            }
         }
     }
 }
 
-fn eval_unary_op(op: UnaryOp, row: &Row, expr: &Expression) -> ExecutorResult<Value> {
-    let expr = expr.eval(row)?;
+fn eval_unary_op<T: Storage>(
+    ctx: &ExecutorContext<T>,
+    op: UnaryOp,
+    row: &Row,
+    expr: &Expression<T>,
+) -> ExecutorResult<Value> {
+    let expr = expr.eval(ctx, row)?;
     match (op, expr) {
         (UnaryOp::Plus, Value::Integer(v)) => Ok(Value::Integer(v)),
         (UnaryOp::Plus, Value::Real(v)) => Ok(Value::Real(v)),
@@ -34,13 +50,14 @@ fn eval_unary_op(op: UnaryOp, row: &Row, expr: &Expression) -> ExecutorResult<Va
     }
 }
 
-fn eval_binary_op(
+fn eval_binary_op<T: Storage>(
+    ctx: &ExecutorContext<T>,
     op: BinaryOp,
     row: &Row,
-    lhs: &Expression,
-    rhs: &Expression,
+    lhs: &Expression<T>,
+    rhs: &Expression<T>,
 ) -> ExecutorResult<Value> {
-    let lhs = lhs.eval(row)?;
+    let lhs = lhs.eval(ctx, row)?;
     if lhs == Value::Null {
         return Ok(Value::Null);
     }
@@ -49,7 +66,7 @@ fn eval_binary_op(
         (BinaryOp::Or, Value::Boolean(true)) => return Ok(Value::Boolean(true)),
         _ => (),
     }
-    let rhs = rhs.eval(row)?;
+    let rhs = rhs.eval(ctx, row)?;
     if rhs == Value::Null {
         return Ok(Value::Null);
     }
@@ -121,16 +138,17 @@ fn eval_binary_op_real(op: BinaryOp, lhs: f64, rhs: f64) -> Value {
     Value::Real(f(lhs, rhs))
 }
 
-fn eval_like(
+fn eval_like<T: Storage>(
+    ctx: &ExecutorContext<T>,
     row: &Row,
-    str_expr: &Expression,
-    pattern: &Expression,
+    str_expr: &Expression<T>,
+    pattern: &Expression<T>,
     case_insensitive: bool,
 ) -> ExecutorResult<Value> {
-    let Value::Text(string) = str_expr.eval(row)? else {
+    let Value::Text(string) = str_expr.eval(ctx, row)? else {
         return Err(ExecutorError::TypeError);
     };
-    let Value::Text(pattern) = pattern.eval(row)? else {
+    let Value::Text(pattern) = pattern.eval(ctx, row)? else {
         return Err(ExecutorError::TypeError);
     };
     let mut regex = String::new();
