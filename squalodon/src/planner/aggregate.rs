@@ -13,42 +13,48 @@ use std::collections::HashMap;
 pub enum Aggregate<'txn, 'db, T: Storage> {
     Ungrouped {
         source: Box<PlanNode<'txn, 'db, T>>,
-        init_functions: Vec<AggregateInitFnPtr>,
+        column_ops: Vec<ApplyAggregateOp>,
     },
     Hash {
         source: Box<PlanNode<'txn, 'db, T>>,
-        aggregate_columns: Vec<AggregateColumn>,
+        column_ops: Vec<AggregateOp>,
     },
 }
 
 impl<T: Storage> Explain for Aggregate<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
         match self {
-            Self::Ungrouped {
-                source,
-                init_functions,
-            } => {
-                write!(
-                    visitor,
-                    "UngroupedAggregate #columns={}",
-                    init_functions.len()
-                );
-                source.visit(visitor);
-            }
-            Self::Hash {
-                source,
-                aggregate_columns,
-            } => {
-                let mut s = "HashAggregate ".to_owned();
-                for (i, column) in aggregate_columns.iter().enumerate() {
+            Self::Ungrouped { source, column_ops } => {
+                let mut s = "UngroupedAggregate ".to_owned();
+                for (i, aggregation) in column_ops.iter().enumerate() {
                     if i > 0 {
                         s.push_str(", ");
                     }
-                    s.push_str(match column {
-                        AggregateColumn::Aggregated(_) => "Aggregated",
-                        AggregateColumn::GroupBy => "GroupBy",
-                        AggregateColumn::NonAggregated => "NonAggregated",
+                    s.push_str(if aggregation.is_distinct {
+                        "Distinct"
+                    } else {
+                        "NonDistinct"
                     });
+                }
+                visitor.write_str(&s);
+                source.visit(visitor);
+            }
+            Self::Hash { source, column_ops } => {
+                let mut s = "HashAggregate ".to_owned();
+                for (i, op) in column_ops.iter().enumerate() {
+                    if i > 0 {
+                        s.push_str(", ");
+                    }
+                    match op {
+                        AggregateOp::GroupBy => s.push_str("GroupBy"),
+                        AggregateOp::ApplyAggregate(ApplyAggregateOp { is_distinct, .. }) => {
+                            s.push_str("ApplyAggregate");
+                            if *is_distinct {
+                                s.push_str("(Distinct)");
+                            }
+                        }
+                        AggregateOp::Passthrough => s.push_str("Passthrough"),
+                    }
                 }
                 visitor.write_str(&s);
                 source.visit(visitor);
@@ -57,10 +63,15 @@ impl<T: Storage> Explain for Aggregate<'_, '_, T> {
     }
 }
 
-pub enum AggregateColumn {
-    Aggregated(AggregateInitFnPtr),
+pub struct ApplyAggregateOp {
+    pub init: AggregateInitFnPtr,
+    pub is_distinct: bool,
+}
+
+pub enum AggregateOp {
     GroupBy,
-    NonAggregated,
+    ApplyAggregate(ApplyAggregateOp),
+    Passthrough,
 }
 
 #[derive(Default)]
@@ -103,7 +114,11 @@ impl<'txn> AggregateContext<'txn> {
                 let plan = self.gather_aggregates_inner(planner, source, lhs, in_aggregate_args)?;
                 self.gather_aggregates_inner(planner, plan, rhs, in_aggregate_args)
             }
-            parser::Expression::Function { ref name, ref args } => {
+            parser::Expression::Function {
+                name,
+                args,
+                is_distinct,
+            } => {
                 let function = match planner.catalog.aggregate_function(name) {
                     Ok(func) => func,
                     Err(CatalogError::UnknownEntry(_, _)) => return Ok(source),
@@ -135,6 +150,7 @@ impl<'txn> AggregateContext<'txn> {
                 let aggregate = AggregateCall {
                     function_name: name.clone(),
                     args: args.clone(),
+                    is_distinct: *is_distinct,
                 };
                 let std::collections::hash_map::Entry::Vacant(entry) =
                     self.aggregate_calls.entry(aggregate)
@@ -146,6 +162,7 @@ impl<'txn> AggregateContext<'txn> {
                 self.bound_aggregates.push(BoundAggregate {
                     function,
                     arg: bound_expr.expr,
+                    is_distinct: *is_distinct,
                     result_column: planner::Column {
                         table_name: None,
                         column_name: expr.to_string(),
@@ -199,26 +216,26 @@ impl<'txn> AggregateContext<'txn> {
             exprs,
         });
 
+        let column_ops = self
+            .bound_aggregates
+            .iter()
+            .map(|bound_aggregate| ApplyAggregateOp {
+                init: bound_aggregate.function.init,
+                is_distinct: bound_aggregate.is_distinct,
+            });
         let node = if group_by.is_empty() {
-            let init_functions = self
-                .bound_aggregates
-                .iter()
-                .map(|bound_aggregate| bound_aggregate.function.init)
-                .collect();
             Aggregate::Ungrouped {
                 source: Box::new(node),
-                init_functions,
+                column_ops: column_ops.collect(),
             }
         } else {
-            let aggregate_columns = self
-                .bound_aggregates
-                .iter()
-                .map(|bound_aggregate| AggregateColumn::Aggregated(bound_aggregate.function.init))
-                .chain(group_by.iter().map(|_| AggregateColumn::GroupBy))
+            let column_ops = column_ops
+                .map(AggregateOp::ApplyAggregate)
+                .chain(group_by.iter().map(|_| AggregateOp::GroupBy))
                 .collect();
             Aggregate::Hash {
                 source: Box::new(node),
-                aggregate_columns,
+                column_ops,
             }
         };
         Ok(Plan {
@@ -231,10 +248,12 @@ impl<'txn> AggregateContext<'txn> {
         &self,
         function_name: String,
         args: parser::FunctionArgs,
+        is_distinct: bool,
     ) -> Option<(ColumnIndex, &planner::Column)> {
         let index = self.aggregate_calls.get(&AggregateCall {
             function_name,
             args,
+            is_distinct,
         });
         index.map(|&index| {
             let bound_aggregate = &self.bound_aggregates[index];
@@ -247,10 +266,12 @@ impl<'txn> AggregateContext<'txn> {
 struct AggregateCall {
     function_name: String,
     args: parser::FunctionArgs,
+    is_distinct: bool,
 }
 
 struct BoundAggregate<'a> {
     function: &'a AggregateFunction,
     arg: planner::Expression,
+    is_distinct: bool,
     result_column: planner::Column,
 }

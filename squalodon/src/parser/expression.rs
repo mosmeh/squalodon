@@ -22,6 +22,7 @@ pub enum Expression {
     Function {
         name: String,
         args: FunctionArgs,
+        is_distinct: bool,
     },
     ScalarSubquery(Box<Select>),
     Exists(Box<Select>),
@@ -36,7 +37,18 @@ impl std::fmt::Display for Expression {
             Self::Cast { expr, ty } => write!(f, "CAST({expr} AS {ty})"),
             Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
             Self::BinaryOp { op, lhs, rhs } => write!(f, "({lhs} {op} {rhs})"),
-            Self::Function { name, args } => write!(f, "{name}({args})"),
+            Self::Function {
+                name,
+                args,
+                is_distinct,
+            } => {
+                write!(f, "{name}(")?;
+                if *is_distinct {
+                    f.write_str("DISTINCT ")?;
+                }
+                args.fmt(f)?;
+                f.write_str(")")
+            }
             Self::ScalarSubquery(select) => write!(f, "({select})"),
             Self::Exists(select) => write!(f, "EXISTS ({select})"),
             Self::Parameter(i) => write!(f, "${i}"),
@@ -239,15 +251,22 @@ impl Parser<'_> {
             Token::Identifier(ident) => match self.lexer.peek()? {
                 Token::LeftParen => {
                     self.lexer.consume()?;
-                    let args = if self.lexer.consume_if_eq(Token::Asterisk)? {
-                        FunctionArgs::Wildcard
-                    } else if self.lexer.consume_if_eq(Token::RightParen)? {
+                    let is_distinct = self.lexer.consume_if_eq(Token::Distinct)?;
+                    let args = if self.lexer.consume_if_eq(Token::RightParen)? {
                         FunctionArgs::Expressions(Vec::new())
+                    } else if self.lexer.consume_if_eq(Token::Asterisk)? {
+                        self.expect(Token::RightParen)?;
+                        FunctionArgs::Wildcard
                     } else {
-                        FunctionArgs::Expressions(self.parse_comma_separated(Self::parse_expr)?)
+                        let exprs = self.parse_comma_separated(Self::parse_expr)?;
+                        self.expect(Token::RightParen)?;
+                        FunctionArgs::Expressions(exprs)
                     };
-                    self.expect(Token::RightParen)?;
-                    Expression::Function { name: ident, args }
+                    Expression::Function {
+                        name: ident,
+                        args,
+                        is_distinct,
+                    }
                 }
                 Token::Dot => {
                     self.lexer.consume()?;

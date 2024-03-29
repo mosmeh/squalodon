@@ -196,20 +196,16 @@ impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
             PlanNode::CrossProduct(planner::CrossProduct { left, right }) => Self::CrossProduct(
                 CrossProduct::new(Self::new(ctx, *left)?, Self::new(ctx, *right)?)?,
             ),
-            PlanNode::Aggregate(planner::Aggregate::Ungrouped {
-                source,
-                init_functions,
-            }) => Self::UngroupedAggregate(UngroupedAggregate::new(
-                Self::new(ctx, *source)?,
-                &init_functions,
-            )?),
+            PlanNode::Aggregate(planner::Aggregate::Ungrouped { source, column_ops }) => {
+                Self::UngroupedAggregate(UngroupedAggregate::new(
+                    Self::new(ctx, *source)?,
+                    column_ops,
+                )?)
+            }
             PlanNode::Aggregate(planner::Aggregate::Hash {
                 source,
-                aggregate_columns,
-            }) => Self::HashAggregate(HashAggregate::new(
-                Self::new(ctx, *source)?,
-                aggregate_columns,
-            )?),
+                column_ops: column_roles,
+            }) => Self::HashAggregate(HashAggregate::new(Self::new(ctx, *source)?, column_roles)?),
             PlanNode::Insert(planner::Insert { source, table }) => {
                 Self::Insert(Insert::new(Box::new(Self::new(ctx, *source)?), table)?)
             }

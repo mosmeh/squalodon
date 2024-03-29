@@ -3,7 +3,7 @@ use crate::{
     catalog::Aggregator,
     executor::{ExecutorError, ExecutorResult},
     parser::{self, BinaryOp, UnaryOp},
-    planner,
+    planner::{self, aggregate::ApplyAggregateOp},
     rows::ColumnIndex,
     types::{NullableType, Type},
     Storage, Value,
@@ -202,11 +202,25 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                 };
                 Ok((plan, TypedExpression { expr, ty }))
             }
-            parser::Expression::Function { name, args } => {
+            parser::Expression::Function {
+                name,
+                args,
+                is_distinct,
+            } => {
                 // We currently assume all functions in expressions are
                 // aggregate functions.
-                self.planner.catalog.aggregate_function(&name)?;
-                Ok((source, self.resolve_aggregate(name, args)?))
+                self.planner.catalog.aggregate_function(&name)?; // Check if the function exists.
+                let Some(aggregate_ctx) = &self.aggregate_ctx else {
+                    return Err(PlannerError::AggregateNotAllowed);
+                };
+                let (index, column) = aggregate_ctx
+                    .resolve_aggregate(name, args, is_distinct)
+                    .expect("aggregate function should have been gathered in earlier step");
+                let expr = TypedExpression {
+                    expr: planner::Expression::ColumnRef { index },
+                    ty: column.ty,
+                };
+                Ok((source, expr))
             }
             parser::Expression::ScalarSubquery(select) => {
                 /// An aggregator that asserts that the subquery returns
@@ -231,10 +245,6 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                     }
                 }
 
-                fn init_agg() -> Box<dyn Aggregator> {
-                    Box::<AssertSingleRow>::default()
-                }
-
                 let column_name = select.to_string();
                 let subquery_plan = self.planner.plan_select(*select)?;
                 let [subquery_result_column] = subquery_plan
@@ -247,7 +257,10 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                 let subquery_plan = Plan {
                     node: PlanNode::Aggregate(planner::Aggregate::Ungrouped {
                         source: Box::new(subquery_plan.node),
-                        init_functions: vec![init_agg],
+                        column_ops: vec![ApplyAggregateOp {
+                            init: || Box::<AssertSingleRow>::default(),
+                            is_distinct: false,
+                        }],
                     }),
                     schema: vec![planner::Column {
                         table_name: None,
@@ -277,10 +290,6 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                     }
                 }
 
-                fn init_agg() -> Box<dyn Aggregator> {
-                    Box::<Exists>::default()
-                }
-
                 let column_name = format!("EXISTS ({select})");
                 let subquery_plan = self.planner.plan_select(*select)?;
 
@@ -293,7 +302,10 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                 let subquery_plan = Plan {
                     node: PlanNode::Aggregate(planner::Aggregate::Ungrouped {
                         source: Box::new(subquery_node),
-                        init_functions: vec![init_agg],
+                        column_ops: vec![ApplyAggregateOp {
+                            init: || Box::<Exists>::default(),
+                            is_distinct: false,
+                        }],
                     }),
                     schema: vec![planner::Column {
                         table_name: None,
@@ -316,21 +328,6 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
 
     pub fn bind_without_source(&self, expr: parser::Expression) -> PlannerResult<TypedExpression> {
         self.bind(Plan::empty_source(), expr).map(|(_, e)| e)
-    }
-
-    fn resolve_aggregate(
-        &self,
-        name: String,
-        args: parser::FunctionArgs,
-    ) -> PlannerResult<TypedExpression> {
-        let Some(aggregate_ctx) = &self.aggregate_ctx else {
-            return Err(PlannerError::AggregateNotAllowed);
-        };
-        let (index, column) = aggregate_ctx.resolve_aggregate(name, args).unwrap();
-        Ok(TypedExpression {
-            expr: planner::Expression::ColumnRef { index },
-            ty: column.ty,
-        })
     }
 }
 

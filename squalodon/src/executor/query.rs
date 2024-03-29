@@ -1,13 +1,13 @@
 use super::{ExecutorContext, ExecutorNode, ExecutorResult, IntoOutput, Node, NodeError, Output};
 use crate::{
-    catalog::{AggregateInitFnPtr, Aggregator, TableFnPtr},
+    catalog::{Aggregator, TableFnPtr},
     memcomparable::MemcomparableSerde,
-    planner::{AggregateColumn, Expression, OrderBy},
+    planner::{AggregateOp, ApplyAggregateOp, Expression, OrderBy},
     rows::ColumnIndex,
     storage::{self, Table},
     ExecutorError, Row, Storage, Value,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
 pub struct Values {
@@ -266,18 +266,23 @@ pub struct UngroupedAggregate {
 impl UngroupedAggregate {
     pub fn new<T: Storage>(
         source: ExecutorNode<'_, '_, T>,
-        init_functions: &[AggregateInitFnPtr],
+        column_ops: Vec<ApplyAggregateOp>,
     ) -> ExecutorResult<Self> {
-        let mut aggs: Vec<_> = init_functions.iter().map(|init| init()).collect();
+        let mut aggregators: Vec<_> = column_ops.iter().map(GroupAggregator::new).collect();
         for row in source {
             let row = row?;
-            assert_eq!(row.0.len(), aggs.len());
-            for (agg, value) in aggs.iter_mut().zip(&row.0) {
-                agg.update(value)?;
+            assert!(row.0.len() >= aggregators.len());
+            for (aggregator, value) in aggregators.iter_mut().zip(&row.0) {
+                aggregator.update(value)?;
             }
         }
-        let row = Row(aggs.into_iter().map(|agg| agg.finish()).collect());
-        Ok(Self { row: Some(row) })
+        let columns = aggregators
+            .into_iter()
+            .map(GroupAggregator::finish)
+            .collect();
+        Ok(Self {
+            row: Some(Row(columns)),
+        })
     }
 }
 
@@ -294,21 +299,23 @@ pub struct HashAggregate {
 impl HashAggregate {
     pub fn new<T: Storage>(
         source: ExecutorNode<'_, '_, T>,
-        columns: Vec<AggregateColumn>,
+        column_ops: Vec<AggregateOp>,
     ) -> ExecutorResult<Self> {
         struct Group {
-            aggregators: Vec<Box<dyn Aggregator>>,
+            aggregators: Vec<GroupAggregator>,
             non_aggregated: Vec<Value>,
         }
 
-        let mut aggregates = Vec::new();
         let mut group_by = Vec::new();
+        let mut aggregated = Vec::new();
         let mut non_aggregated = Vec::new();
-        for (i, column) in columns.iter().enumerate() {
-            match column {
-                AggregateColumn::Aggregated(init) => aggregates.push((ColumnIndex(i), init)),
-                AggregateColumn::GroupBy => group_by.push(ColumnIndex(i)),
-                AggregateColumn::NonAggregated => non_aggregated.push(ColumnIndex(i)),
+        for (i, op) in column_ops.iter().enumerate() {
+            match op {
+                AggregateOp::GroupBy => group_by.push(ColumnIndex(i)),
+                AggregateOp::ApplyAggregate(aggregation) => {
+                    aggregated.push((ColumnIndex(i), aggregation));
+                }
+                AggregateOp::Passthrough => non_aggregated.push(ColumnIndex(i)),
             }
         }
 
@@ -316,37 +323,41 @@ impl HashAggregate {
         let mut groups = HashMap::new();
         for row in source {
             let row = row?;
-            assert_eq!(row.0.len(), columns.len());
+            assert!(row.0.len() >= column_ops.len());
             let mut key = Vec::new();
             for column_index in &group_by {
                 serde.serialize_into(&row[column_index], &mut key);
             }
             let group = groups.entry(key).or_insert_with(|| Group {
-                aggregators: aggregates.iter().map(|(_, init)| init()).collect(),
+                aggregators: aggregated
+                    .iter()
+                    .map(|(_, op)| GroupAggregator::new(op))
+                    .collect(),
                 non_aggregated: Vec::with_capacity(non_aggregated.len()),
             });
-            for (aggregator, (column_index, _)) in group.aggregators.iter_mut().zip(&aggregates) {
-                aggregator.update(&row[column_index])?;
+            for (aggregator, (index, _)) in group.aggregators.iter_mut().zip(&aggregated) {
+                aggregator.update(&row[index])?;
             }
             for index in &non_aggregated {
                 group.non_aggregated.push(row[index].clone());
             }
         }
         let rows = groups.into_iter().map(move |(key, group)| {
-            let mut aggregator_iter = group.aggregators.into_iter().map(|agg| agg.finish());
             let mut group_by_iter = serde.deserialize_seq_from(&key);
+            let mut aggregator_iter = group.aggregators.into_iter().map(GroupAggregator::finish);
             let mut non_aggregated_iter = group.non_aggregated.into_iter();
-            let mut row = Vec::with_capacity(columns.len());
-            for column in &columns {
-                let value = match column {
-                    AggregateColumn::Aggregated(_) => aggregator_iter.next(),
-                    AggregateColumn::GroupBy => group_by_iter.next(),
-                    AggregateColumn::NonAggregated => non_aggregated_iter.next(),
-                }
-                .unwrap();
-                row.push(value);
-            }
-            Row(row)
+            let columns = column_ops
+                .iter()
+                .map(|op| {
+                    match op {
+                        AggregateOp::GroupBy => group_by_iter.next(),
+                        AggregateOp::ApplyAggregate(_) => aggregator_iter.next(),
+                        AggregateOp::Passthrough => non_aggregated_iter.next(),
+                    }
+                    .unwrap()
+                })
+                .collect();
+            Row(columns)
         });
         Ok(Self {
             rows: Box::new(rows),
@@ -357,5 +368,32 @@ impl HashAggregate {
 impl Node for HashAggregate {
     fn next_row(&mut self) -> Output {
         self.rows.next().into_output()
+    }
+}
+
+struct GroupAggregator {
+    aggregator: Box<dyn Aggregator>,
+    dedup_set: Option<HashSet<Value>>,
+}
+
+impl GroupAggregator {
+    fn new(aggregation: &ApplyAggregateOp) -> Self {
+        Self {
+            aggregator: (aggregation.init)(),
+            dedup_set: aggregation.is_distinct.then(HashSet::new),
+        }
+    }
+
+    fn update(&mut self, value: &Value) -> ExecutorResult<()> {
+        if let Some(set) = &mut self.dedup_set {
+            if !set.insert(value.clone()) {
+                return Ok(());
+            }
+        }
+        self.aggregator.update(value)
+    }
+
+    fn finish(self) -> Value {
+        self.aggregator.finish()
     }
 }

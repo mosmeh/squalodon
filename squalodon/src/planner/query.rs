@@ -305,9 +305,9 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         }
         let node = match distinct {
             Some(Distinct { on: Some(on) }) => {
-                let aggregate_columns = (0..columns.len())
-                    .map(|_| planner::AggregateColumn::NonAggregated)
-                    .chain((0..on.len()).map(|_| planner::AggregateColumn::GroupBy))
+                let column_ops = (0..columns.len())
+                    .map(|_| planner::AggregateOp::Passthrough)
+                    .chain((0..on.len()).map(|_| planner::AggregateOp::GroupBy))
                     .collect();
                 for expr in on {
                     let (new_plan, TypedExpression { expr, .. }) = expr_binder.bind(plan, expr)?;
@@ -320,7 +320,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
                 });
                 let node = PlanNode::Aggregate(planner::Aggregate::Hash {
                     source: Box::new(node),
-                    aggregate_columns,
+                    column_ops,
                 });
                 PlanNode::Project(planner::Project {
                     source: Box::new(node),
@@ -338,9 +338,9 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
                 });
                 PlanNode::Aggregate(planner::Aggregate::Hash {
                     source: Box::new(node),
-                    aggregate_columns: columns
+                    column_ops: columns
                         .iter()
-                        .map(|_| planner::AggregateColumn::GroupBy)
+                        .map(|_| planner::AggregateOp::GroupBy)
                         .collect(),
                 })
             }
