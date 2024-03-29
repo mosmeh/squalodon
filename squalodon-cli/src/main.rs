@@ -9,14 +9,18 @@ use rustyline::{
     highlight::Highlighter,
     hint::Hinter,
     validate::Validator,
-    Helper,
+    Editor, Helper,
 };
 use squalodon::{
     lexer::{is_valid_identifier_char, LexerError, SegmentKind, Segmenter},
     storage::{Memory, Storage},
     Connection, Database, Rows,
 };
-use std::{cell::RefCell, path::PathBuf};
+use std::{
+    fs::File,
+    io::{BufRead, BufReader},
+    path::{Path, PathBuf},
+};
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Parser, Debug)]
@@ -46,100 +50,163 @@ fn main() -> Result<()> {
 fn run<T: Storage>(args: Args, storage: T) -> Result<()> {
     let db = Database::new(storage)?;
     let conn = db.connect();
-
+    let mut repl = Repl::new(&conn)?;
     if let Some(init) = args.init {
-        let init = std::fs::read_to_string(init)?;
-        run_sql(&conn, &init, false)?;
+        repl.process_file(init)?;
+    }
+    repl.run()
+}
+
+struct Repl<'conn, 'db, T: Storage> {
+    rl: Editor<RustylineHelper<'conn, 'db, T>, rustyline::history::DefaultHistory>,
+    conn: &'conn Connection<'db, T>,
+    buf: String,
+}
+
+impl<'conn, 'db, T: Storage> Repl<'conn, 'db, T> {
+    fn new(conn: &'conn Connection<'db, T>) -> Result<Self> {
+        let mut rl = Editor::new()?;
+        rl.set_helper(Some(RustylineHelper::new(conn)));
+        Ok(Self {
+            rl,
+            conn,
+            buf: String::new(),
+        })
     }
 
-    let mut rl = rustyline::Editor::new()?;
-    rl.set_helper(Some(RustylineHelper::new(db.connect())));
+    fn run(mut self) -> Result<()> {
+        loop {
+            let prompt = if self.buf.is_empty() { "> " } else { ". " };
+            let line = match self.rl.readline(prompt) {
+                Ok(line) => line,
+                Err(ReadlineError::Eof) => break,
+                Err(ReadlineError::Interrupted) => return Ok(()),
+                Err(e) => return Err(e.into()),
+            };
+            self.run_line(&line)?;
+        }
+        self.run_sql(false)?; // Finish any incomplete statement
+        Ok(())
+    }
 
-    let mut buf = String::new();
-    loop {
-        let prompt = if buf.is_empty() { "> " } else { ". " };
-        let line = match rl.readline(prompt) {
-            Ok(line) => line,
-            Err(ReadlineError::Eof) => break,
-            Err(ReadlineError::Interrupted) => return Ok(()),
-            Err(e) => return Err(e.into()),
-        };
+    fn process_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
+        let reader = BufReader::new(File::open(path.as_ref())?);
+        for line in reader.lines() {
+            self.run_line(&line?)?;
+        }
+        self.run_sql(false)?; // Finish any incomplete statement
+        Ok(())
+    }
+
+    fn run_line(&mut self, line: &str) -> Result<()> {
         let trimmed_line = line.trim();
-        if buf.is_empty() {
+        if self.buf.is_empty() {
             if trimmed_line.is_empty() {
-                continue;
+                return Ok(());
             }
             if line.starts_with('.') {
-                rl.add_history_entry(&line)?;
-                match run_metacommand(&conn, trimmed_line) {
+                self.rl.add_history_entry(line)?;
+                match self.run_metacommand(trimmed_line) {
                     Ok(()) => (),
                     Err(e) => eprintln!("{e}"),
                 }
+                return Ok(());
+            }
+        }
+        self.buf.push_str(line);
+        if !trimmed_line.ends_with(';') {
+            self.buf.push('\n');
+            return Ok(());
+        }
+        if self.run_sql(true)? {
+            self.rl.add_history_entry(&self.buf)?;
+            self.buf.clear();
+        }
+        Ok(())
+    }
+
+    fn run_metacommand(&mut self, line: &str) -> Result<()> {
+        let parts = std::iter::once(">").chain(line.split_ascii_whitespace());
+        let metacommand = Metacommand::try_parse_from(parts)?;
+        match metacommand {
+            Metacommand::Import {
+                ascii,
+                csv,
+                tsv,
+                skip_header,
+                filename,
+                table,
+            } => {
+                let mut builder = csv::ReaderBuilder::new();
+                if ascii {
+                    builder
+                        .delimiter(b'\x1f')
+                        .terminator(csv::Terminator::Any(b'\x1e'));
+                } else if csv {
+                    // Default
+                } else if tsv {
+                    builder.delimiter(b'\t');
+                }
+                let reader = builder.has_headers(skip_header).from_path(filename)?;
+                self.conn.execute("BEGIN", [])?;
+                match insert_into_table(self.conn, reader, &table) {
+                    Ok(()) => {
+                        self.conn.execute("COMMIT", [])?;
+                    }
+                    Err(e) => {
+                        self.conn.execute("ROLLBACK", [])?;
+                        return Err(e);
+                    }
+                }
+            }
+            Metacommand::Read { filename } => self.process_file(filename)?,
+        }
+        Ok(())
+    }
+
+    fn run_sql(&self, repl: bool) -> Result<bool> {
+        let segmenter = Segmenter::new(&self.buf);
+        let mut statements = Vec::new();
+        let mut current_statement = String::new();
+        for segment in segmenter {
+            match segment {
+                Ok(segment) => {
+                    match segment.kind() {
+                        SegmentKind::Comment => (),
+                        SegmentKind::Operator if segment.slice() == ";" => {
+                            // This semicolon finishes a statement.
+                            statements.push(std::mem::take(&mut current_statement));
+                        }
+                        _ => current_statement.push_str(segment.slice()),
+                    }
+                }
+                Err((e, remaining)) => {
+                    if repl && matches!(e, LexerError::UnexpectedEof) {
+                        return Ok(false);
+                    }
+                    // Let the database handle the parse error.
+                    current_statement.push_str(remaining);
+                    break;
+                }
+            }
+        }
+        statements.push(current_statement);
+        for statement in statements {
+            let statement = statement.trim();
+            if statement.is_empty() {
                 continue;
             }
-        }
-        buf.push_str(&line);
-        if !trimmed_line.ends_with(';') {
-            buf.push('\n');
-            continue;
-        }
-
-        // When the line ends with a semicolon, there are two possibilities:
-        // - The semicolon finishes a statement.
-        // - The semicolon is inside a string literal.
-
-        if run_sql(&conn, &buf, true)? {
-            rl.add_history_entry(&buf)?;
-            buf.clear();
-        }
-    }
-    run_sql(&conn, &buf, false)?;
-
-    Ok(())
-}
-
-fn run_sql<T: Storage>(conn: &Connection<T>, sql: &str, repl: bool) -> Result<bool> {
-    let segmenter = Segmenter::new(sql);
-    let mut statements = Vec::new();
-    let mut current_statement = String::new();
-    for segment in segmenter {
-        match segment {
-            Ok(segment) => {
-                match segment.kind() {
-                    SegmentKind::Comment => (),
-                    SegmentKind::Operator if segment.slice() == ";" => {
-                        // This semicolon finishes a statement.
-                        statements.push(std::mem::take(&mut current_statement));
-                    }
-                    _ => current_statement.push_str(segment.slice()),
+            match self.conn.query(statement, []) {
+                Ok(rows) => write_table(&mut std::io::stdout().lock(), rows)?,
+                Err(e) if repl => {
+                    eprintln!("{e}");
+                    return Ok(true);
                 }
-            }
-            Err((e, remaining)) => {
-                if repl && matches!(e, LexerError::UnexpectedEof) {
-                    return Ok(false);
-                }
-                // Let the database handle the parse error.
-                current_statement.push_str(remaining);
-                break;
+                Err(e) => eprintln!("{e}"),
             }
         }
+        Ok(true)
     }
-    statements.push(current_statement);
-    for statement in statements {
-        let statement = statement.trim();
-        if statement.is_empty() {
-            continue;
-        }
-        match conn.query(statement, []) {
-            Ok(rows) => write_table(&mut std::io::stdout().lock(), rows)?,
-            Err(e) if repl => {
-                eprintln!("{e}");
-                return Ok(true);
-            }
-            Err(e) => eprintln!("{e}"),
-        }
-    }
-    Ok(true)
 }
 
 #[derive(Parser, Debug)]
@@ -170,47 +237,6 @@ enum Metacommand {
     /// Read input from FILENAME
     #[clap(name = ".read")]
     Read { filename: PathBuf },
-}
-
-fn run_metacommand<T: Storage>(conn: &Connection<T>, line: &str) -> Result<()> {
-    let parts = std::iter::once("\0").chain(line.split_ascii_whitespace());
-    match Metacommand::try_parse_from(parts)? {
-        Metacommand::Import {
-            ascii,
-            csv,
-            tsv,
-            skip_header,
-            filename,
-            table,
-        } => {
-            let mut builder = csv::ReaderBuilder::new();
-            if ascii {
-                builder
-                    .delimiter(b'\x1f')
-                    .terminator(csv::Terminator::Any(b'\x1e'));
-            } else if csv {
-                // Default
-            } else if tsv {
-                builder.delimiter(b'\t');
-            }
-            let reader = builder.has_headers(skip_header).from_path(filename)?;
-            conn.execute("BEGIN", [])?;
-            match insert_into_table(conn, reader, &table) {
-                Ok(()) => {
-                    conn.execute("COMMIT", [])?;
-                }
-                Err(e) => {
-                    conn.execute("ROLLBACK", [])?;
-                    return Err(e);
-                }
-            }
-        }
-        Metacommand::Read { filename } => {
-            let sql = std::fs::read_to_string(filename)?;
-            run_sql(conn, &sql, false)?;
-        }
-    }
-    Ok(())
 }
 
 /// Insert rows read from a CSV reader into a table.
@@ -291,19 +317,19 @@ fn write_table<W: std::io::Write>(out: &mut W, rows: Rows) -> std::io::Result<()
     Ok(())
 }
 
-struct RustylineHelper<'a, T: Storage> {
-    conn: RefCell<Connection<'a, T>>,
+struct RustylineHelper<'conn, 'db, T: Storage> {
+    conn: &'conn Connection<'db, T>,
 }
 
-impl<'a, T: Storage> RustylineHelper<'a, T> {
-    fn new(conn: Connection<'a, T>) -> Self {
-        Self { conn: conn.into() }
+impl<'conn, 'db, T: Storage> RustylineHelper<'conn, 'db, T> {
+    fn new(conn: &'conn Connection<'db, T>) -> Self {
+        Self { conn }
     }
 }
 
-impl<T: Storage> Helper for RustylineHelper<'_, T> {}
+impl<T: Storage> Helper for RustylineHelper<'_, '_, T> {}
 
-impl<T: Storage> Completer for RustylineHelper<'_, T> {
+impl<T: Storage> Completer for RustylineHelper<'_, '_, T> {
     type Candidate = String;
 
     fn complete(
@@ -314,8 +340,8 @@ impl<T: Storage> Completer for RustylineHelper<'_, T> {
     ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
         let (start, word) = extract_word(line, pos, None, |ch| !is_valid_identifier_char(ch));
         let mut candidates = Vec::new();
-        let conn = self.conn.borrow_mut();
-        let rows = conn
+        let rows = self
+            .conn
             .query("SELECT keyword FROM squalodon_keywords()", [])
             .unwrap();
         let uppercase_word = word.to_ascii_uppercase();
@@ -325,7 +351,8 @@ impl<T: Storage> Completer for RustylineHelper<'_, T> {
                 candidates.push(keyword);
             }
         }
-        let rows = conn
+        let rows = self
+            .conn
             .query("SELECT name FROM squalodon_tables()", [])
             .unwrap();
         for row in rows {
@@ -338,7 +365,7 @@ impl<T: Storage> Completer for RustylineHelper<'_, T> {
     }
 }
 
-impl<T: Storage> Highlighter for RustylineHelper<'_, T> {
+impl<T: Storage> Highlighter for RustylineHelper<'_, '_, T> {
     fn highlight<'l>(&self, line: &'l str, _pos: usize) -> std::borrow::Cow<'l, str> {
         let mut segmenter = Segmenter::new(line);
         let mut highlighted = String::new();
@@ -384,8 +411,8 @@ impl<T: Storage> Highlighter for RustylineHelper<'_, T> {
     }
 }
 
-impl<T: Storage> Hinter for RustylineHelper<'_, T> {
+impl<T: Storage> Hinter for RustylineHelper<'_, '_, T> {
     type Hint = String;
 }
 
-impl<T: Storage> Validator for RustylineHelper<'_, T> {}
+impl<T: Storage> Validator for RustylineHelper<'_, '_, T> {}
