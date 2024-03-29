@@ -7,11 +7,13 @@ use crate::{
     planner::{self, Expression, PlanNode},
     storage, CatalogError, Row, Storage, StorageError, Value,
 };
+use fastrand::Rng;
 use modification::{Delete, Insert, Update};
 use query::{
     CrossProduct, Filter, FunctionScan, HashAggregate, Limit, Project, SeqScan, Sort,
     UngroupedAggregate, Values,
 };
+use std::cell::RefCell;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutorError {
@@ -97,15 +99,24 @@ impl<E: Into<ExecutorError>> IntoOutput for Option<std::result::Result<Row, E>> 
 
 pub struct ExecutorContext<'txn, 'db, T: Storage> {
     catalog: &'txn CatalogRef<'txn, 'db, T>,
+    rng: &'txn RefCell<Rng>,
 }
 
 impl<'txn, 'db: 'txn, T: Storage> ExecutorContext<'txn, 'db, T> {
-    pub fn new(catalog: &'txn CatalogRef<'txn, 'db, T>) -> Self {
-        Self { catalog }
+    pub fn new(catalog: &'txn CatalogRef<'txn, 'db, T>, rng: &'txn RefCell<Rng>) -> Self {
+        Self { catalog, rng }
     }
 
     pub fn catalog(&self) -> &CatalogRef<'txn, 'db, T> {
         self.catalog
+    }
+
+    pub fn random(&self) -> f64 {
+        self.rng.borrow_mut().f64()
+    }
+
+    pub fn set_seed(&self, seed: f64) {
+        self.rng.borrow_mut().seed(seed.to_bits());
     }
 }
 

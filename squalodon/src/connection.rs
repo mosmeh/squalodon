@@ -7,12 +7,14 @@ use crate::{
     types::{NullableType, Params},
     Database, Error, Result, Row, Type,
 };
+use fastrand::Rng;
 use std::{cell::RefCell, collections::HashMap};
 
 pub struct Connection<'db, T: Storage> {
     db: &'db Database<T>,
     txn_status: RefCell<TransactionState<'db, T>>,
     prepared_statements: RefCell<HashMap<String, Statement>>,
+    rng: RefCell<Rng>,
 }
 
 impl<'db, T: Storage> Connection<'db, T> {
@@ -21,6 +23,7 @@ impl<'db, T: Storage> Connection<'db, T> {
             db,
             txn_status: TransactionState::Inactive.into(),
             prepared_statements: HashMap::new().into(),
+            rng: Rng::new().into(),
         }
     }
 
@@ -102,7 +105,7 @@ impl<'db, T: Storage> Connection<'db, T> {
         };
 
         let catalog = self.db.catalog.with(txn);
-        let ctx = ExecutorContext::new(&catalog);
+        let ctx = ExecutorContext::new(&catalog, &self.rng);
 
         let mut param_values = Vec::with_capacity(params.len());
         for expr in params {
