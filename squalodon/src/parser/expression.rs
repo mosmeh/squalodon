@@ -19,6 +19,11 @@ pub enum Expression {
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },
+    Like {
+        str_expr: Box<Expression>,
+        pattern: Box<Expression>,
+        case_insensitive: bool,
+    },
     Function {
         name: String,
         args: FunctionArgs,
@@ -48,6 +53,15 @@ impl std::fmt::Display for Expression {
                 }
                 args.fmt(f)?;
                 f.write_str(")")
+            }
+            Self::Like {
+                str_expr,
+                pattern,
+                case_insensitive,
+            } => {
+                write!(f, "({str_expr} ")?;
+                f.write_str(if *case_insensitive { "ILIKE" } else { "LIKE" })?;
+                write!(f, " {pattern})")
             }
             Self::ScalarSubquery(select) => write!(f, "({select})"),
             Self::Exists(select) => write!(f, "EXISTS ({select})"),
@@ -167,7 +181,7 @@ impl BinaryOp {
         })
     }
 
-    fn priority(self) -> usize {
+    const fn priority(self) -> usize {
         // https://www.sqlite.org/lang_expr.html#operators_and_parse_affecting_attributes
         match self {
             Self::Concat => 8,
@@ -177,6 +191,21 @@ impl BinaryOp {
             Self::Eq | Self::Ne => 4,
             Self::And => 2,
             Self::Or => 1,
+        }
+    }
+}
+
+enum InfixOp {
+    Binary(BinaryOp),
+    Like { case_insensitive: bool, not: bool },
+}
+
+impl InfixOp {
+    fn priority(&self) -> usize {
+        // https://www.sqlite.org/lang_expr.html#operators_and_parse_affecting_attributes
+        match self {
+            Self::Binary(op) => op.priority(),
+            Self::Like { .. } => 4,
         }
     }
 }
@@ -222,22 +251,69 @@ impl Parser<'_> {
             None => self.parse_atom()?,
         };
         loop {
-            let Some(op) = BinaryOp::from_token(self.lexer.peek()?) else {
+            let Some(op) = self.try_parse_infix_op(min_priority)? else {
                 break;
             };
-            let priority = op.priority();
-            if priority <= min_priority {
-                break;
+            let rhs = self.parse_sub_expr(op.priority())?;
+            match op {
+                InfixOp::Binary(op) => {
+                    expr = Expression::BinaryOp {
+                        op,
+                        lhs: expr.into(),
+                        rhs: rhs.into(),
+                    };
+                }
+                InfixOp::Like {
+                    case_insensitive,
+                    not,
+                } => {
+                    expr = Expression::Like {
+                        str_expr: Box::new(expr),
+                        pattern: Box::new(rhs),
+                        case_insensitive,
+                    };
+                    if not {
+                        expr = Expression::UnaryOp {
+                            op: UnaryOp::Not,
+                            expr: expr.into(),
+                        };
+                    }
+                }
             }
-            self.lexer.consume()?;
-            let rhs = self.parse_sub_expr(priority)?;
-            expr = Expression::BinaryOp {
-                op,
-                lhs: expr.into(),
-                rhs: rhs.into(),
-            };
         }
         Ok(expr)
+    }
+
+    fn try_parse_infix_op(&mut self, min_priority: usize) -> ParserResult<Option<InfixOp>> {
+        let not = *self.lexer.peek()? == Token::Not;
+        let token = if not {
+            self.lexer.lookahead(1)? // Skip NOT
+        } else {
+            self.lexer.peek()?
+        };
+        let op = match token {
+            Token::Like => InfixOp::Like {
+                case_insensitive: false,
+                not,
+            },
+            Token::ILike => InfixOp::Like {
+                case_insensitive: true,
+                not,
+            },
+            token if not => return Err(unexpected(token)),
+            token => match BinaryOp::from_token(token) {
+                Some(op) => InfixOp::Binary(op),
+                None => return Ok(None),
+            },
+        };
+        if op.priority() <= min_priority {
+            return Ok(None);
+        }
+        if not {
+            self.expect(Token::Not)?;
+        }
+        self.lexer.consume()?;
+        Ok(Some(op))
     }
 
     fn parse_atom(&mut self) -> ParserResult<Expression> {

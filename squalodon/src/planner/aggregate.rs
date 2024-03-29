@@ -114,6 +114,13 @@ impl<'txn> AggregateContext<'txn> {
                 let plan = self.gather_aggregates_inner(planner, source, lhs, in_aggregate_args)?;
                 self.gather_aggregates_inner(planner, plan, rhs, in_aggregate_args)
             }
+            parser::Expression::Like {
+                str_expr, pattern, ..
+            } => {
+                let plan =
+                    self.gather_aggregates_inner(planner, source, str_expr, in_aggregate_args)?;
+                self.gather_aggregates_inner(planner, plan, pattern, in_aggregate_args)
+            }
             parser::Expression::Function {
                 name,
                 args,

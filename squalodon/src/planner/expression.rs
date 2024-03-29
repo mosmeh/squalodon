@@ -28,6 +28,11 @@ pub enum Expression {
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },
+    Like {
+        str_expr: Box<Expression>,
+        pattern: Box<Expression>,
+        case_insensitive: bool,
+    },
 }
 
 impl std::fmt::Display for Expression {
@@ -39,6 +44,15 @@ impl std::fmt::Display for Expression {
             Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
             Self::BinaryOp { op, lhs, rhs } => {
                 write!(f, "({lhs} {op} {rhs})")
+            }
+            Self::Like {
+                str_expr,
+                pattern,
+                case_insensitive,
+            } => {
+                write!(f, "({str_expr} ")?;
+                f.write_str(if *case_insensitive { "ILIKE" } else { "LIKE" })?;
+                write!(f, " {pattern})")
             }
         }
     }
@@ -134,7 +148,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
             parser::Expression::UnaryOp { op, expr } => {
                 let (plan, TypedExpression { expr, ty }) = self.bind(source, *expr)?;
                 let ty = match (op, ty) {
-                    (_, NullableType::Null) => NullableType::Null,
+                    (_, NullableType::Null) => return Ok((plan, Value::Null.into())),
                     (UnaryOp::Not, _) => NullableType::NonNull(Type::Boolean),
                     (UnaryOp::Plus | UnaryOp::Minus, NullableType::NonNull(ty))
                         if ty.is_numeric() =>
@@ -158,7 +172,9 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                     | BinaryOp::Mul
                     | BinaryOp::Div
                     | BinaryOp::Mod => match (lhs.ty, rhs.ty) {
-                        (NullableType::Null, _) | (_, NullableType::Null) => NullableType::Null,
+                        (NullableType::Null, _) | (_, NullableType::Null) => {
+                            return Ok((plan, Value::Null.into()))
+                        }
                         (
                             NullableType::NonNull(Type::Integer),
                             NullableType::NonNull(Type::Integer),
@@ -188,7 +204,9 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                         _ => return Err(PlannerError::TypeError),
                     },
                     BinaryOp::Concat => match (lhs.ty, rhs.ty) {
-                        (NullableType::Null, _) | (_, NullableType::Null) => NullableType::Null,
+                        (NullableType::Null, _) | (_, NullableType::Null) => {
+                            return Ok((plan, Value::Null.into()))
+                        }
                         (NullableType::NonNull(Type::Text), NullableType::NonNull(Type::Text)) => {
                             NullableType::NonNull(Type::Text)
                         }
@@ -201,6 +219,47 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                     rhs: rhs.expr.into(),
                 };
                 Ok((plan, TypedExpression { expr, ty }))
+            }
+            parser::Expression::Like {
+                str_expr,
+                pattern,
+                case_insensitive,
+            } => {
+                let (
+                    plan,
+                    TypedExpression {
+                        expr: str_expr,
+                        ty: expr_ty,
+                    },
+                ) = self.bind(source, *str_expr)?;
+                let (
+                    plan,
+                    TypedExpression {
+                        expr: pattern,
+                        ty: pattern_ty,
+                    },
+                ) = self.bind(plan, *pattern)?;
+                if matches!(expr_ty, NullableType::Null) || matches!(pattern_ty, NullableType::Null)
+                {
+                    return Ok((plan, Value::Null.into()));
+                }
+                if !matches!(expr_ty, NullableType::NonNull(Type::Text))
+                    || !matches!(pattern_ty, NullableType::NonNull(Type::Text))
+                {
+                    return Err(PlannerError::TypeError);
+                }
+                let expr = planner::Expression::Like {
+                    str_expr: str_expr.into(),
+                    pattern: pattern.into(),
+                    case_insensitive,
+                };
+                Ok((
+                    plan,
+                    TypedExpression {
+                        expr,
+                        ty: Type::Boolean.into(),
+                    },
+                ))
             }
             parser::Expression::Function {
                 name,

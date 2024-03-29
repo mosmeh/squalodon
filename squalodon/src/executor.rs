@@ -24,6 +24,9 @@ pub enum ExecutorError {
     #[error("Subquery returned more than one row")]
     MultipleRowsFromSubquery,
 
+    #[error("Invalid LIKE pattern")]
+    InvalidLikePattern,
+
     #[error("Storage error: {0}")]
     Storage(#[from] StorageError),
 

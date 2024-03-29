@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, str::Chars};
+use std::{collections::VecDeque, num::NonZeroUsize, str::Chars};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LexerError {
@@ -124,6 +124,7 @@ keywords! {
     Group
     Having
     If
+    ILike
     Inner
     Insert
     Integer
@@ -131,6 +132,7 @@ keywords! {
     Join
     Key
     Last
+    Like
     Limit
     Not
     Null
@@ -158,27 +160,22 @@ keywords! {
 
 pub(crate) struct Lexer<'a> {
     inner: Inner<'a>,
-    peeked: Option<Token>,
+    lookahead: VecDeque<Token>,
 }
 
 impl<'a> Lexer<'a> {
     pub fn new(sql: &'a str) -> Self {
         Self {
             inner: Inner::new(sql),
-            peeked: None,
+            lookahead: VecDeque::new(),
         }
     }
 
     pub fn consume(&mut self) -> LexerResult<Token> {
-        if let Some(peeked) = self.peeked.take() {
+        if let Some(peeked) = self.lookahead.pop_front() {
             return Ok(peeked);
         }
-        loop {
-            match self.inner.consume_token()? {
-                Token::Comment(_) | Token::Whitespace(_) => continue,
-                token => return Ok(token),
-            }
-        }
+        self.consume_inner()
     }
 
     pub fn consume_if<F>(&mut self, f: F) -> LexerResult<Option<Token>>
@@ -197,10 +194,24 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn peek(&mut self) -> LexerResult<&Token> {
-        if self.peeked.is_none() {
-            self.peeked = Some(self.consume()?);
+        self.lookahead(0)
+    }
+
+    pub fn lookahead(&mut self, n: usize) -> LexerResult<&Token> {
+        while self.lookahead.len() <= n {
+            let token = self.consume_inner()?;
+            self.lookahead.push_back(token);
         }
-        Ok(self.peeked.as_ref().unwrap())
+        Ok(self.lookahead.get(n).unwrap())
+    }
+
+    fn consume_inner(&mut self) -> LexerResult<Token> {
+        loop {
+            match self.inner.consume_token()? {
+                Token::Comment(_) | Token::Whitespace(_) => continue,
+                token => return Ok(token),
+            }
+        }
     }
 }
 

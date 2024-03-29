@@ -13,6 +13,11 @@ impl Expression {
             Self::Cast { expr, ty } => expr.eval(row)?.cast(*ty).ok_or(ExecutorError::TypeError),
             Self::UnaryOp { op, expr } => eval_unary_op(*op, row, expr),
             Self::BinaryOp { op, lhs, rhs } => eval_binary_op(*op, row, lhs, rhs),
+            Self::Like {
+                str_expr,
+                pattern,
+                case_insensitive,
+            } => eval_like(row, str_expr, pattern, *case_insensitive),
         }
     }
 }
@@ -114,4 +119,32 @@ fn eval_binary_op_real(op: BinaryOp, lhs: f64, rhs: f64) -> Value {
         _ => unreachable!(),
     };
     Value::Real(f(lhs, rhs))
+}
+
+fn eval_like(
+    row: &Row,
+    str_expr: &Expression,
+    pattern: &Expression,
+    case_insensitive: bool,
+) -> ExecutorResult<Value> {
+    let Value::Text(string) = str_expr.eval(row)? else {
+        return Err(ExecutorError::TypeError);
+    };
+    let Value::Text(pattern) = pattern.eval(row)? else {
+        return Err(ExecutorError::TypeError);
+    };
+    let mut regex = String::new();
+    for ch in pattern.chars() {
+        match ch {
+            '%' => regex.push_str(".*"),
+            '_' => regex.push('.'),
+            ch => regex.push_str(&regex_lite::escape(&ch.to_string())),
+        }
+    }
+    let is_match = regex_lite::RegexBuilder::new(&regex)
+        .case_insensitive(case_insensitive)
+        .build()
+        .map_err(|_| ExecutorError::InvalidLikePattern)?
+        .is_match(&string);
+    Ok(is_match.into())
 }
