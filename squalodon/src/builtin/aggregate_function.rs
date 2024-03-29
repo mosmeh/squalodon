@@ -1,7 +1,6 @@
 use crate::{
     catalog::{AggregateFunction, Aggregator},
     executor::ExecutorResult,
-    planner::PlannerResult,
     types::NullableType,
     ExecutorError, PlannerError, Type, Value,
 };
@@ -30,34 +29,30 @@ pub fn load() -> impl Iterator<Item = (&'static str, AggregateFunction)> {
         (
             "max",
             AggregateFunction {
-                bind: bind_numeric,
+                bind: Ok,
                 init: || Box::<Max>::default(),
             },
         ),
         (
             "min",
             AggregateFunction {
-                bind: bind_numeric,
+                bind: Ok,
                 init: || Box::<Min>::default(),
             },
         ),
         (
             "sum",
             AggregateFunction {
-                bind: bind_numeric,
+                bind: |ty| match ty {
+                    NullableType::Null => Ok(NullableType::Null),
+                    NullableType::NonNull(ty) if ty.is_numeric() => Ok(NullableType::NonNull(ty)),
+                    NullableType::NonNull(_) => Err(PlannerError::TypeError),
+                },
                 init: || Box::<Sum>::default(),
             },
         ),
     ]
     .into_iter()
-}
-
-fn bind_numeric(ty: NullableType) -> PlannerResult<NullableType> {
-    match ty {
-        NullableType::Null => Ok(NullableType::Null),
-        NullableType::NonNull(ty) if ty.is_numeric() => Ok(NullableType::NonNull(ty)),
-        NullableType::NonNull(_) => Err(PlannerError::TypeError),
-    }
 }
 
 #[derive(Default)]
@@ -84,7 +79,7 @@ impl Aggregator for Average {
 
 #[derive(Default)]
 struct Count {
-    count: usize,
+    count: i64,
 }
 
 impl Aggregator for Count {
@@ -96,43 +91,53 @@ impl Aggregator for Count {
     }
 
     fn finish(&self) -> Value {
-        Value::Integer(self.count as i64)
+        Value::Integer(self.count)
     }
 }
 
-#[derive(Default)]
 struct Max {
-    max: Number,
+    max: Value,
+}
+
+impl Default for Max {
+    fn default() -> Self {
+        Self { max: Value::Null }
+    }
 }
 
 impl Aggregator for Max {
     fn update(&mut self, value: &Value) -> ExecutorResult<()> {
-        if !matches!(value, Value::Null) {
-            self.max.update(value, i64::max, f64::max);
+        if !matches!(value, Value::Null) && (matches!(self.max, Value::Null) || value > &self.max) {
+            self.max = value.clone();
         }
         Ok(())
     }
 
     fn finish(&self) -> Value {
-        self.max.clone().into()
+        self.max.clone()
     }
 }
 
-#[derive(Default)]
 struct Min {
-    min: Number,
+    min: Value,
+}
+
+impl Default for Min {
+    fn default() -> Self {
+        Self { min: Value::Null }
+    }
 }
 
 impl Aggregator for Min {
     fn update(&mut self, value: &Value) -> ExecutorResult<()> {
-        if !matches!(value, Value::Null) {
-            self.min.update(value, i64::min, f64::min);
+        if !matches!(value, Value::Null) && (matches!(self.min, Value::Null) || value < &self.min) {
+            self.min = value.clone();
         }
         Ok(())
     }
 
     fn finish(&self) -> Value {
-        self.min.clone().into()
+        self.min.clone()
     }
 }
 
@@ -185,15 +190,6 @@ impl Number {
             Self::Integer(i) => Some(*i as f64),
             Self::Real(r) => Some(*r),
         }
-    }
-
-    fn update<I, R>(&mut self, rhs: &Value, integer_f: I, real_f: R)
-    where
-        I: FnOnce(i64, i64) -> i64,
-        R: FnOnce(f64, f64) -> f64,
-    {
-        self.checked_update(rhs, |a, b| Some(integer_f(a, b)), real_f)
-            .unwrap();
     }
 
     fn checked_update<I, R>(&mut self, rhs: &Value, integer_f: I, real_f: R) -> ExecutorResult<()>
