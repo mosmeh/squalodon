@@ -11,7 +11,7 @@ use fastrand::Rng;
 use modification::{Delete, Insert, Update};
 use query::{
     CrossProduct, Filter, FunctionScan, HashAggregate, Limit, Project, SeqScan, Sort,
-    UngroupedAggregate, Values,
+    UngroupedAggregate, Union, Values,
 };
 use std::cell::RefCell;
 
@@ -154,6 +154,7 @@ enum ExecutorNode<'txn, 'db, T: Storage> {
     CrossProduct(CrossProduct<'txn, 'db, T>),
     UngroupedAggregate(UngroupedAggregate),
     HashAggregate(HashAggregate),
+    Union(Union<'txn, 'db, T>),
     Insert(Insert),
     Update(Update),
     Delete(Delete),
@@ -222,6 +223,10 @@ impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
                 source,
                 column_ops: column_roles,
             }) => Self::HashAggregate(HashAggregate::new(Self::new(ctx, *source)?, column_roles)?),
+            PlanNode::Union(planner::Union { left, right }) => Self::Union(Union {
+                left: Box::new(Self::new(ctx, *left)?),
+                right: Box::new(Self::new(ctx, *right)?),
+            }),
             PlanNode::Insert(planner::Insert { source, table }) => {
                 Self::Insert(Insert::new(Box::new(Self::new(ctx, *source)?), table)?)
             }
@@ -249,6 +254,7 @@ impl<T: Storage> Node for ExecutorNode<'_, '_, T> {
             Self::CrossProduct(e) => e.next_row(),
             Self::UngroupedAggregate(e) => e.next_row(),
             Self::HashAggregate(e) => e.next_row(),
+            Self::Union(e) => e.next_row(),
             Self::Insert(e) => e.next_row(),
             Self::Update(e) => e.next_row(),
             Self::Delete(e) => e.next_row(),

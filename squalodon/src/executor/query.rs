@@ -404,3 +404,14 @@ impl GroupAggregator {
         self.aggregator.finish()
     }
 }
+
+pub struct Union<'txn, 'db, T: Storage> {
+    pub left: Box<ExecutorNode<'txn, 'db, T>>,
+    pub right: Box<ExecutorNode<'txn, 'db, T>>,
+}
+
+impl<T: Storage> Node for Union<'_, '_, T> {
+    fn next_row(&mut self) -> Output {
+        self.left.next_row().or_else(|_| self.right.next_row())
+    }
+}

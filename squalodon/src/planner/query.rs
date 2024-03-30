@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{
     catalog::TableFnPtr,
-    parser::{self, Distinct, NullOrder, Order},
+    parser::{self, Distinct, NullOrder, Order, QueryModifier},
     planner,
     rows::ColumnIndex,
     storage::Table,
@@ -168,8 +168,34 @@ impl<T: Storage> Explain for CrossProduct<'_, '_, T> {
     }
 }
 
+pub struct Union<'txn, 'db, T: Storage> {
+    pub left: Box<PlanNode<'txn, 'db, T>>,
+    pub right: Box<PlanNode<'txn, 'db, T>>,
+}
+
+impl<T: Storage> Explain for Union<'_, '_, T> {
+    fn visit(&self, visitor: &mut ExplainVisitor) {
+        visitor.write_str("Union");
+        self.left.visit(visitor);
+        self.right.visit(visitor);
+    }
+}
+
 impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
-    pub fn plan_select(&self, select: parser::Select) -> PlannerResult<Plan<'txn, 'db, T>> {
+    pub fn plan_query(&self, query: parser::Query) -> PlannerResult<Plan<'txn, 'db, T>> {
+        match query.body {
+            parser::QueryBody::Select(select) => self.plan_select(select, query.modifier),
+            parser::QueryBody::Union { all, left, right } => {
+                self.plan_union(all, *left, *right, query.modifier)
+            }
+        }
+    }
+
+    fn plan_select(
+        &self,
+        select: parser::Select,
+        modifier: QueryModifier,
+    ) -> PlannerResult<Plan<'txn, 'db, T>> {
         let mut plan = self.plan_table_ref(select.from)?;
         if let Some(where_clause) = select.where_clause {
             plan = self.plan_where_clause(plan, where_clause)?;
@@ -182,14 +208,6 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         if let Some(having) = &select.having {
             plan = aggregate_ctx.gather_aggregates(self, plan, having)?;
         }
-        for order_by in &select.order_by {
-            plan = aggregate_ctx.gather_aggregates(self, plan, &order_by.expr)?;
-        }
-        if let Some(Distinct { on: Some(on) }) = &select.distinct {
-            for expr in on {
-                plan = aggregate_ctx.gather_aggregates(self, plan, expr)?;
-            }
-        }
         for projection in &select.projections {
             match projection {
                 parser::Projection::Wildcard => (),
@@ -197,6 +215,14 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
                     plan = aggregate_ctx.gather_aggregates(self, plan, expr)?;
                 }
             }
+        }
+        if let Some(Distinct { on: Some(on) }) = &select.distinct {
+            for expr in on {
+                plan = aggregate_ctx.gather_aggregates(self, plan, expr)?;
+            }
+        }
+        for order_by in &modifier.order_by {
+            plan = aggregate_ctx.gather_aggregates(self, plan, &order_by.expr)?;
         }
 
         // The query is an aggregate query if there are any aggregate functions
@@ -214,14 +240,86 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         if let Some(having) = select.having {
             plan = self.plan_having(&aggregated_expr_binder, plan, having)?;
         }
-        let plan = self.plan_order_by(&aggregated_expr_binder, plan, select.order_by)?;
-        let plan = self.plan_limit(plan, select.limit, select.offset)?;
+
+        // FIXME: order_by should be after projections according to SQL
+        //        semantics. However, if projections reorder columns,
+        //        we lose track of aggregation results. So we process order_by
+        //        before projections for now.
+        let plan = self.plan_order_by(&aggregated_expr_binder, plan, modifier.order_by)?;
         let plan = self.plan_projections(
             &aggregated_expr_binder,
             plan,
             select.projections,
             select.distinct,
         )?;
+        let plan = self.plan_limit(plan, modifier.limit, modifier.offset)?;
+        Ok(plan)
+    }
+
+    fn plan_union(
+        &self,
+        all: bool,
+        left: parser::Query,
+        right: parser::Query,
+        modifier: QueryModifier,
+    ) -> PlannerResult<Plan<'txn, 'db, T>> {
+        let Plan {
+            node: left_node,
+            schema: left_schema,
+        } = self.plan_query(left)?;
+        let Plan {
+            node: right_node,
+            schema: right_schema,
+        } = self.plan_query(right)?;
+        if right_schema.0.len() != left_schema.0.len() {
+            return Err(PlannerError::ColumnCountMismatch {
+                expected: left_schema.0.len(),
+                actual: right_schema.0.len(),
+            });
+        }
+        let mut exprs = Vec::with_capacity(right_schema.0.len());
+        for (i, (left_column, right_column)) in
+            left_schema.0.iter().zip(&right_schema.0).enumerate()
+        {
+            let mut expr = planner::Expression::ColumnRef(ColumnIndex(i));
+            if let NullableType::NonNull(left_type) = left_column.ty {
+                if !right_column.ty.is_compatible_with(left_type) {
+                    if !right_column.ty.can_cast_to(left_type) {
+                        return Err(PlannerError::TypeError);
+                    }
+                    expr = planner::Expression::Cast {
+                        expr: Box::new(expr),
+                        ty: left_type,
+                    }
+                }
+            };
+            exprs.push(expr);
+        }
+        let right_node = PlanNode::Project(planner::Project {
+            source: Box::new(right_node),
+            exprs,
+        });
+        let mut node = PlanNode::Union(planner::Union {
+            left: Box::new(left_node),
+            right: Box::new(right_node),
+        });
+        if !all {
+            node = PlanNode::Aggregate(planner::Aggregate::Hash {
+                source: Box::new(node),
+                column_ops: left_schema
+                    .0
+                    .iter()
+                    .map(|_| planner::AggregateOp::GroupBy)
+                    .collect(),
+            });
+        }
+        let plan = Plan {
+            node,
+            schema: left_schema,
+        };
+        let expr_binder = ExpressionBinder::new(self);
+        let plan = self.plan_order_by(&expr_binder, plan, modifier.order_by)?;
+        let plan = self.plan_limit(plan, modifier.limit, modifier.offset)?;
         Ok(plan)
     }
 
@@ -272,9 +370,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
             match projection {
                 parser::Projection::Wildcard => {
                     for (i, column) in plan.schema.0.iter().cloned().enumerate() {
-                        exprs.push(planner::Expression::ColumnRef {
-                            index: ColumnIndex(i),
-                        });
+                        exprs.push(planner::Expression::ColumnRef(ColumnIndex(i)));
                         columns.push(column);
                     }
                 }
@@ -286,7 +382,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
                     if let Some(alias) = alias {
                         table_name = None;
                         column_name = alias;
-                    } else if let planner::Expression::ColumnRef { index } = &bound_expr.expr {
+                    } else if let planner::Expression::ColumnRef(index) = &bound_expr.expr {
                         let column = &plan.schema.0[index.0];
                         table_name = column.table_name.clone();
                         column_name = column.column_name.clone();
@@ -325,9 +421,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
                 PlanNode::Project(planner::Project {
                     source: Box::new(node),
                     exprs: (0..columns.len())
-                        .map(|i| planner::Expression::ColumnRef {
-                            index: ColumnIndex(i),
-                        })
+                        .map(|i| planner::Expression::ColumnRef(ColumnIndex(i)))
                         .collect(),
                 })
             }
@@ -423,7 +517,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
                 Ok(self.plan_base_table(self.catalog.table(name)?))
             }
             parser::TableRef::Join(join) => self.plan_join(*join),
-            parser::TableRef::Subquery(select) => self.plan_select(*select),
+            parser::TableRef::Subquery(query) => self.plan_query(*query),
             parser::TableRef::Function { name, args } => self.plan_table_function(name, args),
             parser::TableRef::Values(values) => self.plan_values(values),
         }

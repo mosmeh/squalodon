@@ -43,7 +43,7 @@ impl<T: Storage> Explain for Delete<'_, '_, T> {
 impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
     pub fn plan_insert(&self, insert: parser::Insert) -> PlannerResult<Plan<'txn, 'db, T>> {
         let table = self.catalog.table(insert.table_name)?;
-        let Plan { node, schema } = self.plan_select(insert.select)?;
+        let Plan { node, schema } = self.plan_query(insert.query)?;
         if table.columns().len() != schema.0.len() {
             return Err(PlannerError::ColumnCountMismatch {
                 expected: table.columns().len(),
@@ -83,9 +83,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         };
         let mut exprs = Vec::with_capacity(table.columns().len());
         for (source_index, source_column, dest_column) in column_mapping {
-            let mut expr = planner::Expression::ColumnRef {
-                index: ColumnIndex(source_index),
-            };
+            let mut expr = planner::Expression::ColumnRef(ColumnIndex(source_index));
             if !source_column.ty.is_compatible_with(dest_column.ty) {
                 if !source_column.ty.can_cast_to(dest_column.ty) {
                     return Err(PlannerError::TypeError);
@@ -150,11 +148,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         let exprs = exprs
             .into_iter()
             .enumerate()
-            .map(|(i, expr)| {
-                expr.unwrap_or(planner::Expression::ColumnRef {
-                    index: ColumnIndex(i),
-                })
-            })
+            .map(|(i, expr)| expr.unwrap_or(planner::Expression::ColumnRef(ColumnIndex(i))))
             .collect();
         let node = PlanNode::Project(planner::Project {
             source: Box::new(plan.node),

@@ -7,7 +7,7 @@ mod query;
 pub use aggregate::{Aggregate, AggregateOp, ApplyAggregateOp};
 pub use expression::Expression;
 pub use modification::{Delete, Insert, Update};
-pub use query::{CrossProduct, Filter, Limit, OrderBy, Project, Scan, Sort, Values};
+pub use query::{CrossProduct, Filter, Limit, OrderBy, Project, Scan, Sort, Union, Values};
 
 use crate::{
     catalog::CatalogRef,
@@ -214,6 +214,7 @@ pub enum PlanNode<'txn, 'db, T: Storage> {
     Limit(Limit<'txn, 'db, T>),
     CrossProduct(CrossProduct<'txn, 'db, T>),
     Aggregate(Aggregate<'txn, 'db, T>),
+    Union(Union<'txn, 'db, T>),
     Insert(Insert<'txn, 'db, T>),
     Update(Update<'txn, 'db, T>),
     Delete(Delete<'txn, 'db, T>),
@@ -242,6 +243,7 @@ impl<T: Storage> Explain for PlanNode<'_, '_, T> {
             Self::Limit(n) => n.visit(visitor),
             Self::CrossProduct(n) => n.visit(visitor),
             Self::Aggregate(n) => n.visit(visitor),
+            Self::Union(n) => n.visit(visitor),
             Self::Insert(n) => n.visit(visitor),
             Self::Update(n) => n.visit(visitor),
             Self::Delete(n) => n.visit(visitor),
@@ -291,7 +293,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
             }
             parser::Statement::CreateTable(create_table) => self.plan_create_table(create_table),
             parser::Statement::DropTable(drop_table) => self.plan_drop_table(drop_table),
-            parser::Statement::Select(select) => self.plan_select(select),
+            parser::Statement::Query(query) => self.plan_query(query),
             parser::Statement::Insert(insert) => self.plan_insert(insert),
             parser::Statement::Update(update) => self.plan_update(update),
             parser::Statement::Delete(delete) => self.plan_delete(delete),

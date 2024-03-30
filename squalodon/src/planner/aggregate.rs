@@ -237,7 +237,7 @@ impl<'txn, T: Storage> AggregateContext<'txn, T> {
             let (new_plan, TypedExpression { expr, ty }) =
                 expr_binder.bind(plan, group_by.clone())?;
             plan = new_plan;
-            let column = if let planner::Expression::ColumnRef { index } = expr {
+            let column = if let planner::Expression::ColumnRef(index) = expr {
                 plan.schema.0[index.0].clone()
             } else {
                 planner::Column {

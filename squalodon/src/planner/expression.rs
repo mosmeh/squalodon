@@ -11,9 +11,7 @@ use crate::{
 
 pub enum Expression<T: Storage> {
     Constact(Value),
-    ColumnRef {
-        index: ColumnIndex,
-    },
+    ColumnRef(ColumnIndex),
     Cast {
         expr: Box<Expression<T>>,
         ty: Type,
@@ -42,7 +40,7 @@ impl<T: Storage> Clone for Expression<T> {
     fn clone(&self) -> Self {
         match self {
             Self::Constact(value) => Self::Constact(value.clone()),
-            Self::ColumnRef { index } => Self::ColumnRef { index: *index },
+            Self::ColumnRef(index) => Self::ColumnRef(*index),
             Self::Cast { expr, ty } => Self::Cast {
                 expr: expr.clone(),
                 ty: *ty,
@@ -77,7 +75,7 @@ impl<T: Storage> std::fmt::Display for Expression<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Constact(value) => write!(f, "{value:?}"),
-            Self::ColumnRef { index } => write!(f, "{index}"),
+            Self::ColumnRef(index) => write!(f, "{index}"),
             Self::Cast { expr, ty } => write!(f, "CAST({expr} AS {ty})"),
             Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
             Self::BinaryOp { op, lhs, rhs } => {
@@ -180,7 +178,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
             parser::Expression::Constant(value) => Ok((source, value.into())),
             parser::Expression::ColumnRef(column_ref) => {
                 let (index, column) = source.schema.resolve_column(&column_ref)?;
-                let expr = planner::Expression::ColumnRef { index };
+                let expr = planner::Expression::ColumnRef(index);
                 let ty = column.ty;
                 Ok((source, TypedExpression { expr, ty }))
             }
@@ -321,9 +319,9 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                         };
                         let (index, column) = aggregate_ctx
                             .resolve_aggregate(name, args, is_distinct)
-                            .expect("aggregate function should have been gathered in earlier step");
+                            .ok_or_else(|| PlannerError::UnknownColumn("(aggregate)".to_owned()))?;
                         let expr = TypedExpression {
-                            expr: planner::Expression::ColumnRef { index },
+                            expr: planner::Expression::ColumnRef(index),
                             ty: column.ty,
                         };
                         return Ok((source, expr));
@@ -356,7 +354,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                 };
                 Ok((plan, TypedExpression { expr, ty }))
             }
-            parser::Expression::ScalarSubquery(select) => {
+            parser::Expression::ScalarSubquery(query) => {
                 /// An aggregator that asserts that the subquery returns
                 /// a single row.
                 #[derive(Default)]
@@ -379,8 +377,8 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                     }
                 }
 
-                let column_name = select.to_string();
-                let subquery_plan = self.planner.plan_select(*select)?;
+                let column_name = query.to_string();
+                let subquery_plan = self.planner.plan_query(*query)?;
                 let [subquery_result_column] = subquery_plan
                     .schema
                     .0
@@ -405,7 +403,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                 };
                 Ok(attach_subquery(source, subquery_plan))
             }
-            parser::Expression::Exists(select) => {
+            parser::Expression::Exists(query) => {
                 /// An aggregator that produces a boolean indicating whether
                 /// the subquery returns any rows.
                 #[derive(Default)]
@@ -424,8 +422,8 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                     }
                 }
 
-                let column_name = format!("EXISTS ({select})");
-                let subquery_plan = self.planner.plan_select(*select)?;
+                let column_name = format!("EXISTS ({query})");
+                let subquery_plan = self.planner.plan_query(*query)?;
 
                 // Equivalent to `SELECT exists(SELECT * FROM subquery LIMIT 1)`
                 let subquery_node = PlanNode::Limit(planner::Limit {
@@ -488,9 +486,7 @@ fn attach_subquery<'txn, 'db, T: Storage>(
         schema: columns.into(),
     };
     let expr = TypedExpression {
-        expr: planner::Expression::ColumnRef {
-            index: subquery_column_index,
-        },
+        expr: planner::Expression::ColumnRef(subquery_column_index),
         ty: subquery_column_type,
     };
     (plan, expr)

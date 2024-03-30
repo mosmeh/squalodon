@@ -153,6 +153,7 @@ keywords! {
     Text
     Transaction
     True
+    Union
     Update
     Values
     Where

@@ -1,11 +1,11 @@
-use super::{Expression, Parser, ParserResult, Select};
+use super::{Expression, Parser, ParserResult, Query};
 use crate::lexer::Token;
 
 #[derive(Debug, Clone)]
 pub struct Insert {
     pub table_name: String,
     pub column_names: Option<Vec<String>>,
-    pub select: Select,
+    pub query: Query,
 }
 
 #[derive(Debug, Clone)]
@@ -41,11 +41,11 @@ impl Parser<'_> {
                 Ok(column_names)
             })
             .transpose()?;
-        let select = self.parse_select()?;
+        let query = self.parse_query()?;
         Ok(Insert {
             table_name,
             column_names,
-            select,
+            query,
         })
     }
 

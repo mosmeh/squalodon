@@ -10,7 +10,7 @@ impl<T: Storage> Expression<T> {
     pub fn eval(&self, ctx: &ExecutorContext<T>, row: &Row) -> ExecutorResult<Value> {
         match self {
             Self::Constact(v) => Ok(v.clone()),
-            Self::ColumnRef { index } => Ok(row[index].clone()),
+            Self::ColumnRef(index) => Ok(row[index].clone()),
             Self::Cast { expr, ty } => expr
                 .eval(ctx, row)?
                 .cast(*ty)

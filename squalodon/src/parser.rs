@@ -6,7 +6,10 @@ mod query;
 pub use ddl::{Constraint, CreateTable, DropTable};
 pub use expression::{BinaryOp, ColumnRef, Expression, FunctionArgs, UnaryOp};
 pub use modification::{Delete, Insert, Update};
-pub use query::{Distinct, Join, NullOrder, Order, OrderBy, Projection, Select, TableRef, Values};
+pub use query::{
+    Distinct, Join, NullOrder, Order, OrderBy, Projection, Query, QueryBody, QueryModifier, Select,
+    TableRef, Values,
+};
 
 use crate::{
     lexer::{Lexer, LexerError, Token},
@@ -39,7 +42,7 @@ pub enum Statement {
     Describe(String),
     CreateTable(CreateTable),
     DropTable(DropTable),
-    Select(Select),
+    Query(Query),
     Insert(Insert),
     Update(Update),
     Delete(Delete),
@@ -156,7 +159,9 @@ impl<'a> Parser<'a> {
             }
             Token::Create => self.parse_create(),
             Token::Drop => self.parse_drop(),
-            Token::Select | Token::Values => self.parse_select().map(Statement::Select),
+            Token::Select | Token::Values | Token::LeftParen => {
+                self.parse_query().map(Statement::Query)
+            }
             Token::Insert => self.parse_insert().map(Statement::Insert),
             Token::Update => self.parse_update().map(Statement::Update),
             Token::Delete => self.parse_delete().map(Statement::Delete),

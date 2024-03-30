@@ -1,4 +1,4 @@
-use super::{unexpected, Parser, ParserResult, Select};
+use super::{unexpected, Parser, ParserResult, Query};
 use crate::{lexer::Token, types::Value, Type};
 use std::num::NonZeroUsize;
 
@@ -29,8 +29,8 @@ pub enum Expression {
         args: FunctionArgs,
         is_distinct: bool,
     },
-    ScalarSubquery(Box<Select>),
-    Exists(Box<Select>),
+    ScalarSubquery(Box<Query>),
+    Exists(Box<Query>),
     Parameter(NonZeroUsize),
 }
 
@@ -63,8 +63,8 @@ impl std::fmt::Display for Expression {
                 f.write_str(if *case_insensitive { "ILIKE" } else { "LIKE" })?;
                 write!(f, " {pattern})")
             }
-            Self::ScalarSubquery(select) => write!(f, "({select})"),
-            Self::Exists(select) => write!(f, "EXISTS ({select})"),
+            Self::ScalarSubquery(query) => write!(f, "({query})"),
+            Self::Exists(query) => write!(f, "EXISTS ({query})"),
             Self::Parameter(i) => write!(f, "${i}"),
         }
     }
@@ -370,15 +370,15 @@ impl Parser<'_> {
             }
             Token::Exists => {
                 self.expect(Token::LeftParen)?;
-                let select = self.parse_select()?;
+                let query = self.parse_query()?;
                 self.expect(Token::RightParen)?;
-                Expression::Exists(Box::new(select))
+                Expression::Exists(Box::new(query))
             }
             Token::LeftParen => {
                 let inner = match self.lexer.peek()? {
-                    Token::Select | Token::Values => {
-                        let select = self.parse_select()?;
-                        Expression::ScalarSubquery(Box::new(select))
+                    Token::Select | Token::Values | Token::LeftParen => {
+                        let query = self.parse_query()?;
+                        Expression::ScalarSubquery(Box::new(query))
                     }
                     _ => self.parse_expr()?,
                 };

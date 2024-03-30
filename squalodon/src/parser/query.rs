@@ -2,6 +2,72 @@ use super::{unexpected, Expression, Parser, ParserResult};
 use crate::{lexer::Token, ParserError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Query {
+    pub body: QueryBody,
+    pub modifier: QueryModifier,
+}
+
+impl std::fmt::Display for Query {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.body.fmt(f)?;
+        if !self.modifier.order_by.is_empty() {
+            f.write_str(" ORDER BY ")?;
+            for (i, order_by) in self.modifier.order_by.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(", ")?;
+                }
+                order_by.fmt(f)?;
+            }
+        }
+        if let Some(limit) = &self.modifier.limit {
+            write!(f, " LIMIT {limit}")?;
+        }
+        if let Some(offset) = &self.modifier.offset {
+            write!(f, " OFFSET {offset}")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum QueryBody {
+    Select(Select),
+    Union {
+        all: bool,
+        left: Box<Query>,
+        right: Box<Query>,
+    },
+}
+
+impl std::fmt::Display for QueryBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Select(select) => select.fmt(f),
+            Self::Union { all, left, right } => {
+                write!(f, "({left} UNION ")?;
+                if *all {
+                    f.write_str("ALL ")?;
+                }
+                write!(f, "{right})")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct QueryModifier {
+    pub order_by: Vec<OrderBy>,
+    pub limit: Option<Expression>,
+    pub offset: Option<Expression>,
+}
+
+impl QueryModifier {
+    fn is_empty(&self) -> bool {
+        self.order_by.is_empty() && self.limit.is_none() && self.offset.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Select {
     pub distinct: Option<Distinct>,
     pub projections: Vec<Projection>,
@@ -9,9 +75,6 @@ pub struct Select {
     pub where_clause: Option<Expression>,
     pub group_by: Vec<Expression>,
     pub having: Option<Expression>,
-    pub order_by: Vec<OrderBy>,
-    pub limit: Option<Expression>,
-    pub offset: Option<Expression>,
 }
 
 impl std::fmt::Display for Select {
@@ -43,21 +106,6 @@ impl std::fmt::Display for Select {
         }
         if let Some(having) = &self.having {
             write!(f, " HAVING {having}")?;
-        }
-        if !self.order_by.is_empty() {
-            f.write_str(" ORDER BY ")?;
-            for (i, order_by) in self.order_by.iter().enumerate() {
-                if i > 0 {
-                    f.write_str(", ")?;
-                }
-                order_by.fmt(f)?;
-            }
-        }
-        if let Some(limit) = &self.limit {
-            write!(f, " LIMIT {limit}")?;
-        }
-        if let Some(offset) = &self.offset {
-            write!(f, " OFFSET {offset}")?;
         }
         Ok(())
     }
@@ -113,7 +161,7 @@ impl std::fmt::Display for Projection {
 pub enum TableRef {
     BaseTable { name: String },
     Join(Box<Join>),
-    Subquery(Box<Select>),
+    Subquery(Box<Query>),
     Function { name: String, args: Vec<Expression> },
     Values(Values),
 }
@@ -123,7 +171,7 @@ impl std::fmt::Display for TableRef {
         match self {
             Self::BaseTable { name } => f.write_str(name),
             Self::Join(join) => join.fmt(f),
-            Self::Subquery(select) => write!(f, "({select})"),
+            Self::Subquery(query) => write!(f, "({query})"),
             Self::Function { name, args } => {
                 write!(f, "{name}(")?;
                 for (i, arg) in args.iter().enumerate() {
@@ -244,7 +292,81 @@ impl std::fmt::Display for NullOrder {
 }
 
 impl Parser<'_> {
-    pub fn parse_select(&mut self) -> ParserResult<Select> {
+    pub fn parse_query(&mut self) -> ParserResult<Query> {
+        let mut query = if self.lexer.consume_if_eq(Token::LeftParen)? {
+            let query = self.parse_query()?;
+            self.expect(Token::RightParen)?;
+            query
+        } else {
+            let body = QueryBody::Select(self.parse_select()?);
+            let query = Query {
+                body,
+                modifier: self.parse_query_modifier()?,
+            };
+            if !query.modifier.is_empty() {
+                // Modifiers don't appear immediately before UNION.
+                return Ok(query);
+            }
+            query
+        };
+        while self.lexer.consume_if_eq(Token::Union)? {
+            let all = self.lexer.consume_if_eq(Token::All)?;
+            let right = if self.lexer.consume_if_eq(Token::LeftParen)? {
+                let query = self.parse_query()?;
+                self.expect(Token::RightParen)?;
+                query
+            } else {
+                let body = QueryBody::Select(self.parse_select()?);
+                // Modifiers that come after this SELECT are part of
+                // the outer Query::Setop, not this Query::Select.
+                Query {
+                    body,
+                    modifier: QueryModifier::default(),
+                }
+            };
+            query = Query {
+                body: QueryBody::Union {
+                    all,
+                    left: Box::new(query),
+                    right: Box::new(right),
+                },
+                modifier: QueryModifier::default(),
+            };
+        }
+        if query.modifier.is_empty() {
+            // This parses cases such as:
+            // - SELECT ... UNION SELECT ... ORDER BY ...
+            // - (SELECT ...) ORDER BY ...
+            query.modifier = self.parse_query_modifier()?;
+        }
+        Ok(query)
+    }
+
+    fn parse_query_modifier(&mut self) -> ParserResult<QueryModifier> {
+        let order_by = (*self.lexer.peek()? == Token::Order)
+            .then(|| self.parse_order_by())
+            .transpose()?
+            .unwrap_or_default();
+        let mut modifier = QueryModifier {
+            order_by,
+            limit: None,
+            offset: None,
+        };
+        loop {
+            if modifier.limit.is_none() && self.lexer.consume_if_eq(Token::Limit)? {
+                modifier.limit = Some(self.parse_expr()?);
+                continue;
+            }
+            if modifier.offset.is_none() && self.lexer.consume_if_eq(Token::Offset)? {
+                modifier.offset = Some(self.parse_expr()?);
+                continue;
+            }
+            break;
+        }
+        Ok(modifier)
+    }
+
+    fn parse_select(&mut self) -> ParserResult<Select> {
         let mut distinct = None;
         let projections;
         let from;
@@ -294,20 +416,6 @@ impl Parser<'_> {
             }
             token => return Err(unexpected(token)),
         };
-        let order_by = (*self.lexer.peek()? == Token::Order)
-            .then(|| self.parse_order_by())
-            .transpose()?
-            .unwrap_or_default();
-        let limit = self
-            .lexer
-            .consume_if_eq(Token::Limit)?
-            .then(|| self.parse_expr())
-            .transpose()?;
-        let offset = self
-            .lexer
-            .consume_if_eq(Token::Offset)?
-            .then(|| self.parse_expr())
-            .transpose()?;
         Ok(Select {
             distinct,
             projections,
@@ -315,9 +423,6 @@ impl Parser<'_> {
             where_clause,
             group_by,
             having,
-            order_by,
-            limit,
-            offset,
         })
     }
 
@@ -422,9 +527,7 @@ impl Parser<'_> {
                 self.lexer.consume()?;
                 let inner = match self.lexer.peek()? {
                     Token::Identifier(_) | Token::LeftParen => self.parse_table_or_subquery()?,
-                    Token::Select | Token::Values => {
-                        TableRef::Subquery(self.parse_select()?.into())
-                    }
+                    Token::Select | Token::Values => TableRef::Subquery(self.parse_query()?.into()),
                     token => return Err(unexpected(token)),
                 };
                 self.expect(Token::RightParen)?;
