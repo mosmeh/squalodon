@@ -63,7 +63,7 @@ pub struct FunctionScan<'txn, 'db, T: Storage> {
     ctx: &'txn ExecutorContext<'txn, 'db, T>,
     source: Box<ExecutorNode<'txn, 'db, T>>,
     fn_ptr: TableFnPtr<T>,
-    rows: Box<dyn Iterator<Item = Row>>,
+    rows: Box<dyn Iterator<Item = Row> + 'txn>,
 }
 
 impl<'txn, 'db, T: Storage> FunctionScan<'txn, 'db, T> {

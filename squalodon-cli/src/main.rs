@@ -353,7 +353,14 @@ impl<T: Storage> Completer for RustylineHelper<'_, '_, T> {
         }
         let rows = self
             .conn
-            .query("SELECT name FROM squalodon_tables()", [])
+            .query(
+                "SELECT name FROM squalodon_tables()
+                UNION
+                SELECT column_name FROM squalodon_columns()
+                UNION
+                SELECT name FROM squalodon_functions()",
+                [],
+            )
             .unwrap();
         for row in rows {
             let table_name: String = row.get(0).unwrap();

@@ -1,5 +1,5 @@
 use crate::{
-    catalog::{Constraint, TableFunction},
+    catalog::{Constraint, Function, TableFunction},
     lexer,
     planner::Column,
     storage::Storage,
@@ -52,6 +52,26 @@ pub fn load<T: Storage>() -> impl Iterator<Item = (&'static str, TableFunction<T
                     Column::new("type", Type::Text),
                     Column::new("is_nullable", Type::Boolean),
                     Column::new("is_primary_key", Type::Boolean),
+                ],
+            },
+        ),
+        (
+            "squalodon_functions",
+            TableFunction {
+                fn_ptr: |ctx, _| {
+                    let rows = ctx.catalog().functions().map(|(name, function)| {
+                        let kind = match function {
+                            Function::Scalar(_) => "scalar",
+                            Function::Aggregate(_) => "aggregate",
+                            Function::Table(_) => "table",
+                        };
+                        Row(vec![name.into(), kind.into()])
+                    });
+                    Ok(Box::new(rows))
+                },
+                result_columns: vec![
+                    Column::new("name", Type::Text),
+                    Column::new("type", Type::Text),
                 ],
             },
         ),
