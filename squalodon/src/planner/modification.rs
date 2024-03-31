@@ -1,6 +1,6 @@
 use super::{
-    expression::TypedExpression, Explain, ExplainVisitor, Plan, PlanNode, Planner, PlannerError,
-    PlannerResult,
+    expression::{ExpressionBinder, TypedExpression},
+    Explain, ExplainVisitor, Plan, PlanNode, Planner, PlannerError, PlannerResult,
 };
 use crate::{parser, planner, rows::ColumnIndex, storage::Table, Storage};
 
@@ -109,10 +109,11 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
     }
 
     pub fn plan_update(&self, update: parser::Update) -> PlannerResult<Plan<'txn, 'db, T>> {
+        let expr_binder = ExpressionBinder::new(self);
         let table = self.catalog.table(update.table_name)?;
         let mut plan = self.plan_base_table(table.clone());
         if let Some(where_clause) = update.where_clause {
-            plan = self.plan_where_clause(plan, where_clause)?;
+            plan = self.plan_where_clause(&expr_binder, plan, where_clause)?;
         }
         let mut exprs = vec![None; table.columns().len()];
         for set in update.sets {
@@ -132,7 +133,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
                     expr: mut bound_expr,
                     ty,
                 },
-            ) = self.bind_expr(plan, set.expr)?;
+            ) = expr_binder.bind(plan, set.expr)?;
             plan = new_plan;
             if !ty.is_compatible_with(column.ty) {
                 if !ty.can_cast_to(column.ty) {
@@ -167,7 +168,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         let table = self.catalog.table(delete.table_name)?;
         let mut plan = self.plan_base_table(table.clone());
         if let Some(where_clause) = delete.where_clause {
-            plan = self.plan_where_clause(plan, where_clause)?;
+            plan = self.plan_where_clause(&ExpressionBinder::new(self), plan, where_clause)?;
         }
         Ok(Plan {
             node: PlanNode::Delete(Delete {

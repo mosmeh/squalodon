@@ -74,37 +74,35 @@ pub enum AggregateOp {
     Passthrough,
 }
 
-pub struct AggregateContext<'txn, T: Storage> {
+pub struct AggregateCollection<'a, 'txn, 'db, T: Storage> {
+    planner: &'a Planner<'txn, 'db, T>,
     aggregate_calls: HashMap<AggregateCall, usize>,
     bound_aggregates: Vec<BoundAggregate<'txn, T>>,
 }
 
-impl<T: Storage> Default for AggregateContext<'_, T> {
-    fn default() -> Self {
+impl<'a, 'txn, 'db, T: Storage> AggregateCollection<'a, 'txn, 'db, T> {
+    pub fn new(planner: &'a Planner<'txn, 'db, T>) -> Self {
         Self {
+            planner,
             aggregate_calls: HashMap::new(),
             bound_aggregates: Vec::new(),
         }
     }
-}
 
-impl<'txn, T: Storage> AggregateContext<'txn, T> {
-    pub fn has_aggregates(&self) -> bool {
-        !self.aggregate_calls.is_empty()
+    pub fn finish(self) -> AggregatePlanner<'a, 'txn, 'db, T> {
+        AggregatePlanner(self)
     }
 
-    pub fn gather_aggregates<'db>(
+    pub fn gather(
         &mut self,
-        planner: &Planner<'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
         expr: &parser::Expression,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
-        self.gather_aggregates_inner(planner, source, expr, false)
+        self.gather_inner(source, expr, false)
     }
 
-    fn gather_aggregates_inner<'db>(
+    fn gather_inner(
         &mut self,
-        planner: &Planner<'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
         expr: &parser::Expression,
         in_aggregate_args: bool,
@@ -116,25 +114,24 @@ impl<'txn, T: Storage> AggregateContext<'txn, T> {
             | parser::Expression::Exists(_)
             | parser::Expression::Parameter(_) => Ok(source),
             parser::Expression::Cast { expr, .. } | parser::Expression::UnaryOp { expr, .. } => {
-                self.gather_aggregates_inner(planner, source, expr, in_aggregate_args)
+                self.gather_inner(source, expr, in_aggregate_args)
             }
             parser::Expression::BinaryOp { lhs, rhs, .. } => {
-                let plan = self.gather_aggregates_inner(planner, source, lhs, in_aggregate_args)?;
-                self.gather_aggregates_inner(planner, plan, rhs, in_aggregate_args)
+                let plan = self.gather_inner(source, lhs, in_aggregate_args)?;
+                self.gather_inner(plan, rhs, in_aggregate_args)
             }
             parser::Expression::Like {
                 str_expr, pattern, ..
             } => {
-                let plan =
-                    self.gather_aggregates_inner(planner, source, str_expr, in_aggregate_args)?;
-                self.gather_aggregates_inner(planner, plan, pattern, in_aggregate_args)
+                let plan = self.gather_inner(source, str_expr, in_aggregate_args)?;
+                self.gather_inner(plan, pattern, in_aggregate_args)
             }
             parser::Expression::Function {
                 name,
                 args,
                 is_distinct,
             } => {
-                match planner.catalog.aggregate_function(name) {
+                match self.planner.catalog.aggregate_function(name) {
                     Ok(function) => {
                         if in_aggregate_args {
                             // Nested aggregate functions are not allowed.
@@ -155,9 +152,8 @@ impl<'txn, T: Storage> AggregateContext<'txn, T> {
                                 )
                             }
                             parser::FunctionArgs::Expressions(args) if args.len() == 1 => {
-                                let plan =
-                                    self.gather_aggregates_inner(planner, source, &args[0], true)?;
-                                ExpressionBinder::new(planner).bind(plan, args[0].clone())?
+                                let plan = self.gather_inner(source, &args[0], true)?;
+                                ExpressionBinder::new(self.planner).bind(plan, args[0].clone())?
                             }
                             _ => return Err(PlannerError::ArityError),
                         };
@@ -191,7 +187,7 @@ impl<'txn, T: Storage> AggregateContext<'txn, T> {
                     Err(err) => return Err(err.into()),
                 }
 
-                planner.catalog.scalar_function(name)?; // Check if the function exists
+                self.planner.catalog.scalar_function(name)?; // Check if the function exists
                 if *is_distinct {
                     return Err(PlannerError::InvalidArgument);
                 }
@@ -200,12 +196,7 @@ impl<'txn, T: Storage> AggregateContext<'txn, T> {
                     parser::FunctionArgs::Expressions(args) => {
                         let mut plan = source;
                         for arg in args {
-                            plan = self.gather_aggregates_inner(
-                                planner,
-                                plan,
-                                arg,
-                                in_aggregate_args,
-                            )?;
+                            plan = self.gather_inner(plan, arg, in_aggregate_args)?;
                         }
                         Ok(plan)
                     }
@@ -213,41 +204,54 @@ impl<'txn, T: Storage> AggregateContext<'txn, T> {
             }
         }
     }
+}
 
-    pub fn plan_aggregates<'db>(
+pub struct AggregatePlanner<'a, 'txn, 'db, T: Storage>(AggregateCollection<'a, 'txn, 'db, T>);
+
+impl<'txn, 'db, T: Storage> AggregatePlanner<'_, 'txn, 'db, T> {
+    pub fn has_aggregates(&self) -> bool {
+        !self.0.aggregate_calls.is_empty()
+    }
+
+    pub fn plan(
         &self,
-        planner: &Planner<'txn, 'db, T>,
+        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
         group_by: Vec<parser::Expression>,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
         let mut plan = source;
-        let mut exprs = Vec::with_capacity(self.bound_aggregates.len());
-        let mut columns = Vec::with_capacity(self.bound_aggregates.len());
+        let mut exprs = Vec::with_capacity(self.0.bound_aggregates.len());
+        let mut columns = Vec::with_capacity(self.0.bound_aggregates.len());
 
         // The first `bound_aggregates.len()` columns are the aggregated columns
         // that are passed to the respective aggregate functions.
-        for bound_aggregate in &self.bound_aggregates {
+        for bound_aggregate in &self.0.bound_aggregates {
             exprs.push(bound_aggregate.arg.clone());
             columns.push(bound_aggregate.result_column.clone());
         }
 
         // The rest of the columns are the columns in the GROUP BY clause.
-        let expr_binder = ExpressionBinder::new(planner);
         for group_by in &group_by {
+            let table_name;
+            let column_name;
+            if let parser::Expression::ColumnRef(column_ref) = group_by {
+                table_name = column_ref.table_name.clone();
+                column_name = column_ref.column_name.clone();
+            } else {
+                table_name = None;
+                column_name = group_by.to_string();
+            };
+
             let (new_plan, TypedExpression { expr, ty }) =
                 expr_binder.bind(plan, group_by.clone())?;
             plan = new_plan;
-            let column = if let planner::Expression::ColumnRef(index) = expr {
-                plan.schema.0[index.0].clone()
-            } else {
-                planner::Column {
-                    table_name: None,
-                    column_name: group_by.to_string(),
-                    ty,
-                }
-            };
+
             exprs.push(expr);
-            columns.push(column);
+            columns.push(planner::Column {
+                table_name,
+                column_name,
+                ty,
+            });
         }
 
         let node = PlanNode::Project(planner::Project {
@@ -256,6 +260,7 @@ impl<'txn, T: Storage> AggregateContext<'txn, T> {
         });
 
         let column_ops = self
+            .0
             .bound_aggregates
             .iter()
             .map(|bound_aggregate| ApplyAggregateOp {
@@ -283,21 +288,23 @@ impl<'txn, T: Storage> AggregateContext<'txn, T> {
         })
     }
 
-    pub fn resolve_aggregate(
+    pub fn resolve(
         &self,
         function_name: String,
         args: parser::FunctionArgs,
         is_distinct: bool,
     ) -> Option<(ColumnIndex, &planner::Column)> {
-        let index = self.aggregate_calls.get(&AggregateCall {
-            function_name,
-            args,
-            is_distinct,
-        });
-        index.map(|&index| {
-            let bound_aggregate = &self.bound_aggregates[index];
-            (ColumnIndex(index), &bound_aggregate.result_column)
-        })
+        self.0
+            .aggregate_calls
+            .get(&AggregateCall {
+                function_name,
+                args,
+                is_distinct,
+            })
+            .map(|&index| {
+                let bound_aggregate = &self.0.bound_aggregates[index];
+                (ColumnIndex(index), &bound_aggregate.result_column)
+            })
     }
 }
 

@@ -1,4 +1,4 @@
-use super::{aggregate::AggregateContext, Plan, PlanNode, Planner, PlannerError, PlannerResult};
+use super::{aggregate::AggregatePlanner, Plan, PlanNode, Planner, PlannerError, PlannerResult};
 use crate::{
     catalog::{Aggregator, ScalarEvalFnPtr},
     executor::{ExecutorError, ExecutorResult},
@@ -8,6 +8,7 @@ use crate::{
     types::{NullableType, Type},
     CatalogError, Storage, Value,
 };
+use std::collections::HashMap;
 
 pub enum Expression<T: Storage> {
     Constact(Value),
@@ -109,6 +110,15 @@ pub struct TypedExpression<T: Storage> {
     pub ty: NullableType,
 }
 
+impl<T: Storage> Clone for TypedExpression<T> {
+    fn clone(&self) -> Self {
+        Self {
+            expr: self.expr.clone(),
+            ty: self.ty,
+        }
+    }
+}
+
 impl<T: Storage> From<Value> for TypedExpression<T> {
     fn from(value: Value) -> Self {
         let ty = value.ty();
@@ -132,40 +142,32 @@ impl<T: Storage> TypedExpression<T> {
     }
 }
 
-impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
-    pub fn bind_expr(
-        &self,
-        source: Plan<'txn, 'db, T>,
-        expr: parser::Expression,
-    ) -> PlannerResult<(Plan<'txn, 'db, T>, TypedExpression<T>)> {
-        ExpressionBinder::new(self).bind(source, expr)
-    }
-
-    pub fn bind_expr_without_source(
-        &self,
-        expr: parser::Expression,
-    ) -> PlannerResult<TypedExpression<T>> {
-        ExpressionBinder::new(self).bind_without_source(expr)
-    }
-}
-
 pub struct ExpressionBinder<'a, 'txn, 'db, T: Storage> {
     planner: &'a Planner<'txn, 'db, T>,
-    aggregate_ctx: Option<AggregateContext<'txn, T>>,
+    aliases: Option<&'a HashMap<String, TypedExpression<T>>>,
+    aggregates: Option<&'a AggregatePlanner<'a, 'txn, 'db, T>>,
 }
 
 impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
     pub fn new(planner: &'a Planner<'txn, 'db, T>) -> Self {
         Self {
             planner,
-            aggregate_ctx: None,
+            aliases: None,
+            aggregates: None,
         }
     }
 
-    pub fn with_aggregate_context(self, aggregate_ctx: AggregateContext<'txn, T>) -> Self {
+    pub fn with_aliases(&self, aliases: &'a HashMap<String, TypedExpression<T>>) -> Self {
         Self {
-            aggregate_ctx: Some(aggregate_ctx),
-            ..self
+            aliases: Some(aliases),
+            ..*self
+        }
+    }
+
+    pub fn with_aggregates(&self, aggregates: &'a AggregatePlanner<'a, 'txn, 'db, T>) -> Self {
+        Self {
+            aggregates: Some(aggregates),
+            ..*self
         }
     }
 
@@ -177,6 +179,14 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
         match expr {
             parser::Expression::Constant(value) => Ok((source, value.into())),
             parser::Expression::ColumnRef(column_ref) => {
+                if column_ref.table_name.is_none() {
+                    if let Some(expr) = self
+                        .aliases
+                        .and_then(|aliases| aliases.get(&column_ref.column_name))
+                    {
+                        return Ok((source, expr.clone()));
+                    }
+                }
                 let (index, column) = source.schema.resolve_column(&column_ref)?;
                 let expr = planner::Expression::ColumnRef(index);
                 let ty = column.ty;
@@ -314,11 +324,11 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
             } => {
                 match self.planner.catalog.aggregate_function(&name) {
                     Ok(_) => {
-                        let Some(aggregate_ctx) = &self.aggregate_ctx else {
+                        let Some(aggregates) = &self.aggregates else {
                             return Err(PlannerError::AggregateNotAllowed);
                         };
-                        let (index, column) = aggregate_ctx
-                            .resolve_aggregate(name, args, is_distinct)
+                        let (index, column) = aggregates
+                            .resolve(name, args, is_distinct)
                             .ok_or_else(|| PlannerError::UnknownColumn("(aggregate)".to_owned()))?;
                         let expr = TypedExpression {
                             expr: planner::Expression::ColumnRef(index),

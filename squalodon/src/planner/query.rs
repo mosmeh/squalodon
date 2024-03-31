@@ -1,18 +1,18 @@
 use super::{
-    aggregate::AggregateContext,
+    aggregate::AggregateCollection,
     expression::{ExpressionBinder, TypedExpression},
     Explain, ExplainVisitor, Plan, PlanNode, Planner, PlannerResult,
 };
 use crate::{
     catalog::TableFnPtr,
-    parser::{self, Distinct, NullOrder, Order, QueryModifier},
+    parser::{self, NullOrder, Order},
     planner,
     rows::ColumnIndex,
     storage::Table,
     types::NullableType,
     PlannerError, Storage, Type,
 };
-use std::fmt::Write;
+use std::{collections::HashMap, fmt::Write};
 
 pub struct Values<T: Storage> {
     pub rows: Vec<Vec<planner::Expression<T>>>,
@@ -194,65 +194,115 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
     fn plan_select(
         &self,
         select: parser::Select,
-        modifier: QueryModifier,
+        modifier: parser::QueryModifier,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
-        let mut plan = self.plan_table_ref(select.from)?;
-        if let Some(where_clause) = select.where_clause {
-            plan = self.plan_where_clause(plan, where_clause)?;
-        }
+        let mut plan = self.plan_table_ref(&ExpressionBinder::new(self), select.from)?;
 
-        let mut aggregate_ctx = AggregateContext::default();
-
-        // We need to determine whether the query is an aggregate query or not.
-        // We search for all occurrences of aggregate functions in the query.
-        if let Some(having) = &select.having {
-            plan = aggregate_ctx.gather_aggregates(self, plan, having)?;
-        }
+        // Any occurrences of aggregate functions in SELECT, HAVING and ORDER BY
+        // clauses make the query an aggregate query.
+        // So we first gather all occurrences of aggregate functions into
+        // aggregate_collection to determine if the query is an aggregate query.
+        let mut aggregate_collection = AggregateCollection::new(self);
         for projection in &select.projections {
             match projection {
                 parser::Projection::Wildcard => (),
                 parser::Projection::Expression { expr, .. } => {
-                    plan = aggregate_ctx.gather_aggregates(self, plan, expr)?;
+                    plan = aggregate_collection.gather(plan, expr)?;
                 }
             }
         }
-        if let Some(Distinct { on: Some(on) }) = &select.distinct {
+        if let Some(parser::Distinct { on: Some(on) }) = &select.distinct {
             for expr in on {
-                plan = aggregate_ctx.gather_aggregates(self, plan, expr)?;
+                plan = aggregate_collection.gather(plan, expr)?;
             }
         }
+        if let Some(having) = &select.having {
+            plan = aggregate_collection.gather(plan, having)?;
+        }
         for order_by in &modifier.order_by {
-            plan = aggregate_ctx.gather_aggregates(self, plan, &order_by.expr)?;
+            plan = aggregate_collection.gather(plan, &order_by.expr)?;
+        }
+        let aggregate_planner = aggregate_collection.finish();
+
+        // Next, we expand * and resolve aliases in SELECT clause.
+        let mut projection_exprs = Vec::new();
+        let mut aliases = HashMap::new();
+        for projection in select.projections {
+            match projection {
+                parser::Projection::Wildcard => {
+                    for column in &plan.schema.0 {
+                        projection_exprs.push(parser::Expression::ColumnRef(parser::ColumnRef {
+                            table_name: column.table_name.clone(),
+                            column_name: column.column_name.clone(),
+                        }));
+                    }
+                }
+                parser::Projection::Expression { expr, alias } => {
+                    let Some(alias) = alias else {
+                        projection_exprs.push(expr);
+                        continue;
+                    };
+
+                    let expr_binder = ExpressionBinder::new(self)
+                        .with_aliases(&aliases)
+                        .with_aggregates(&aggregate_planner);
+                    let (new_plan, expr) = expr_binder.bind(plan, expr)?;
+                    plan = new_plan;
+
+                    // Adding aliases one by one makes sure that aliases that
+                    // appear later in the SELECT clause can only refer to
+                    // aliases that appear earlier, preventing
+                    // circular references.
+                    // Aliases with the same name shadow previous aliases.
+                    aliases.insert(alias.clone(), expr);
+
+                    projection_exprs.push(parser::Expression::ColumnRef(parser::ColumnRef {
+                        table_name: None,
+                        column_name: alias,
+                    }));
+                }
+            }
+        }
+
+        // Now we are ready to process the rest of the clauses with
+        // the aliases and aggregate results.
+
+        // WHERE and GROUP BY can refer to aliases but not aggregate results.
+        let expr_binder = ExpressionBinder::new(self).with_aliases(&aliases);
+
+        if let Some(where_clause) = select.where_clause {
+            plan = self.plan_where_clause(&expr_binder, plan, where_clause)?;
         }
 
         // The query is an aggregate query if there are any aggregate functions
         // or if there is a GROUP BY clause.
-        if aggregate_ctx.has_aggregates() || !select.group_by.is_empty() {
-            plan = aggregate_ctx.plan_aggregates(self, plan, select.group_by)?;
+        if aggregate_planner.has_aggregates() || !select.group_by.is_empty() {
+            plan = aggregate_planner.plan(&expr_binder, plan, select.group_by)?;
         }
 
-        // HAVING, ORDER BY and SELECT expressions can reference
-        // the aggregated expressions. They are bound with the special
-        // binder that allows them to reference the aggregated expressions.
-        let aggregated_expr_binder =
-            ExpressionBinder::new(self).with_aggregate_context(aggregate_ctx);
+        // SELECT, HAVING and ORDER BY can refer to both aliases and
+        // aggregate results.
+        let expr_binder = ExpressionBinder::new(self)
+            .with_aliases(&aliases)
+            .with_aggregates(&aggregate_planner);
 
         if let Some(having) = select.having {
-            plan = self.plan_having(&aggregated_expr_binder, plan, having)?;
+            plan = self.plan_having(&expr_binder, plan, having)?;
         }
 
         // FIXME: order_by should be after projections according to SQL
         //        semantics. However, if projections reorder columns,
         //        we lose track of aggregation results. So we process order_by
         //        before projections for now.
-        let plan = self.plan_order_by(&aggregated_expr_binder, plan, modifier.order_by)?;
-        let plan = self.plan_projections(
-            &aggregated_expr_binder,
+        let plan = self.plan_order_by(&expr_binder, plan, modifier.order_by)?;
+        let plan = self.plan_projections(&expr_binder, plan, projection_exprs, select.distinct)?;
+
+        let plan = self.plan_limit(
+            &ExpressionBinder::new(self),
             plan,
-            select.projections,
-            select.distinct,
+            modifier.limit,
+            modifier.offset,
         )?;
-        let plan = self.plan_limit(plan, modifier.limit, modifier.offset)?;
         Ok(plan)
     }
 
@@ -261,7 +311,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         all: bool,
         left: parser::Query,
         right: parser::Query,
-        modifier: QueryModifier,
+        modifier: parser::QueryModifier,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
         let Plan {
             node: left_node,
@@ -319,16 +369,18 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         };
         let expr_binder = ExpressionBinder::new(self);
         let plan = self.plan_order_by(&expr_binder, plan, modifier.order_by)?;
-        let plan = self.plan_limit(plan, modifier.limit, modifier.offset)?;
+        let plan = self.plan_limit(&expr_binder, plan, modifier.limit, modifier.offset)?;
         Ok(plan)
     }
 
+    #[allow(clippy::unused_self)]
     pub fn plan_where_clause(
         &self,
+        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
         expr: parser::Expression,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
-        let (plan, cond) = self.bind_expr(source, expr)?;
+        let (plan, cond) = expr_binder.bind(source, expr)?;
         let cond = cond.expect_type(Type::Boolean)?;
         Ok(plan.inherit_schema(|node| {
             PlanNode::Filter(planner::Filter {
@@ -360,47 +412,35 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         &self,
         expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
-        projections: Vec<parser::Projection>,
-        distinct: Option<Distinct>,
+        projection_exprs: Vec<parser::Expression>,
+        distinct: Option<parser::Distinct>,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
         let mut plan = source;
         let mut exprs = Vec::new();
-        let mut columns = Vec::new();
-        for projection in projections {
-            match projection {
-                parser::Projection::Wildcard => {
-                    for (i, column) in plan.schema.0.iter().cloned().enumerate() {
-                        exprs.push(planner::Expression::ColumnRef(ColumnIndex(i)));
-                        columns.push(column);
-                    }
-                }
-                parser::Projection::Expression { expr, alias } => {
-                    let (new_plan, bound_expr) = expr_binder.bind(plan, expr.clone())?;
-                    plan = new_plan;
-                    let table_name;
-                    let column_name;
-                    if let Some(alias) = alias {
-                        table_name = None;
-                        column_name = alias;
-                    } else if let planner::Expression::ColumnRef(index) = &bound_expr.expr {
-                        let column = &plan.schema.0[index.0];
-                        table_name = column.table_name.clone();
-                        column_name = column.column_name.clone();
-                    } else {
-                        table_name = None;
-                        column_name = expr.to_string();
-                    }
-                    exprs.push(bound_expr.expr);
-                    columns.push(planner::Column {
-                        table_name,
-                        column_name,
-                        ty: bound_expr.ty,
-                    });
-                }
+        let mut columns = Vec::with_capacity(projection_exprs.len());
+        for expr in projection_exprs {
+            let table_name;
+            let column_name;
+            if let parser::Expression::ColumnRef(column_ref) = &expr {
+                table_name = column_ref.table_name.clone();
+                column_name = column_ref.column_name.clone();
+            } else {
+                table_name = None;
+                column_name = expr.to_string();
             }
+
+            let (new_plan, bound_expr) = expr_binder.bind(plan, expr.clone())?;
+            plan = new_plan;
+
+            exprs.push(bound_expr.expr);
+            columns.push(planner::Column {
+                table_name,
+                column_name,
+                ty: bound_expr.ty,
+            });
         }
         let node = match distinct {
-            Some(Distinct { on: Some(on) }) => {
+            Some(parser::Distinct { on: Some(on) }) => {
                 let column_ops = (0..columns.len())
                     .map(|_| planner::AggregateOp::Passthrough)
                     .chain((0..on.len()).map(|_| planner::AggregateOp::GroupBy))
@@ -425,7 +465,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
                         .collect(),
                 })
             }
-            Some(Distinct { on: None }) => {
+            Some(parser::Distinct { on: None }) => {
                 let node = PlanNode::Project(planner::Project {
                     source: Box::new(plan.node),
                     exprs,
@@ -478,17 +518,32 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         }))
     }
 
+    #[allow(clippy::unused_self)]
     fn plan_limit(
         &self,
+        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
         source: Plan<'txn, 'db, T>,
         limit: Option<parser::Expression>,
         offset: Option<parser::Expression>,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
+        fn bind_expr<T: Storage>(
+            expr_binder: &ExpressionBinder<'_, '_, '_, T>,
+            expr: Option<parser::Expression>,
+        ) -> PlannerResult<Option<planner::Expression<T>>> {
+            let Some(expr) = expr else {
+                return Ok(None);
+            };
+            let expr = expr_binder
+                .bind_without_source(expr)?
+                .expect_type(Type::Integer)?;
+            Ok(Some(expr))
+        }
+
         if limit.is_none() && offset.is_none() {
             return Ok(source);
         }
-        let limit = self.bind_limit_expr(limit)?;
-        let offset = self.bind_limit_expr(offset)?;
+        let limit = bind_expr(expr_binder, limit)?;
+        let offset = bind_expr(expr_binder, offset)?;
         Ok(source.inherit_schema(|node| {
             PlanNode::Limit(planner::Limit {
                 source: Box::new(node),
@@ -498,28 +553,21 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         }))
     }
 
-    fn bind_limit_expr(
+    fn plan_table_ref(
         &self,
-        expr: Option<parser::Expression>,
-    ) -> PlannerResult<Option<planner::Expression<T>>> {
-        let Some(expr) = expr else {
-            return Ok(None);
-        };
-        let expr = self
-            .bind_expr_without_source(expr)?
-            .expect_type(Type::Integer)?;
-        Ok(Some(expr))
-    }
-
-    fn plan_table_ref(&self, table_ref: parser::TableRef) -> PlannerResult<Plan<'txn, 'db, T>> {
+        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
+        table_ref: parser::TableRef,
+    ) -> PlannerResult<Plan<'txn, 'db, T>> {
         match table_ref {
             parser::TableRef::BaseTable { name } => {
                 Ok(self.plan_base_table(self.catalog.table(name)?))
             }
-            parser::TableRef::Join(join) => self.plan_join(*join),
+            parser::TableRef::Join(join) => self.plan_join(expr_binder, *join),
             parser::TableRef::Subquery(query) => self.plan_query(*query),
-            parser::TableRef::Function { name, args } => self.plan_table_function(name, args),
-            parser::TableRef::Values(values) => self.plan_values(values),
+            parser::TableRef::Function { name, args } => {
+                self.plan_table_function(expr_binder, name, args)
+            }
+            parser::TableRef::Values(values) => self.plan_values(expr_binder, values),
         }
     }
 
@@ -541,9 +589,13 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         }
     }
 
-    fn plan_join(&self, join: parser::Join) -> PlannerResult<Plan<'txn, 'db, T>> {
-        let left = self.plan_table_ref(join.left)?;
-        let right = self.plan_table_ref(join.right)?;
+    fn plan_join(
+        &self,
+        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
+        join: parser::Join,
+    ) -> PlannerResult<Plan<'txn, 'db, T>> {
+        let left = self.plan_table_ref(expr_binder, join.left)?;
+        let right = self.plan_table_ref(expr_binder, join.right)?;
         let mut schema = left.schema;
         schema.0.extend(right.schema.0);
         let plan = Plan {
@@ -556,7 +608,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         let Some(on) = join.on else {
             return Ok(plan);
         };
-        let (plan, expr) = self.bind_expr(plan, on)?;
+        let (plan, expr) = expr_binder.bind(plan, on)?;
         let on = expr.expect_type(Type::Boolean)?;
         Ok(plan.inherit_schema(|node| {
             PlanNode::Filter(planner::Filter {
@@ -568,14 +620,15 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
 
     fn plan_table_function(
         &self,
+        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
         name: String,
         args: Vec<parser::Expression>,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
         let table_function = self.catalog.table_function(&name)?;
         let mut exprs = Vec::with_capacity(args.len());
         for (expr, column) in args.into_iter().zip(table_function.result_columns.iter()) {
-            let expr = self
-                .bind_expr_without_source(expr)?
+            let expr = expr_binder
+                .bind_without_source(expr)?
                 .expect_type(column.ty)?;
             exprs.push(expr);
         }
@@ -593,7 +646,12 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         })
     }
 
-    fn plan_values(&self, values: parser::Values) -> PlannerResult<Plan<'txn, 'db, T>> {
+    #[allow(clippy::unused_self)]
+    fn plan_values(
+        &self,
+        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
+        values: parser::Values,
+    ) -> PlannerResult<Plan<'txn, 'db, T>> {
         if values.rows.is_empty() {
             return Ok(Plan::empty_source());
         }
@@ -605,7 +663,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
             assert_eq!(row.len(), num_columns);
             let mut exprs = Vec::with_capacity(num_columns);
             for (expr, column_type) in row.into_iter().zip(column_types.iter_mut()) {
-                let TypedExpression { expr, ty } = self.bind_expr_without_source(expr)?;
+                let TypedExpression { expr, ty } = expr_binder.bind_without_source(expr)?;
                 if !ty.is_compatible_with(*column_type) {
                     return Err(PlannerError::TypeError);
                 }

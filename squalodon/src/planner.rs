@@ -17,7 +17,7 @@ use crate::{
     CatalogError, Storage, StorageError, Value,
 };
 use ddl::{CreateTable, DropTable};
-use expression::TypedExpression;
+use expression::{ExpressionBinder, TypedExpression};
 use std::num::NonZeroUsize;
 
 #[derive(Debug, thiserror::Error)]
@@ -74,7 +74,8 @@ pub fn bind_expr<'txn, T: Storage>(
     catalog: &'txn CatalogRef<'txn, '_, T>,
     expr: parser::Expression,
 ) -> PlannerResult<Expression<T>> {
-    let TypedExpression { expr, .. } = Planner::new(catalog).bind_expr_without_source(expr)?;
+    let planner = Planner::new(catalog);
+    let TypedExpression { expr, .. } = ExpressionBinder::new(&planner).bind_without_source(expr)?;
     Ok(expr)
 }
 
