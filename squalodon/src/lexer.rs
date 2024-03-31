@@ -105,6 +105,7 @@ keywords! {
     Begin
     Boolean
     By
+    Case
     Cast
     Commit
     Create
@@ -115,6 +116,8 @@ keywords! {
     Describe
     Distinct
     Drop
+    Else
+    End
     Execute
     Exists
     Explain
@@ -151,11 +154,13 @@ keywords! {
     Table
     Tables
     Text
+    Then
     Transaction
     True
     Union
     Update
     Values
+    When
     Where
 }
 

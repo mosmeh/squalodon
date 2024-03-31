@@ -24,6 +24,10 @@ pub enum Expression {
         pattern: Box<Expression>,
         case_insensitive: bool,
     },
+    Case {
+        branches: Vec<CaseBranch>,
+        else_branch: Option<Box<Expression>>,
+    },
     Function {
         name: String,
         args: FunctionArgs,
@@ -42,6 +46,19 @@ impl std::fmt::Display for Expression {
             Self::Cast { expr, ty } => write!(f, "CAST({expr} AS {ty})"),
             Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
             Self::BinaryOp { op, lhs, rhs } => write!(f, "({lhs} {op} {rhs})"),
+            Self::Case {
+                branches,
+                else_branch,
+            } => {
+                write!(f, "CASE")?;
+                for branch in branches {
+                    write!(f, " {branch}")?;
+                }
+                if let Some(else_branch) = else_branch {
+                    write!(f, " ELSE {else_branch}")?;
+                }
+                f.write_str(" END")
+            }
             Self::Function {
                 name,
                 args,
@@ -211,6 +228,18 @@ impl InfixOp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CaseBranch {
+    pub condition: Expression,
+    pub result: Expression,
+}
+
+impl std::fmt::Display for CaseBranch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "WHEN {} THEN {}", self.condition, self.result)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FunctionArgs {
     Wildcard,
     Expressions(Vec<Expression>),
@@ -366,6 +395,35 @@ impl Parser<'_> {
                 Expression::Cast {
                     expr: Box::new(expr),
                     ty,
+                }
+            }
+            Token::Case => {
+                let input_expr = (*self.lexer.peek()? != Token::When)
+                    .then(|| self.parse_expr())
+                    .transpose()?;
+                let mut branches = Vec::new();
+                while self.lexer.consume_if_eq(Token::When)? {
+                    let mut condition = self.parse_expr()?;
+                    if let Some(input_expr) = &input_expr {
+                        condition = Expression::BinaryOp {
+                            op: BinaryOp::Eq,
+                            lhs: Box::new(input_expr.clone()),
+                            rhs: Box::new(condition),
+                        };
+                    }
+                    self.expect(Token::Then)?;
+                    let result = self.parse_expr()?;
+                    branches.push(CaseBranch { condition, result });
+                }
+                let else_branch = self
+                    .lexer
+                    .consume_if_eq(Token::Else)?
+                    .then(|| self.parse_expr())
+                    .transpose()?;
+                self.expect(Token::End)?;
+                Expression::Case {
+                    branches,
+                    else_branch: else_branch.map(Box::new),
                 }
             }
             Token::Exists => {

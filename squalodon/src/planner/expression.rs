@@ -26,6 +26,10 @@ pub enum Expression<T: Storage> {
         lhs: Box<Expression<T>>,
         rhs: Box<Expression<T>>,
     },
+    Case {
+        branches: Vec<CaseBranch<T>>,
+        else_branch: Option<Box<Expression<T>>>,
+    },
     Like {
         str_expr: Box<Expression<T>>,
         pattern: Box<Expression<T>>,
@@ -55,6 +59,13 @@ impl<T: Storage> Clone for Expression<T> {
                 lhs: lhs.clone(),
                 rhs: rhs.clone(),
             },
+            Self::Case {
+                branches,
+                else_branch,
+            } => Self::Case {
+                branches: branches.clone(),
+                else_branch: else_branch.clone(),
+            },
             Self::Like {
                 str_expr,
                 pattern,
@@ -82,6 +93,19 @@ impl<T: Storage> std::fmt::Display for Expression<T> {
             Self::BinaryOp { op, lhs, rhs } => {
                 write!(f, "({lhs} {op} {rhs})")
             }
+            Self::Case {
+                branches,
+                else_branch,
+            } => {
+                write!(f, "CASE")?;
+                for branch in branches {
+                    write!(f, " WHEN {} THEN {}", branch.condition, branch.result)?;
+                }
+                if let Some(else_branch) = else_branch {
+                    write!(f, " ELSE {else_branch}")?;
+                }
+                f.write_str(" END")
+            }
             Self::Like {
                 str_expr,
                 pattern,
@@ -101,6 +125,20 @@ impl<T: Storage> std::fmt::Display for Expression<T> {
                 }
                 f.write_str(")")
             }
+        }
+    }
+}
+
+pub struct CaseBranch<T: Storage> {
+    pub condition: Expression<T>,
+    pub result: Expression<T>,
+}
+
+impl<T: Storage> Clone for CaseBranch<T> {
+    fn clone(&self) -> Self {
+        Self {
+            condition: self.condition.clone(),
+            result: self.result.clone(),
         }
     }
 }
@@ -275,6 +313,62 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                     rhs: rhs.expr.into(),
                 };
                 Ok((plan, TypedExpression { expr, ty }))
+            }
+            parser::Expression::Case {
+                branches,
+                else_branch,
+            } => {
+                let mut plan = source;
+                let mut branch_exprs = Vec::with_capacity(branches.len());
+                let mut result_type = NullableType::Null;
+                for branch in branches {
+                    let (
+                        new_plan,
+                        TypedExpression {
+                            expr: condition,
+                            ty,
+                        },
+                    ) = self.bind(plan, branch.condition)?;
+                    plan = new_plan;
+                    if matches!(ty, NullableType::Null) {
+                        // This branch never matches.
+                        continue;
+                    }
+                    if !matches!(ty, NullableType::NonNull(Type::Boolean)) {
+                        return Err(PlannerError::TypeError);
+                    }
+                    let (new_plan, TypedExpression { expr: result, ty }) =
+                        self.bind(plan, branch.result)?;
+                    plan = new_plan;
+                    if !ty.is_compatible_with(result_type) {
+                        return Err(PlannerError::TypeError);
+                    }
+                    result_type = ty;
+                    branch_exprs.push(CaseBranch { condition, result });
+                }
+                let else_branch = match else_branch {
+                    Some(else_branch) => {
+                        let (new_plan, TypedExpression { expr, ty }) =
+                            self.bind(plan, *else_branch)?;
+                        plan = new_plan;
+                        if !ty.is_compatible_with(result_type) {
+                            return Err(PlannerError::TypeError);
+                        }
+                        result_type = ty;
+                        Some(Box::new(expr))
+                    }
+                    None => None,
+                };
+                Ok((
+                    plan,
+                    TypedExpression {
+                        expr: planner::Expression::Case {
+                            branches: branch_exprs,
+                            else_branch,
+                        },
+                        ty: result_type,
+                    },
+                ))
             }
             parser::Expression::Like {
                 str_expr,

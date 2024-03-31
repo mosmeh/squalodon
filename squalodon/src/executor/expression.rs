@@ -1,7 +1,7 @@
 use super::{ExecutorContext, ExecutorResult};
 use crate::{
     parser::{BinaryOp, UnaryOp},
-    planner::Expression,
+    planner::{CaseBranch, Expression},
     storage::Storage,
     ExecutorError, Row, Value,
 };
@@ -17,6 +17,10 @@ impl<T: Storage> Expression<T> {
                 .ok_or(ExecutorError::TypeError),
             Self::UnaryOp { op, expr } => eval_unary_op(ctx, *op, row, expr),
             Self::BinaryOp { op, lhs, rhs } => eval_binary_op(ctx, *op, row, lhs, rhs),
+            Self::Case {
+                branches,
+                else_branch,
+            } => eval_case(ctx, row, branches, else_branch.as_deref()),
             Self::Like {
                 str_expr,
                 pattern,
@@ -123,7 +127,7 @@ fn eval_binary_op_integer(op: BinaryOp, lhs: i64, rhs: i64) -> ExecutorResult<Va
         BinaryOp::Mod => i64::checked_rem,
         _ => unreachable!(),
     };
-    f(lhs, rhs).map_or_else(|| Err(ExecutorError::OutOfRange), |v| Ok(Value::Integer(v)))
+    f(lhs, rhs).map_or(Err(ExecutorError::OutOfRange), |v| Ok(Value::Integer(v)))
 }
 
 fn eval_binary_op_real(op: BinaryOp, lhs: f64, rhs: f64) -> Value {
@@ -136,6 +140,20 @@ fn eval_binary_op_real(op: BinaryOp, lhs: f64, rhs: f64) -> Value {
         _ => unreachable!(),
     };
     Value::Real(f(lhs, rhs))
+}
+
+fn eval_case<T: Storage>(
+    ctx: &ExecutorContext<T>,
+    row: &Row,
+    branches: &[CaseBranch<T>],
+    else_branch: Option<&Expression<T>>,
+) -> ExecutorResult<Value> {
+    for CaseBranch { condition, result } in branches {
+        if condition.eval(ctx, row)? == Value::Boolean(true) {
+            return result.eval(ctx, row);
+        }
+    }
+    else_branch.map_or(Ok(Value::Null), |else_branch| else_branch.eval(ctx, row))
 }
 
 fn eval_like<T: Storage>(

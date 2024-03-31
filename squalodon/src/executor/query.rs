@@ -191,7 +191,7 @@ impl<'txn, 'db, T: Storage> Limit<'txn, 'db, T> {
                 return Err(ExecutorError::TypeError);
             };
             i.try_into()
-                .map_or_else(|_| Err(ExecutorError::OutOfRange), |i| Ok(Some(i)))
+                .map_or(Err(ExecutorError::OutOfRange), |i| Ok(Some(i)))
         }
 
         Ok(Self {

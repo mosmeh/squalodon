@@ -5,7 +5,7 @@ mod modification;
 mod query;
 
 pub use aggregate::{Aggregate, AggregateOp, ApplyAggregateOp};
-pub use expression::Expression;
+pub use expression::{CaseBranch, Expression};
 pub use modification::{Delete, Insert, Update};
 pub use query::{CrossProduct, Filter, Limit, OrderBy, Project, Scan, Sort, Union, Values};
 

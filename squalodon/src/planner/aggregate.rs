@@ -120,6 +120,20 @@ impl<'a, 'txn, 'db, T: Storage> AggregateCollection<'a, 'txn, 'db, T> {
                 let plan = self.gather_inner(source, lhs, in_aggregate_args)?;
                 self.gather_inner(plan, rhs, in_aggregate_args)
             }
+            parser::Expression::Case {
+                branches,
+                else_branch,
+            } => {
+                let mut plan = source;
+                for branch in branches {
+                    plan = self.gather_inner(plan, &branch.condition, in_aggregate_args)?;
+                    plan = self.gather_inner(plan, &branch.result, in_aggregate_args)?;
+                }
+                match else_branch {
+                    Some(else_branch) => self.gather_inner(plan, else_branch, in_aggregate_args),
+                    None => Ok(plan),
+                }
+            }
             parser::Expression::Like {
                 str_expr, pattern, ..
             } => {
