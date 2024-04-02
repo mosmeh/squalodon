@@ -52,6 +52,12 @@ impl Row {
     }
 }
 
+impl<'a> From<&'a Row> for &'a [Value] {
+    fn from(row: &'a Row) -> Self {
+        &row.0
+    }
+}
+
 impl Index<usize> for Row {
     type Output = Value;
 

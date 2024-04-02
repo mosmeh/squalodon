@@ -109,12 +109,14 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
     }
 
     pub fn plan_update(&self, update: parser::Update) -> PlannerResult<Plan<'txn, 'db, T>> {
-        let expr_binder = ExpressionBinder::new(self);
         let table = self.catalog.table(update.table_name)?;
+        let expr_binder = ExpressionBinder::new(self);
+
         let mut plan = self.plan_base_table(table.clone());
         if let Some(where_clause) = update.where_clause {
             plan = self.plan_where_clause(&expr_binder, plan, where_clause)?;
         }
+
         let mut exprs = vec![None; table.columns().len()];
         for set in update.sets {
             let (dest_index, column) = table
@@ -146,11 +148,16 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
             }
             *expr = Some(bound_expr);
         }
-        let exprs = exprs
-            .into_iter()
-            .enumerate()
-            .map(|(i, expr)| expr.unwrap_or(planner::Expression::ColumnRef(ColumnIndex(i))))
-            .collect();
+
+        // The input of the Update node should consist of the old and new values
+        // of columns concatenated together.
+        let exprs =
+            (0..table.columns().len())
+                .map(|i| planner::Expression::ColumnRef(ColumnIndex(i)))
+                .chain(exprs.into_iter().enumerate().map(|(i, expr)| {
+                    expr.unwrap_or(planner::Expression::ColumnRef(ColumnIndex(i)))
+                }))
+                .collect();
         let node = PlanNode::Project(planner::Project {
             source: Box::new(plan.node),
             exprs,
