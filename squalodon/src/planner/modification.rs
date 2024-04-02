@@ -99,6 +99,12 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
             source: Box::new(node),
             exprs,
         });
+
+        // Spool prevents Halloween problem.
+        let node = PlanNode::Spool(planner::Spool {
+            source: Box::new(node),
+        });
+
         Ok(Plan {
             node: PlanNode::Insert(Insert {
                 source: Box::new(node),
@@ -162,6 +168,12 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
             source: Box::new(plan.node),
             exprs,
         });
+
+        // Spool prevents Halloween problem.
+        let node = PlanNode::Spool(planner::Spool {
+            source: Box::new(node),
+        });
+
         Ok(Plan {
             node: PlanNode::Update(Update {
                 source: Box::new(node),
@@ -177,9 +189,15 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         if let Some(where_clause) = delete.where_clause {
             plan = self.plan_where_clause(&ExpressionBinder::new(self), plan, where_clause)?;
         }
+
+        // Spool prevents Halloween problem.
+        let node = PlanNode::Spool(planner::Spool {
+            source: Box::new(plan.node),
+        });
+
         Ok(Plan {
             node: PlanNode::Delete(Delete {
-                source: Box::new(plan.node),
+                source: Box::new(node),
                 table,
             }),
             schema: vec![planner::Column::new("count", planner::Type::Integer)].into(),

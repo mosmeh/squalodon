@@ -214,6 +214,7 @@ pub enum PlanNode<'txn, 'db, T: Storage> {
     CrossProduct(CrossProduct<'txn, 'db, T>),
     Aggregate(Aggregate<'txn, 'db, T>),
     Union(Union<'txn, 'db, T>),
+    Spool(Spool<'txn, 'db, T>),
     Insert(Insert<'txn, 'db, T>),
     Update(Update<'txn, 'db, T>),
     Delete(Delete<'txn, 'db, T>),
@@ -244,11 +245,23 @@ impl<T: Storage> Explain for PlanNode<'_, '_, T> {
             Self::CrossProduct(n) => n.visit(visitor),
             Self::Aggregate(n) => n.visit(visitor),
             Self::Union(n) => n.visit(visitor),
+            Self::Spool(n) => n.visit(visitor),
             Self::Insert(n) => n.visit(visitor),
             Self::Update(n) => n.visit(visitor),
             Self::Delete(n) => n.visit(visitor),
         }
         visitor.depth -= 1;
+    }
+}
+
+pub struct Spool<'txn, 'db, T: Storage> {
+    pub source: Box<PlanNode<'txn, 'db, T>>,
+}
+
+impl<T: Storage> Explain for Spool<'_, '_, T> {
+    fn visit(&self, visitor: &mut ExplainVisitor) {
+        visitor.write_str("Spool");
+        self.source.visit(visitor);
     }
 }
 

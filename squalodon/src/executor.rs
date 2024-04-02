@@ -156,6 +156,7 @@ enum ExecutorNode<'txn, 'db, T: Storage> {
     UngroupedAggregate(UngroupedAggregate),
     HashAggregate(HashAggregate),
     Union(Union<'txn, 'db, T>),
+    Spool(Spool),
     Insert(Insert),
     Update(Update),
     Delete(Delete),
@@ -259,6 +260,9 @@ impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
                 left: Box::new(Self::new(ctx, *left)?),
                 right: Box::new(Self::new(ctx, *right)?),
             }),
+            PlanNode::Spool(planner::Spool { source }) => {
+                Self::Spool(Spool::new(Self::new(ctx, *source)?)?)
+            }
             PlanNode::Insert(planner::Insert { source, table }) => {
                 Self::Insert(Insert::new(Box::new(Self::new(ctx, *source)?), table)?)
             }
@@ -287,6 +291,7 @@ impl<T: Storage> Node for ExecutorNode<'_, '_, T> {
             Self::UngroupedAggregate(e) => e.next_row(),
             Self::HashAggregate(e) => e.next_row(),
             Self::Union(e) => e.next_row(),
+            Self::Spool(e) => e.next_row(),
             Self::Insert(e) => e.next_row(),
             Self::Update(e) => e.next_row(),
             Self::Delete(e) => e.next_row(),
@@ -303,5 +308,24 @@ impl<T: Storage> Iterator for ExecutorNode<'_, '_, T> {
             Err(NodeError::Error(e)) => Some(Err(e)),
             Err(NodeError::EndOfRows) => None,
         }
+    }
+}
+
+pub struct Spool {
+    rows: std::vec::IntoIter<Row>,
+}
+
+impl Spool {
+    fn new<T: Storage>(source: ExecutorNode<'_, '_, T>) -> ExecutorResult<Self> {
+        let rows: Vec<_> = source.into_iter().collect::<ExecutorResult<_>>()?;
+        Ok(Self {
+            rows: rows.into_iter(),
+        })
+    }
+}
+
+impl Node for Spool {
+    fn next_row(&mut self) -> Output {
+        self.rows.next().into_output()
     }
 }
