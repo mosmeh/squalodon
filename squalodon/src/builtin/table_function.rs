@@ -76,6 +76,30 @@ pub fn load<T: Storage>() -> impl Iterator<Item = (&'static str, TableFunction<T
             },
         ),
         (
+            "squalodon_indexes",
+            TableFunction {
+                fn_ptr: |ctx, _| {
+                    let mut rows = Vec::new();
+                    for table in ctx.catalog().tables() {
+                        let table = table?;
+                        for index in table.indexes() {
+                            rows.push(Row(vec![
+                                table.name().into(),
+                                index.name().into(),
+                                index.is_unique().into(),
+                            ]));
+                        }
+                    }
+                    Ok(Box::new(rows.into_iter()))
+                },
+                result_columns: vec![
+                    Column::new("table_name", Type::Text),
+                    Column::new("index_name", Type::Text),
+                    Column::new("is_unique", Type::Boolean),
+                ],
+            },
+        ),
+        (
             "squalodon_keywords",
             TableFunction {
                 fn_ptr: |_, _| {

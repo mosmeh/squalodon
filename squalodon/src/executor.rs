@@ -4,6 +4,7 @@ mod query;
 
 use crate::{
     catalog::CatalogRef,
+    parser::ObjectKind,
     planner::{self, Expression, PlanNode},
     storage, CatalogError, Row, Storage, StorageError, Value,
 };
@@ -175,15 +176,46 @@ impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
                 Self::Values(Values::new(ctx, rows))
             }
             PlanNode::CreateTable(create_table) => {
-                ctx.catalog().create_table(
+                let result = ctx.catalog().create_table(
                     &create_table.name,
                     &create_table.columns,
                     &create_table.constraints,
+                );
+                match result {
+                    Ok(_) => (),
+                    Err(CatalogError::DuplicateEntry(_, _)) if create_table.if_not_exists => (),
+                    Err(e) => return Err(e.into()),
+                }
+                for index in create_table.create_indexes {
+                    ctx.catalog().create_index(
+                        index.name,
+                        index.table_name,
+                        &index.column_indexes,
+                        index.is_unique,
+                    )?;
+                }
+                Self::Values(Values::one_empty_row())
+            }
+            PlanNode::CreateIndex(create_index) => {
+                ctx.catalog().create_index(
+                    create_index.name,
+                    create_index.table_name,
+                    &create_index.column_indexes,
+                    create_index.is_unique,
                 )?;
                 Self::Values(Values::one_empty_row())
             }
-            PlanNode::DropTable(drop_table) => {
-                ctx.catalog().drop_table(&drop_table.name)?;
+            PlanNode::Drop(drop_object) => {
+                let catalog = ctx.catalog();
+                let result = match drop_object.0.kind {
+                    ObjectKind::Table => catalog.drop_table(&drop_object.0.name),
+                    ObjectKind::Index => catalog.drop_index(&drop_object.0.name),
+                };
+                match result {
+                    Ok(()) => (),
+                    Err(CatalogError::UnknownEntry(_, _)) if drop_object.0.if_exists => (),
+                    Err(e) => return Err(e.into()),
+                }
                 Self::Values(Values::one_empty_row())
             }
             PlanNode::Values(planner::Values { rows }) => Self::Values(Values::new(ctx, rows)),

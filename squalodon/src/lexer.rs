@@ -128,6 +128,7 @@ keywords! {
     Having
     If
     ILike
+    Index
     Inner
     Insert
     Integer
@@ -158,6 +159,7 @@ keywords! {
     Transaction
     True
     Union
+    Unique
     Update
     Values
     When

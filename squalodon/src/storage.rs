@@ -71,6 +71,7 @@ pub(crate) struct Table<'txn, 'db, T: Storage + 'db> {
     txn: &'txn T::Transaction<'db>,
     name: String,
     def: catalog::Table,
+    indexes: Vec<Index<'txn, 'db, T>>,
 }
 
 impl<T: Storage> Clone for Table<'_, '_, T> {
@@ -79,13 +80,29 @@ impl<T: Storage> Clone for Table<'_, '_, T> {
             txn: self.txn,
             name: self.name.clone(),
             def: self.def.clone(),
+            indexes: self.indexes.clone(),
         }
     }
 }
 
 impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
-    pub fn new(txn: &'txn T::Transaction<'db>, name: String, def: catalog::Table) -> Self {
-        Self { txn, name, def }
+    pub fn new(
+        txn: &'txn T::Transaction<'db>,
+        name: String,
+        def: catalog::Table,
+        indexes: Vec<catalog::Index>,
+    ) -> Self {
+        let indexes = indexes
+            .into_iter()
+            .zip(def.index_names.iter())
+            .map(|(def, name)| Index::new(txn, name.clone(), def))
+            .collect();
+        Self {
+            txn,
+            name,
+            def,
+            indexes,
+        }
     }
 
     pub fn name(&self) -> &str {
@@ -98,6 +115,10 @@ impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
 
     pub fn constraints(&self) -> &[Constraint] {
         &self.def.constraints
+    }
+
+    pub fn indexes(&self) -> &[Index<'txn, 'db, T>] {
+        &self.indexes
     }
 
     pub fn scan(&self) -> Box<dyn Iterator<Item = StorageResult<Row>> + 'txn> {
@@ -114,11 +135,10 @@ impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
     pub fn insert<'a, R: Into<&'a [Value]>>(&self, row: R) -> StorageResult<()> {
         let row = row.into();
         let key = self.prepare_for_write(row)?;
-        if self.txn.insert(key, bincode::serialize(row)?) {
-            Ok(())
-        } else {
-            Err(StorageError::DuplicateKey)
+        if !self.txn.insert(key.clone(), bincode::serialize(row)?) {
+            return Err(StorageError::DuplicateKey);
         }
+        self.update_indexes(None, Some((row, &key)))
     }
 
     pub fn update<'a, 'b, R, S>(&self, old_row: R, new_row: S) -> StorageResult<()>
@@ -126,28 +146,31 @@ impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
         R: Into<&'a [Value]>,
         S: Into<&'b [Value]>,
     {
+        let old_row = old_row.into();
         let old_key = self.prepare_for_write(old_row)?;
         let new_row = new_row.into();
         let new_key = self.prepare_for_write(new_row)?;
-        let removed = self.txn.remove(old_key).is_some();
-        assert!(removed);
-        let updated = self.txn.insert(new_key, bincode::serialize(new_row)?);
-        assert!(updated);
-        Ok(())
+
+        self.txn.remove(old_key.clone()).unwrap();
+        let inserted = self
+            .txn
+            .insert(new_key.clone(), bincode::serialize(new_row)?);
+        assert!(inserted);
+
+        self.update_indexes(Some((old_row, &old_key)), Some((new_row, &new_key)))
     }
 
     pub fn delete<'a, R: Into<&'a [Value]>>(&self, row: R) -> StorageResult<()> {
+        let row = row.into();
         let key = self.prepare_for_write(row)?;
-        let removed = self.txn.remove(key).is_some();
-        assert!(removed);
-        Ok(())
+        self.txn.remove(key.clone()).unwrap();
+        self.update_indexes(Some((row, &key)), None)
     }
 
     /// Performs integrity checks before writing a row to the storage.
     ///
     /// Returns the serialized key if the row passes the checks.
-    fn prepare_for_write<'a, R: Into<&'a [Value]>>(&self, row: R) -> StorageResult<Vec<u8>> {
-        let row = row.into();
+    fn prepare_for_write(&self, row: &[Value]) -> StorageResult<Vec<u8>> {
         assert_eq!(row.len(), self.def.columns.len());
         for (value, column) in row.iter().zip(&self.def.columns) {
             assert!(value.ty().is_compatible_with(column.ty));
@@ -176,5 +199,84 @@ impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
         }
         assert!(has_primary_key);
         Ok(key)
+    }
+
+    fn update_indexes(
+        &self,
+        old: Option<(&[Value], &[u8])>,
+        new: Option<(&[Value], &[u8])>,
+    ) -> StorageResult<()> {
+        for index in &self.indexes {
+            let old_index_key = old
+                .map(|(row, table_key)| index.encode_key(row, table_key))
+                .unwrap_or_default();
+            let new_index_key = new
+                .map(|(row, table_key)| index.encode_key(row, table_key))
+                .unwrap_or_default();
+            if old_index_key == new_index_key {
+                // No change in the indexed columns
+                continue;
+            }
+            if old.is_some() {
+                self.txn.remove(old_index_key).unwrap();
+            }
+            if let Some((_, new_table_key)) = new {
+                let value = if index.is_unique() {
+                    new_table_key.to_vec()
+                } else {
+                    // For non-unique indexes, the table key is a part of
+                    // the index key.
+                    Vec::new()
+                };
+                if !self.txn.insert(new_index_key, value) {
+                    return Err(StorageError::DuplicateKey);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+pub(crate) struct Index<'txn, 'db, T: Storage + 'db> {
+    txn: &'txn T::Transaction<'db>,
+    name: String,
+    def: catalog::Index,
+}
+
+impl<T: Storage> Clone for Index<'_, '_, T> {
+    fn clone(&self) -> Self {
+        Self {
+            txn: self.txn,
+            name: self.name.clone(),
+            def: self.def.clone(),
+        }
+    }
+}
+
+impl<'txn, 'db, T: Storage> Index<'txn, 'db, T> {
+    pub fn new(txn: &'txn T::Transaction<'db>, name: String, def: catalog::Index) -> Self {
+        Self { txn, name, def }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn is_unique(&self) -> bool {
+        self.def.is_unique
+    }
+
+    fn encode_key(&self, row: &[Value], table_key: &[u8]) -> Vec<u8> {
+        let serde = MemcomparableSerde::new();
+        let mut index_key = Vec::new();
+        for column_index in &self.def.column_indexes {
+            serde.serialize_into(&row[column_index.0], &mut index_key);
+        }
+        if !self.def.is_unique {
+            // If the indexed columns are not unique, append the primary key
+            // to make the key unique.
+            index_key.extend_from_slice(table_key);
+        }
+        index_key
     }
 }

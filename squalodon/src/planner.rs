@@ -16,15 +16,12 @@ use crate::{
     types::{NullableType, Params, Type},
     CatalogError, Storage, StorageError, Value,
 };
-use ddl::{CreateTable, DropTable};
+use ddl::{CreateIndex, CreateTable, DropObject};
 use expression::{ExpressionBinder, TypedExpression};
 use std::num::NonZeroUsize;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlannerError {
-    #[error("Table {0:?} already exists")]
-    TableAlreadyExists(String),
-
     #[error("Unknown column {0:?}")]
     UnknownColumn(String),
 
@@ -206,7 +203,8 @@ impl ExplainVisitor {
 pub enum PlanNode<'txn, 'db, T: Storage> {
     Explain(Box<PlanNode<'txn, 'db, T>>),
     CreateTable(CreateTable),
-    DropTable(DropTable),
+    CreateIndex(CreateIndex),
+    Drop(DropObject),
     Values(Values<T>),
     Scan(Scan<'txn, 'db, T>),
     Project(Project<'txn, 'db, T>),
@@ -235,7 +233,8 @@ impl<T: Storage> Explain for PlanNode<'_, '_, T> {
         match self {
             Self::Explain(n) => n.visit(visitor),
             Self::CreateTable(n) => n.visit(visitor),
-            Self::DropTable(n) => n.visit(visitor),
+            Self::CreateIndex(n) => n.visit(visitor),
+            Self::Drop(n) => n.visit(visitor),
             Self::Values(n) => n.visit(visitor),
             Self::Scan(n) => n.visit(visitor),
             Self::Project(n) => n.visit(visitor),
@@ -293,7 +292,8 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
                 )
             }
             parser::Statement::CreateTable(create_table) => self.plan_create_table(create_table),
-            parser::Statement::DropTable(drop_table) => self.plan_drop_table(drop_table),
+            parser::Statement::CreateIndex(create_index) => self.plan_create_index(create_index),
+            parser::Statement::Drop(drop_object) => Ok(self.plan_drop(drop_object)),
             parser::Statement::Query(query) => self.plan_query(query),
             parser::Statement::Insert(insert) => self.plan_insert(insert),
             parser::Statement::Update(update) => self.plan_update(update),

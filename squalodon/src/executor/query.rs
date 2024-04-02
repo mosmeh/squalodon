@@ -4,7 +4,7 @@ use crate::{
     memcomparable::MemcomparableSerde,
     planner::{AggregateOp, ApplyAggregateOp, Expression, OrderBy},
     rows::ColumnIndex,
-    storage::{self, Table},
+    storage::{StorageResult, Table},
     ExecutorError, Row, Storage, Value,
 };
 use std::collections::{HashMap, HashSet};
@@ -44,7 +44,7 @@ impl Node for Values<'_> {
 }
 
 pub struct SeqScan<'a> {
-    iter: Box<dyn Iterator<Item = storage::StorageResult<Row>> + 'a>,
+    iter: Box<dyn Iterator<Item = StorageResult<Row>> + 'a>,
 }
 
 impl<'a> SeqScan<'a> {

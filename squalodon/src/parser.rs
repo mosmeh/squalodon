@@ -3,7 +3,7 @@ mod expression;
 mod modification;
 mod query;
 
-pub use ddl::{Constraint, CreateTable, DropTable};
+pub use ddl::{Constraint, CreateIndex, CreateTable, DropObject, ObjectKind};
 pub use expression::{BinaryOp, ColumnRef, Expression, FunctionArgs, UnaryOp};
 pub use modification::{Delete, Insert, Update};
 pub use query::{
@@ -41,7 +41,8 @@ pub enum Statement {
     ShowTables,
     Describe(String),
     CreateTable(CreateTable),
-    DropTable(DropTable),
+    CreateIndex(CreateIndex),
+    Drop(DropObject),
     Query(Query),
     Insert(Insert),
     Update(Update),
@@ -158,7 +159,7 @@ impl<'a> Parser<'a> {
                 Ok(Statement::Describe(name))
             }
             Token::Create => self.parse_create(),
-            Token::Drop => self.parse_drop(),
+            Token::Drop => self.parse_drop().map(Statement::Drop),
             Token::Select | Token::Values | Token::LeftParen => {
                 self.parse_query().map(Statement::Query)
             }

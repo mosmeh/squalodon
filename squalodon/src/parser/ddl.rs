@@ -13,12 +13,28 @@ pub struct CreateTable {
 pub enum Constraint {
     PrimaryKey(Vec<String>),
     NotNull(String),
+    Unique(Vec<String>),
 }
 
 #[derive(Debug, Clone)]
-pub struct DropTable {
+pub struct CreateIndex {
     pub name: String,
+    pub table_name: String,
+    pub column_names: Vec<String>,
+    pub is_unique: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct DropObject {
+    pub name: String,
+    pub kind: ObjectKind,
     pub if_exists: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum ObjectKind {
+    Table,
+    Index,
 }
 
 impl Parser<'_> {
@@ -26,6 +42,7 @@ impl Parser<'_> {
         self.expect(Token::Create)?;
         match self.lexer.peek()? {
             Token::Table => self.parse_create_table().map(Statement::CreateTable),
+            Token::Index | Token::Unique => self.parse_create_index().map(Statement::CreateIndex),
             token => Err(unexpected(token)),
         }
     }
@@ -51,10 +68,16 @@ impl Parser<'_> {
                     self.lexer.consume()?;
                     self.expect(Token::Key)?;
                     self.expect(Token::LeftParen)?;
-                    constraints.push(Constraint::PrimaryKey(
-                        self.parse_comma_separated(Self::expect_identifier)?,
-                    ));
+                    let column_names = self.parse_comma_separated(Self::expect_identifier)?;
                     self.expect(Token::RightParen)?;
+                    constraints.push(Constraint::PrimaryKey(column_names));
+                }
+                Token::Unique => {
+                    self.lexer.consume()?;
+                    self.expect(Token::LeftParen)?;
+                    let column_names = self.parse_comma_separated(Self::expect_identifier)?;
+                    self.expect(Token::RightParen)?;
+                    constraints.push(Constraint::Unique(column_names));
                 }
                 Token::Identifier(_) => {
                     let name = self.expect_identifier()?;
@@ -66,10 +89,18 @@ impl Parser<'_> {
                                 self.expect(Token::Key)?;
                                 constraints.push(Constraint::PrimaryKey(vec![name.clone()]));
                             }
+                            Token::Null => {
+                                self.lexer.consume()?;
+                                // Nullable by default
+                            }
                             Token::Not => {
                                 self.lexer.consume()?;
                                 self.expect(Token::Null)?;
                                 constraints.push(Constraint::NotNull(name.clone()));
+                            }
+                            Token::Unique => {
+                                self.lexer.consume()?;
+                                constraints.push(Constraint::Unique(vec![name.clone()]));
                             }
                             _ => break,
                         }
@@ -91,16 +122,32 @@ impl Parser<'_> {
         })
     }
 
-    pub fn parse_drop(&mut self) -> ParserResult<Statement> {
-        self.expect(Token::Drop)?;
-        match self.lexer.peek()? {
-            Token::Table => self.parse_drop_table().map(Statement::DropTable),
-            token => Err(unexpected(token)),
-        }
+    fn parse_create_index(&mut self) -> ParserResult<CreateIndex> {
+        let is_unique = self.lexer.consume_if_eq(Token::Unique)?;
+        self.expect(Token::Index)?;
+        let name = self.expect_identifier()?;
+        self.expect(Token::On)?;
+        let table_name = self.expect_identifier()?;
+        self.expect(Token::LeftParen)?;
+        let column_names = self.parse_comma_separated(Self::expect_identifier)?;
+        self.expect(Token::RightParen)?;
+        Ok(CreateIndex {
+            name,
+            table_name,
+            column_names,
+            is_unique,
+        })
     }
 
-    fn parse_drop_table(&mut self) -> ParserResult<DropTable> {
-        self.expect(Token::Table)?;
+    pub fn parse_drop(&mut self) -> ParserResult<DropObject> {
+        self.expect(Token::Drop)?;
+        let kind = if self.lexer.consume_if_eq(Token::Table)? {
+            ObjectKind::Table
+        } else if self.lexer.consume_if_eq(Token::Index)? {
+            ObjectKind::Index
+        } else {
+            return Err(unexpected(self.lexer.peek()?));
+        };
         let if_exists = self
             .lexer
             .consume_if_eq(Token::If)?
@@ -108,6 +155,10 @@ impl Parser<'_> {
             .transpose()?
             .is_some();
         let name = self.expect_identifier()?;
-        Ok(DropTable { name, if_exists })
+        Ok(DropObject {
+            name,
+            kind,
+            if_exists,
+        })
     }
 }
