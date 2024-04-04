@@ -1,5 +1,6 @@
 use crate::{
-    executor::{Executor, ExecutorContext},
+    catalog::CatalogRef,
+    executor::Executor,
     parser::{Deallocate, Expression, Parser, Statement, TransactionControl},
     planner::{self, Plan},
     rows::{Column, Rows},
@@ -105,14 +106,14 @@ impl<'db, T: Storage> Connection<'db, T> {
         };
 
         let catalog = self.db.catalog.with(txn);
-        let ctx = ExecutorContext::new(&catalog, &self.rng);
+        let ctx = ConnectionContext::new(&catalog, &self.rng);
 
         let mut param_values = Vec::with_capacity(params.len());
         for expr in params {
-            param_values.push(planner::bind_expr(&catalog, expr)?.eval(&ctx, &Row::empty())?);
+            param_values.push(planner::bind_expr(&ctx, expr)?.eval(&ctx, &Row::empty())?);
         }
 
-        let plan = planner::plan(&catalog, statement, param_values)?;
+        let plan = planner::plan(&ctx, statement, param_values)?;
         match execute_plan(&ctx, plan) {
             Ok(rows) => {
                 if let Some(txn) = implicit_txn {
@@ -169,7 +170,7 @@ impl<'db, T: Storage> Connection<'db, T> {
 }
 
 fn execute_plan<'db, T: Storage>(
-    ctx: &ExecutorContext<'_, 'db, T>,
+    ctx: &ConnectionContext<'_, 'db, T>,
     plan: Plan<'_, 'db, T>,
 ) -> Result<Rows> {
     let Plan { node, schema } = plan;
@@ -261,5 +262,28 @@ impl<T: Storage> PreparedStatement<'_, '_, T> {
             .conn
             .execute_statement(self.statement.clone(), params)?;
         Ok(if is_modification { Rows::empty() } else { rows })
+    }
+}
+
+pub struct ConnectionContext<'txn, 'db, T: Storage> {
+    catalog: &'txn CatalogRef<'txn, 'db, T>,
+    rng: &'txn RefCell<Rng>,
+}
+
+impl<'txn, 'db: 'txn, T: Storage> ConnectionContext<'txn, 'db, T> {
+    pub fn new(catalog: &'txn CatalogRef<'txn, 'db, T>, rng: &'txn RefCell<Rng>) -> Self {
+        Self { catalog, rng }
+    }
+
+    pub fn catalog(&self) -> &CatalogRef<'txn, 'db, T> {
+        self.catalog
+    }
+
+    pub fn random(&self) -> f64 {
+        self.rng.borrow_mut().f64()
+    }
+
+    pub fn set_seed(&self, seed: f64) {
+        self.rng.borrow_mut().seed(seed.to_bits());
     }
 }

@@ -42,7 +42,7 @@ impl<T: Storage> Explain for Delete<'_, '_, T> {
 
 impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
     pub fn plan_insert(&self, insert: parser::Insert) -> PlannerResult<Plan<'txn, 'db, T>> {
-        let table = self.catalog.table(insert.table_name)?;
+        let table = self.ctx.catalog().table(insert.table_name)?;
         let Plan { node, schema } = self.plan_query(insert.query)?;
         if table.columns().len() != schema.0.len() {
             return Err(PlannerError::ColumnCountMismatch {
@@ -115,7 +115,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
     }
 
     pub fn plan_update(&self, update: parser::Update) -> PlannerResult<Plan<'txn, 'db, T>> {
-        let table = self.catalog.table(update.table_name)?;
+        let table = self.ctx.catalog().table(update.table_name)?;
         let expr_binder = ExpressionBinder::new(self);
 
         let mut plan = self.plan_base_table(table.clone());
@@ -184,7 +184,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
     }
 
     pub fn plan_delete(&self, delete: parser::Delete) -> PlannerResult<Plan<'txn, 'db, T>> {
-        let table = self.catalog.table(delete.table_name)?;
+        let table = self.ctx.catalog().table(delete.table_name)?;
         let mut plan = self.plan_base_table(table.clone());
         if let Some(where_clause) = delete.where_clause {
             plan = self.plan_where_clause(&ExpressionBinder::new(self), plan, where_clause)?;

@@ -560,7 +560,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
         match table_ref {
             parser::TableRef::BaseTable { name } => {
-                Ok(self.plan_base_table(self.catalog.table(name)?))
+                Ok(self.plan_base_table(self.ctx.catalog().table(name)?))
             }
             parser::TableRef::Join(join) => self.plan_join(expr_binder, *join),
             parser::TableRef::Subquery(query) => self.plan_query(*query),
@@ -624,7 +624,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         name: String,
         args: Vec<parser::Expression>,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
-        let table_function = self.catalog.table_function(&name)?;
+        let table_function = self.ctx.catalog().table_function(&name)?;
         let mut exprs = Vec::with_capacity(args.len());
         for (expr, column) in args.into_iter().zip(table_function.result_columns.iter()) {
             let expr = expr_binder

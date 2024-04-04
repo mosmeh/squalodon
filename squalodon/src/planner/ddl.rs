@@ -129,7 +129,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         &self,
         create_index: parser::CreateIndex,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
-        let table = self.catalog.table(create_index.table_name)?;
+        let table = self.ctx.catalog().table(create_index.table_name)?;
         let column_indexes =
             column_indexes_from_names(table.columns(), &create_index.column_names)?;
         let create_index = CreateIndex {

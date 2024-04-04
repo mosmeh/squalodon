@@ -1,17 +1,18 @@
 use super::{aggregate::AggregatePlanner, Plan, PlanNode, Planner, PlannerError, PlannerResult};
 use crate::{
     catalog::{Aggregator, ScalarEvalFnPtr},
+    connection::ConnectionContext,
     executor::{ExecutorError, ExecutorResult},
     parser::{self, BinaryOp, FunctionArgs, UnaryOp},
     planner::{self, aggregate::ApplyAggregateOp},
     rows::ColumnIndex,
     types::{NullableType, Type},
-    CatalogError, Storage, Value,
+    CatalogError, Row, Storage, Value,
 };
 use std::collections::HashMap;
 
 pub enum Expression<T: Storage> {
-    Constact(Value),
+    Constant(Value),
     ColumnRef(ColumnIndex),
     Cast {
         expr: Box<Expression<T>>,
@@ -44,7 +45,7 @@ pub enum Expression<T: Storage> {
 impl<T: Storage> Clone for Expression<T> {
     fn clone(&self) -> Self {
         match self {
-            Self::Constact(value) => Self::Constact(value.clone()),
+            Self::Constant(value) => Self::Constant(value.clone()),
             Self::ColumnRef(index) => Self::ColumnRef(*index),
             Self::Cast { expr, ty } => Self::Cast {
                 expr: expr.clone(),
@@ -86,7 +87,7 @@ impl<T: Storage> Clone for Expression<T> {
 impl<T: Storage> std::fmt::Display for Expression<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Constact(value) => write!(f, "{value:?}"),
+            Self::Constant(value) => write!(f, "{value:?}"),
             Self::ColumnRef(index) => write!(f, "{index}"),
             Self::Cast { expr, ty } => write!(f, "CAST({expr} AS {ty})"),
             Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
@@ -129,6 +130,58 @@ impl<T: Storage> std::fmt::Display for Expression<T> {
     }
 }
 
+impl<T: Storage> Expression<T> {
+    fn unary_op(ctx: &ConnectionContext<T>, op: UnaryOp, expr: Self) -> Self {
+        if let Self::Constant(_) = &expr {
+            if let Ok(value) = op.eval(ctx, &Row::empty(), &expr) {
+                return Self::Constant(value);
+            }
+        }
+        Self::UnaryOp {
+            op,
+            expr: Box::new(expr),
+        }
+    }
+
+    fn binary_op(ctx: &ConnectionContext<T>, op: BinaryOp, lhs: Self, rhs: Self) -> Self {
+        if let BinaryOp::Add | BinaryOp::Mul | BinaryOp::Eq | BinaryOp::And | BinaryOp::Or = op {
+            // If the operation is commutative, make sure the constant is on
+            // the right hand side.
+            match (&lhs, &rhs) {
+                (Self::Constant(_), Self::Constant(_)) => (),
+                (Self::Constant(_), _) => return Self::binary_op(ctx, op, rhs, lhs),
+                _ => (),
+            }
+        }
+        match (op, &lhs, &rhs) {
+            (BinaryOp::Add | BinaryOp::Sub, _, Self::Constant(Value::Integer(0)))
+            | (BinaryOp::Mul, _, Self::Constant(Value::Integer(1)))
+            | (BinaryOp::And, _, Self::Constant(Value::Boolean(true)))
+            | (BinaryOp::Or, _, Self::Constant(Value::Boolean(false))) => return lhs,
+            (BinaryOp::Mul, _, Self::Constant(Value::Integer(0))) => {
+                return Self::Constant(Value::Integer(0))
+            }
+            (BinaryOp::And, _, Self::Constant(Value::Boolean(false))) => {
+                return Self::Constant(Value::Boolean(false))
+            }
+            (BinaryOp::Or, _, Self::Constant(Value::Boolean(true))) => {
+                return Self::Constant(Value::Boolean(true))
+            }
+            (op, Self::Constant(_), Self::Constant(_)) => {
+                if let Ok(value) = op.eval(ctx, &Row::empty(), &lhs, &rhs) {
+                    return Self::Constant(value);
+                }
+            }
+            _ => (),
+        }
+        Self::BinaryOp {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }
+    }
+}
+
 pub struct CaseBranch<T: Storage> {
     pub condition: Expression<T>,
     pub result: Expression<T>,
@@ -161,7 +214,7 @@ impl<T: Storage> From<Value> for TypedExpression<T> {
     fn from(value: Value) -> Self {
         let ty = value.ty();
         Self {
-            expr: planner::Expression::Constact(value),
+            expr: planner::Expression::Constant(value),
             ty,
         }
     }
@@ -251,10 +304,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                     }
                     _ => return Err(PlannerError::TypeError),
                 };
-                let expr = planner::Expression::UnaryOp {
-                    op,
-                    expr: expr.into(),
-                };
+                let expr = planner::Expression::unary_op(self.planner.ctx, op, expr);
                 Ok((plan, TypedExpression { expr, ty }))
             }
             parser::Expression::BinaryOp { op, lhs, rhs } => {
@@ -307,11 +357,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                         _ => return Err(PlannerError::TypeError),
                     },
                 };
-                let expr = planner::Expression::BinaryOp {
-                    op,
-                    lhs: lhs.expr.into(),
-                    rhs: rhs.expr.into(),
-                };
+                let expr = planner::Expression::binary_op(self.planner.ctx, op, lhs.expr, rhs.expr);
                 Ok((plan, TypedExpression { expr, ty }))
             }
             parser::Expression::Case {
@@ -416,7 +462,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                 args,
                 is_distinct,
             } => {
-                match self.planner.catalog.aggregate_function(&name) {
+                match self.planner.ctx.catalog().aggregate_function(&name) {
                     Ok(_) => {
                         let Some(aggregates) = &self.aggregates else {
                             return Err(PlannerError::AggregateNotAllowed);
@@ -434,7 +480,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                     Err(e) => return Err(e.into()),
                 }
 
-                let function = self.planner.catalog.scalar_function(&name)?;
+                let function = self.planner.ctx.catalog().scalar_function(&name)?;
                 if is_distinct {
                     return Err(PlannerError::InvalidArgument);
                 }
@@ -532,7 +578,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                 // Equivalent to `SELECT exists(SELECT * FROM subquery LIMIT 1)`
                 let subquery_node = PlanNode::Limit(planner::Limit {
                     source: Box::new(subquery_plan.node),
-                    limit: Some(planner::Expression::Constact(1.into())),
+                    limit: Some(planner::Expression::Constant(1.into())),
                     offset: None,
                 });
                 let subquery_plan = Plan {

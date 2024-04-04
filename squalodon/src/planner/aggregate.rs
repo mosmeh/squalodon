@@ -145,7 +145,7 @@ impl<'a, 'txn, 'db, T: Storage> AggregateCollection<'a, 'txn, 'db, T> {
                 args,
                 is_distinct,
             } => {
-                match self.planner.catalog.aggregate_function(name) {
+                match self.planner.ctx.catalog().aggregate_function(name) {
                     Ok(function) => {
                         if in_aggregate_args {
                             // Nested aggregate functions are not allowed.
@@ -160,7 +160,7 @@ impl<'a, 'txn, 'db, T: Storage> AggregateCollection<'a, 'txn, 'db, T> {
                                 (
                                     source,
                                     TypedExpression {
-                                        expr: planner::Expression::Constact(1.into()),
+                                        expr: planner::Expression::Constant(1.into()),
                                         ty: Type::Integer.into(),
                                     },
                                 )
@@ -201,7 +201,7 @@ impl<'a, 'txn, 'db, T: Storage> AggregateCollection<'a, 'txn, 'db, T> {
                     Err(err) => return Err(err.into()),
                 }
 
-                self.planner.catalog.scalar_function(name)?; // Check if the function exists
+                self.planner.ctx.catalog().scalar_function(name)?; // Check if the function exists
                 if *is_distinct {
                     return Err(PlannerError::InvalidArgument);
                 }

@@ -10,7 +10,7 @@ pub use modification::{Delete, Insert, Update};
 pub use query::{CrossProduct, Filter, Limit, OrderBy, Project, Scan, Sort, Union, Values};
 
 use crate::{
-    catalog::CatalogRef,
+    connection::ConnectionContext,
     parser::{self, ColumnRef},
     rows::ColumnIndex,
     types::{NullableType, Params, Type},
@@ -68,20 +68,20 @@ pub enum PlannerError {
 pub type PlannerResult<T> = std::result::Result<T, PlannerError>;
 
 pub fn bind_expr<'txn, T: Storage>(
-    catalog: &'txn CatalogRef<'txn, '_, T>,
+    ctx: &'txn ConnectionContext<'txn, '_, T>,
     expr: parser::Expression,
 ) -> PlannerResult<Expression<T>> {
-    let planner = Planner::new(catalog);
+    let planner = Planner::new(ctx);
     let TypedExpression { expr, .. } = ExpressionBinder::new(&planner).bind_without_source(expr)?;
     Ok(expr)
 }
 
 pub fn plan<'txn, 'db, T: Storage>(
-    catalog: &'txn CatalogRef<'txn, 'db, T>,
+    ctx: &'txn ConnectionContext<'txn, 'db, T>,
     statement: parser::Statement,
     params: Vec<Value>,
 ) -> PlannerResult<Plan<'txn, 'db, T>> {
-    Planner::new(catalog).with_params(params).plan(statement)
+    Planner::new(ctx).with_params(params).plan(statement)
 }
 
 #[derive(Clone)]
@@ -266,23 +266,20 @@ impl<T: Storage> Explain for Spool<'_, '_, T> {
 }
 
 struct Planner<'txn, 'db, T: Storage> {
-    catalog: &'txn CatalogRef<'txn, 'db, T>,
+    ctx: &'txn ConnectionContext<'txn, 'db, T>,
     params: Vec<Value>,
 }
 
 impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
-    fn new(catalog: &'txn CatalogRef<'txn, 'db, T>) -> Self {
+    fn new(ctx: &'txn ConnectionContext<'txn, 'db, T>) -> Self {
         Self {
-            catalog,
+            ctx,
             params: Vec::new(),
         }
     }
 
     fn with_params(&self, params: Vec<Value>) -> Self {
-        Self {
-            catalog: self.catalog,
-            params,
-        }
+        Self { params, ..*self }
     }
 
     fn plan(&self, statement: parser::Statement) -> PlannerResult<Plan<'txn, 'db, T>> {
@@ -296,7 +293,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
                 self.rewrite_to("SELECT * FROM squalodon_tables() ORDER BY name", [])
             }
             parser::Statement::Describe(name) => {
-                self.catalog.table(name.clone())?; // Check if the table exists
+                self.ctx.catalog().table(name.clone())?; // Check if the table exists
                 self.rewrite_to(
                     "SELECT column_name, type, is_nullable, is_primary_key
                     FROM squalodon_columns()

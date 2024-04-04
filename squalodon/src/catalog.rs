@@ -1,6 +1,7 @@
 use crate::{
     builtin,
-    executor::{ExecutorContext, ExecutorResult},
+    connection::ConnectionContext,
+    executor::ExecutorResult,
     planner::{self, PlannerResult},
     rows::ColumnIndex,
     storage::{self, Storage, Transaction},
@@ -118,7 +119,7 @@ impl<T: Storage> Clone for ScalarFunction<T> {
 }
 
 pub type ScalarBindFnPtr = fn(&[NullableType]) -> PlannerResult<NullableType>;
-pub type ScalarEvalFnPtr<T> = fn(&ExecutorContext<'_, '_, T>, &[Value]) -> ExecutorResult<Value>;
+pub type ScalarEvalFnPtr<T> = fn(&ConnectionContext<'_, '_, T>, &[Value]) -> ExecutorResult<Value>;
 
 #[derive(Clone)]
 pub struct AggregateFunction {
@@ -149,7 +150,7 @@ impl<T: Storage> Clone for TableFunction<T> {
 }
 
 pub type TableFnPtr<T> = for<'a> fn(
-    &'a ExecutorContext<'a, '_, T>,
+    &'a ConnectionContext<'a, '_, T>,
     &Row,
 ) -> ExecutorResult<Box<dyn Iterator<Item = Row> + 'a>>;
 

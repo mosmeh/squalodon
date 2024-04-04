@@ -1,5 +1,6 @@
-use super::{ExecutorContext, ExecutorResult};
+use super::ExecutorResult;
 use crate::{
+    connection::ConnectionContext,
     parser::{BinaryOp, UnaryOp},
     planner::{CaseBranch, Expression},
     storage::Storage,
@@ -7,16 +8,16 @@ use crate::{
 };
 
 impl<T: Storage> Expression<T> {
-    pub fn eval(&self, ctx: &ExecutorContext<T>, row: &Row) -> ExecutorResult<Value> {
+    pub fn eval(&self, ctx: &ConnectionContext<T>, row: &Row) -> ExecutorResult<Value> {
         match self {
-            Self::Constact(v) => Ok(v.clone()),
-            Self::ColumnRef(index) => Ok(row[index].clone()),
+            Self::Constant(v) => Ok(v.clone()),
+            Self::ColumnRef(index) => row.0.get(index.0).cloned().ok_or(ExecutorError::OutOfRange),
             Self::Cast { expr, ty } => expr
                 .eval(ctx, row)?
                 .cast(*ty)
                 .ok_or(ExecutorError::TypeError),
-            Self::UnaryOp { op, expr } => eval_unary_op(ctx, *op, row, expr),
-            Self::BinaryOp { op, lhs, rhs } => eval_binary_op(ctx, *op, row, lhs, rhs),
+            Self::UnaryOp { op, expr } => op.eval(ctx, row, expr),
+            Self::BinaryOp { op, lhs, rhs } => op.eval(ctx, row, lhs, rhs),
             Self::Case {
                 branches,
                 else_branch,
@@ -37,113 +38,115 @@ impl<T: Storage> Expression<T> {
     }
 }
 
-fn eval_unary_op<T: Storage>(
-    ctx: &ExecutorContext<T>,
-    op: UnaryOp,
-    row: &Row,
-    expr: &Expression<T>,
-) -> ExecutorResult<Value> {
-    let expr = expr.eval(ctx, row)?;
-    match (op, expr) {
-        (UnaryOp::Plus, Value::Integer(v)) => Ok(Value::Integer(v)),
-        (UnaryOp::Plus, Value::Real(v)) => Ok(Value::Real(v)),
-        (UnaryOp::Minus, Value::Integer(v)) => Ok(Value::Integer(-v)),
-        (UnaryOp::Minus, Value::Real(v)) => Ok(Value::Real(-v)),
-        (UnaryOp::Not, Value::Boolean(v)) => Ok(Value::Boolean(!v)),
-        _ => Err(ExecutorError::TypeError),
+impl UnaryOp {
+    pub fn eval<T: Storage>(
+        self,
+        ctx: &ConnectionContext<T>,
+        row: &Row,
+        expr: &Expression<T>,
+    ) -> ExecutorResult<Value> {
+        let expr = expr.eval(ctx, row)?;
+        match (self, expr) {
+            (Self::Plus, Value::Integer(v)) => Ok(Value::Integer(v)),
+            (Self::Plus, Value::Real(v)) => Ok(Value::Real(v)),
+            (Self::Minus, Value::Integer(v)) => Ok(Value::Integer(-v)),
+            (Self::Minus, Value::Real(v)) => Ok(Value::Real(-v)),
+            (Self::Not, Value::Boolean(v)) => Ok(Value::Boolean(!v)),
+            _ => Err(ExecutorError::TypeError),
+        }
     }
 }
 
-fn eval_binary_op<T: Storage>(
-    ctx: &ExecutorContext<T>,
-    op: BinaryOp,
-    row: &Row,
-    lhs: &Expression<T>,
-    rhs: &Expression<T>,
-) -> ExecutorResult<Value> {
-    let lhs = lhs.eval(ctx, row)?;
-    if lhs == Value::Null {
-        return Ok(Value::Null);
-    }
-    match (op, &lhs) {
-        (BinaryOp::And, Value::Boolean(false)) => return Ok(Value::Boolean(false)),
-        (BinaryOp::Or, Value::Boolean(true)) => return Ok(Value::Boolean(true)),
-        _ => (),
-    }
-    let rhs = rhs.eval(ctx, row)?;
-    if rhs == Value::Null {
-        return Ok(Value::Null);
-    }
-    match op {
-        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
-            eval_binary_op_number(op, lhs, rhs)
+impl BinaryOp {
+    pub fn eval<T: Storage>(
+        self,
+        ctx: &ConnectionContext<T>,
+        row: &Row,
+        lhs: &Expression<T>,
+        rhs: &Expression<T>,
+    ) -> ExecutorResult<Value> {
+        let lhs = lhs.eval(ctx, row)?;
+        if lhs == Value::Null {
+            return Ok(Value::Null);
         }
-        BinaryOp::Eq => Ok(Value::Boolean(lhs == rhs)),
-        BinaryOp::Ne => Ok(Value::Boolean(lhs != rhs)),
-        BinaryOp::Lt => Ok(Value::Boolean(lhs < rhs)),
-        BinaryOp::Le => Ok(Value::Boolean(lhs <= rhs)),
-        BinaryOp::Gt => Ok(Value::Boolean(lhs > rhs)),
-        BinaryOp::Ge => Ok(Value::Boolean(lhs >= rhs)),
-        BinaryOp::And => {
-            if let (Value::Boolean(lhs), Value::Boolean(rhs)) = (lhs, rhs) {
-                Ok(Value::Boolean(lhs && rhs))
-            } else {
-                Err(ExecutorError::TypeError)
+        match (self, &lhs) {
+            (Self::And, Value::Boolean(false)) => return Ok(Value::Boolean(false)),
+            (Self::Or, Value::Boolean(true)) => return Ok(Value::Boolean(true)),
+            _ => (),
+        }
+        let rhs = rhs.eval(ctx, row)?;
+        if rhs == Value::Null {
+            return Ok(Value::Null);
+        }
+        match self {
+            Self::Add | Self::Sub | Self::Mul | Self::Div | Self::Mod => self.eval_number(lhs, rhs),
+            Self::Eq => Ok(Value::Boolean(lhs == rhs)),
+            Self::Ne => Ok(Value::Boolean(lhs != rhs)),
+            Self::Lt => Ok(Value::Boolean(lhs < rhs)),
+            Self::Le => Ok(Value::Boolean(lhs <= rhs)),
+            Self::Gt => Ok(Value::Boolean(lhs > rhs)),
+            Self::Ge => Ok(Value::Boolean(lhs >= rhs)),
+            Self::And => {
+                if let (Value::Boolean(lhs), Value::Boolean(rhs)) = (lhs, rhs) {
+                    Ok(Value::Boolean(lhs && rhs))
+                } else {
+                    Err(ExecutorError::TypeError)
+                }
+            }
+            Self::Or => {
+                if let (Value::Boolean(lhs), Value::Boolean(rhs)) = (lhs, rhs) {
+                    Ok(Value::Boolean(lhs || rhs))
+                } else {
+                    Err(ExecutorError::TypeError)
+                }
+            }
+            Self::Concat => {
+                if let (Value::Text(lhs), Value::Text(rhs)) = (lhs, rhs) {
+                    Ok(Value::Text(lhs + &rhs))
+                } else {
+                    Err(ExecutorError::TypeError)
+                }
             }
         }
-        BinaryOp::Or => {
-            if let (Value::Boolean(lhs), Value::Boolean(rhs)) = (lhs, rhs) {
-                Ok(Value::Boolean(lhs || rhs))
-            } else {
-                Err(ExecutorError::TypeError)
-            }
-        }
-        BinaryOp::Concat => {
-            if let (Value::Text(lhs), Value::Text(rhs)) = (lhs, rhs) {
-                Ok(Value::Text(lhs + &rhs))
-            } else {
-                Err(ExecutorError::TypeError)
-            }
+    }
+
+    fn eval_number(self, lhs: Value, rhs: Value) -> ExecutorResult<Value> {
+        match (lhs, rhs) {
+            (Value::Integer(lhs), Value::Integer(rhs)) => self.eval_integer(lhs, rhs),
+            (Value::Real(lhs), Value::Real(rhs)) => Ok(self.eval_real(lhs, rhs)),
+            (Value::Real(lhs), Value::Integer(rhs)) => Ok(self.eval_real(lhs, rhs as f64)),
+            (Value::Integer(lhs), Value::Real(rhs)) => Ok(self.eval_real(lhs as f64, rhs)),
+            _ => Err(ExecutorError::TypeError),
         }
     }
-}
 
-fn eval_binary_op_number(op: BinaryOp, lhs: Value, rhs: Value) -> ExecutorResult<Value> {
-    match (lhs, rhs) {
-        (Value::Integer(lhs), Value::Integer(rhs)) => eval_binary_op_integer(op, lhs, rhs),
-        (Value::Real(lhs), Value::Real(rhs)) => Ok(eval_binary_op_real(op, lhs, rhs)),
-        (Value::Real(lhs), Value::Integer(rhs)) => Ok(eval_binary_op_real(op, lhs, rhs as f64)),
-        (Value::Integer(lhs), Value::Real(rhs)) => Ok(eval_binary_op_real(op, lhs as f64, rhs)),
-        _ => Err(ExecutorError::TypeError),
+    fn eval_integer(self, lhs: i64, rhs: i64) -> ExecutorResult<Value> {
+        let f = match self {
+            Self::Add => i64::checked_add,
+            Self::Sub => i64::checked_sub,
+            Self::Mul => i64::checked_mul,
+            Self::Div => i64::checked_div,
+            Self::Mod => i64::checked_rem,
+            _ => unreachable!(),
+        };
+        f(lhs, rhs).map_or(Err(ExecutorError::OutOfRange), |v| Ok(Value::Integer(v)))
     }
-}
 
-fn eval_binary_op_integer(op: BinaryOp, lhs: i64, rhs: i64) -> ExecutorResult<Value> {
-    let f = match op {
-        BinaryOp::Add => i64::checked_add,
-        BinaryOp::Sub => i64::checked_sub,
-        BinaryOp::Mul => i64::checked_mul,
-        BinaryOp::Div => i64::checked_div,
-        BinaryOp::Mod => i64::checked_rem,
-        _ => unreachable!(),
-    };
-    f(lhs, rhs).map_or(Err(ExecutorError::OutOfRange), |v| Ok(Value::Integer(v)))
-}
-
-fn eval_binary_op_real(op: BinaryOp, lhs: f64, rhs: f64) -> Value {
-    let f = match op {
-        BinaryOp::Add => std::ops::Add::add,
-        BinaryOp::Sub => std::ops::Sub::sub,
-        BinaryOp::Mul => std::ops::Mul::mul,
-        BinaryOp::Div => std::ops::Div::div,
-        BinaryOp::Mod => std::ops::Rem::rem,
-        _ => unreachable!(),
-    };
-    Value::Real(f(lhs, rhs))
+    fn eval_real(self, lhs: f64, rhs: f64) -> Value {
+        let f = match self {
+            Self::Add => std::ops::Add::add,
+            Self::Sub => std::ops::Sub::sub,
+            Self::Mul => std::ops::Mul::mul,
+            Self::Div => std::ops::Div::div,
+            Self::Mod => std::ops::Rem::rem,
+            _ => unreachable!(),
+        };
+        Value::Real(f(lhs, rhs))
+    }
 }
 
 fn eval_case<T: Storage>(
-    ctx: &ExecutorContext<T>,
+    ctx: &ConnectionContext<T>,
     row: &Row,
     branches: &[CaseBranch<T>],
     else_branch: Option<&Expression<T>>,
@@ -157,7 +160,7 @@ fn eval_case<T: Storage>(
 }
 
 fn eval_like<T: Storage>(
-    ctx: &ExecutorContext<T>,
+    ctx: &ConnectionContext<T>,
     row: &Row,
     str_expr: &Expression<T>,
     pattern: &Expression<T>,

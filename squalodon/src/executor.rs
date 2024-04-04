@@ -3,18 +3,16 @@ mod modification;
 mod query;
 
 use crate::{
-    catalog::CatalogRef,
+    connection::ConnectionContext,
     parser::ObjectKind,
     planner::{self, Expression, PlanNode},
     storage, CatalogError, Row, Storage, StorageError, Value,
 };
-use fastrand::Rng;
 use modification::{Delete, Insert, Update};
 use query::{
     CrossProduct, Filter, FunctionScan, HashAggregate, Limit, Project, SeqScan, Sort,
     UngroupedAggregate, Union, Values,
 };
-use std::cell::RefCell;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutorError {
@@ -98,34 +96,11 @@ impl<E: Into<ExecutorError>> IntoOutput for Option<std::result::Result<Row, E>> 
     }
 }
 
-pub struct ExecutorContext<'txn, 'db, T: Storage> {
-    catalog: &'txn CatalogRef<'txn, 'db, T>,
-    rng: &'txn RefCell<Rng>,
-}
-
-impl<'txn, 'db: 'txn, T: Storage> ExecutorContext<'txn, 'db, T> {
-    pub fn new(catalog: &'txn CatalogRef<'txn, 'db, T>, rng: &'txn RefCell<Rng>) -> Self {
-        Self { catalog, rng }
-    }
-
-    pub fn catalog(&self) -> &CatalogRef<'txn, 'db, T> {
-        self.catalog
-    }
-
-    pub fn random(&self) -> f64 {
-        self.rng.borrow_mut().f64()
-    }
-
-    pub fn set_seed(&self, seed: f64) {
-        self.rng.borrow_mut().seed(seed.to_bits());
-    }
-}
-
 pub struct Executor<'txn, 'db, T: Storage>(ExecutorNode<'txn, 'db, T>);
 
 impl<'txn, 'db, T: Storage> Executor<'txn, 'db, T> {
     pub fn new(
-        ctx: &'txn ExecutorContext<'txn, 'db, T>,
+        ctx: &'txn ConnectionContext<'txn, 'db, T>,
         plan_node: PlanNode<'txn, 'db, T>,
     ) -> ExecutorResult<Self> {
         ExecutorNode::new(ctx, plan_node).map(Self)
@@ -164,7 +139,7 @@ enum ExecutorNode<'txn, 'db, T: Storage> {
 
 impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
     fn new(
-        ctx: &'txn ExecutorContext<'txn, 'db, T>,
+        ctx: &'txn ConnectionContext<'txn, 'db, T>,
         plan_node: PlanNode<'txn, 'db, T>,
     ) -> ExecutorResult<Self> {
         let executor = match plan_node {
@@ -172,7 +147,7 @@ impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
                 let rows = plan
                     .explain()
                     .into_iter()
-                    .map(|row| vec![Expression::Constact(Value::Text(row))])
+                    .map(|row| vec![Expression::Constant(Value::Text(row))])
                     .collect();
                 Self::Values(Values::new(ctx, rows))
             }

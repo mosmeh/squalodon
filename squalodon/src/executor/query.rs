@@ -1,4 +1,4 @@
-use super::{ExecutorContext, ExecutorNode, ExecutorResult, IntoOutput, Node, NodeError, Output};
+use super::{ConnectionContext, ExecutorNode, ExecutorResult, IntoOutput, Node, NodeError, Output};
 use crate::{
     catalog::{Aggregator, TableFnPtr},
     memcomparable::MemcomparableSerde,
@@ -15,7 +15,7 @@ pub struct Values<'txn> {
 
 impl<'txn> Values<'txn> {
     pub fn new<T: Storage>(
-        ctx: &'txn ExecutorContext<'txn, '_, T>,
+        ctx: &'txn ConnectionContext<'txn, '_, T>,
         rows: Vec<Vec<Expression<T>>>,
     ) -> Self {
         let rows = rows.into_iter().map(|row| {
@@ -60,7 +60,7 @@ impl Node for SeqScan<'_> {
 }
 
 pub struct FunctionScan<'txn, 'db, T: Storage> {
-    ctx: &'txn ExecutorContext<'txn, 'db, T>,
+    ctx: &'txn ConnectionContext<'txn, 'db, T>,
     source: Box<ExecutorNode<'txn, 'db, T>>,
     fn_ptr: TableFnPtr<T>,
     rows: Box<dyn Iterator<Item = Row> + 'txn>,
@@ -68,7 +68,7 @@ pub struct FunctionScan<'txn, 'db, T: Storage> {
 
 impl<'txn, 'db, T: Storage> FunctionScan<'txn, 'db, T> {
     pub fn new(
-        ctx: &'txn ExecutorContext<'txn, 'db, T>,
+        ctx: &'txn ConnectionContext<'txn, 'db, T>,
         source: ExecutorNode<'txn, 'db, T>,
         fn_ptr: TableFnPtr<T>,
     ) -> Self {
@@ -94,7 +94,7 @@ impl<T: Storage> Node for FunctionScan<'_, '_, T> {
 }
 
 pub struct Project<'txn, 'db, T: Storage> {
-    pub ctx: &'txn ExecutorContext<'txn, 'db, T>,
+    pub ctx: &'txn ConnectionContext<'txn, 'db, T>,
     pub source: Box<ExecutorNode<'txn, 'db, T>>,
     pub exprs: Vec<Expression<T>>,
 }
@@ -112,7 +112,7 @@ impl<T: Storage> Node for Project<'_, '_, T> {
 }
 
 pub struct Filter<'txn, 'db, T: Storage> {
-    pub ctx: &'txn ExecutorContext<'txn, 'db, T>,
+    pub ctx: &'txn ConnectionContext<'txn, 'db, T>,
     pub source: Box<ExecutorNode<'txn, 'db, T>>,
     pub cond: Expression<T>,
 }
@@ -136,7 +136,7 @@ pub struct Sort {
 
 impl Sort {
     pub fn new<T: Storage>(
-        ctx: &ExecutorContext<'_, '_, T>,
+        ctx: &ConnectionContext<'_, '_, T>,
         source: ExecutorNode<'_, '_, T>,
         order_by: Vec<OrderBy<T>>,
     ) -> ExecutorResult<Self> {
@@ -175,13 +175,13 @@ pub struct Limit<'txn, 'db, T: Storage> {
 
 impl<'txn, 'db, T: Storage> Limit<'txn, 'db, T> {
     pub fn new(
-        ctx: &'txn ExecutorContext<'txn, 'db, T>,
+        ctx: &'txn ConnectionContext<'txn, 'db, T>,
         source: ExecutorNode<'txn, 'db, T>,
         limit: Option<Expression<T>>,
         offset: Option<Expression<T>>,
     ) -> ExecutorResult<Self> {
         fn eval<T: Storage>(
-            ctx: &ExecutorContext<'_, '_, T>,
+            ctx: &ConnectionContext<'_, '_, T>,
             expr: Option<Expression<T>>,
         ) -> ExecutorResult<Option<usize>> {
             let Some(expr) = expr else {
