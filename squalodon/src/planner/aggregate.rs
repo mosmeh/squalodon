@@ -8,7 +8,7 @@ use crate::{
     rows::ColumnIndex,
     CatalogError, Storage, Type,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Write};
 
 pub enum Aggregate<'txn, 'db, T: Storage> {
     Ungrouped {
@@ -24,37 +24,22 @@ pub enum Aggregate<'txn, 'db, T: Storage> {
 impl<T: Storage> Explain for Aggregate<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
         match self {
-            Self::Ungrouped { source, column_ops } => {
-                let mut s = "UngroupedAggregate ".to_owned();
-                for (i, aggregation) in column_ops.iter().enumerate() {
-                    if i > 0 {
-                        s.push_str(", ");
-                    }
-                    s.push_str(if aggregation.is_distinct {
-                        "Distinct"
-                    } else {
-                        "NonDistinct"
-                    });
-                }
-                visitor.write_str(&s);
+            Self::Ungrouped { source, .. } => {
+                visitor.write_str("UngroupedAggregate");
                 source.visit(visitor);
             }
             Self::Hash { source, column_ops } => {
-                let mut s = "HashAggregate ".to_owned();
-                for (i, op) in column_ops.iter().enumerate() {
-                    if i > 0 {
-                        s.push_str(", ");
-                    }
-                    match op {
-                        AggregateOp::GroupBy => s.push_str("GroupBy"),
-                        AggregateOp::ApplyAggregate(ApplyAggregateOp { is_distinct, .. }) => {
-                            s.push_str("ApplyAggregate");
-                            if *is_distinct {
-                                s.push_str("(Distinct)");
-                            }
-                        }
-                        AggregateOp::Passthrough => s.push_str("Passthrough"),
-                    }
+                let mut s = "HashAggregate".to_owned();
+                for (i, column_index) in column_ops
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, op)| {
+                        matches!(op, AggregateOp::ApplyAggregate(_)).then_some(ColumnIndex(i))
+                    })
+                    .enumerate()
+                {
+                    s.push_str(if i == 0 { " " } else { ", " });
+                    write!(&mut s, "{column_index}").unwrap();
                 }
                 visitor.write_str(&s);
                 source.visit(visitor);

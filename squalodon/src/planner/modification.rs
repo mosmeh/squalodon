@@ -11,7 +11,7 @@ pub struct Insert<'txn, 'db, T: Storage> {
 
 impl<T: Storage> Explain for Insert<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Insert table={:?}", self.table.name());
+        write!(visitor, "Insert on {}", self.table.name());
         self.source.visit(visitor);
     }
 }
@@ -23,7 +23,7 @@ pub struct Update<'txn, 'db, T: Storage> {
 
 impl<T: Storage> Explain for Update<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Update table={:?}", self.table.name());
+        write!(visitor, "Update on {}", self.table.name());
         self.source.visit(visitor);
     }
 }
@@ -35,7 +35,7 @@ pub struct Delete<'txn, 'db, T: Storage> {
 
 impl<T: Storage> Explain for Delete<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Delete table={:?}", self.table.name());
+        write!(visitor, "Delete on {}", self.table.name());
         self.source.visit(visitor);
     }
 }

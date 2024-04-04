@@ -30,19 +30,7 @@ impl<T: Storage> Values<T> {
 
 impl<T: Storage> Explain for Values<T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
-        let mut f = "Values ".to_owned();
-        for (i, row) in self.rows.iter().enumerate() {
-            f.push_str(if i == 0 { "(" } else { ", (" });
-            for (j, value) in row.iter().enumerate() {
-                if j == 0 {
-                    write!(&mut f, "{value}").unwrap();
-                } else {
-                    write!(&mut f, ", {value}").unwrap();
-                }
-            }
-            f.push(')');
-        }
-        visitor.write_str(&f);
+        visitor.write_str("Values");
     }
 }
 
@@ -60,7 +48,7 @@ impl<T: Storage> Explain for Scan<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
         match self {
             Self::SeqScan { table } => {
-                write!(visitor, "SeqScan table={:?}", table.name());
+                write!(visitor, "SeqScan on {}", table.name());
             }
             Self::FunctionScan { source, .. } => {
                 visitor.write_str("FunctionScan");
@@ -109,7 +97,7 @@ pub struct Sort<'txn, 'db, T: Storage> {
 
 impl<T: Storage> Explain for Sort<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
-        let mut f = "Sort by [".to_owned();
+        let mut f = "Sort by ".to_owned();
         for (i, order_by) in self.order_by.iter().enumerate() {
             if i == 0 {
                 write!(f, "{order_by}").unwrap();
@@ -117,7 +105,6 @@ impl<T: Storage> Explain for Sort<'_, '_, T> {
                 write!(f, ", {order_by}").unwrap();
             }
         }
-        f.push(']');
         visitor.write_str(&f);
         self.source.visit(visitor);
     }
@@ -131,14 +118,7 @@ pub struct Limit<'txn, 'db, T: Storage> {
 
 impl<T: Storage> Explain for Limit<'_, '_, T> {
     fn visit(&self, visitor: &mut ExplainVisitor) {
-        let mut f = "Limit".to_owned();
-        if let Some(limit) = &self.limit {
-            write!(f, " limit={limit}").unwrap();
-        }
-        if let Some(offset) = &self.offset {
-            write!(f, " offset={offset}").unwrap();
-        }
-        visitor.write_str(&f);
+        visitor.write_str("Limit");
         self.source.visit(visitor);
     }
 }
@@ -151,7 +131,14 @@ pub struct OrderBy<T: Storage> {
 
 impl<T: Storage> std::fmt::Display for OrderBy<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} {} {}", self.expr, self.order, self.null_order)
+        write!(f, "{}", self.expr)?;
+        if self.order != Default::default() {
+            write!(f, " {}", self.order)?;
+        }
+        if self.null_order != Default::default() {
+            write!(f, " {}", self.null_order)?;
+        }
+        Ok(())
     }
 }
 

@@ -1,6 +1,6 @@
 use super::{Explain, ExplainVisitor, Plan, PlanNode, Planner, PlannerError, PlannerResult};
 use crate::{catalog, parser, rows::ColumnIndex, Storage};
-use std::{collections::HashSet, fmt::Write};
+use std::collections::HashSet;
 
 pub struct CreateTable {
     pub name: String,
@@ -12,15 +12,7 @@ pub struct CreateTable {
 
 impl Explain for CreateTable {
     fn visit(&self, visitor: &mut ExplainVisitor) {
-        let mut s = format!("CreateTable name={:?} columns=[", self.name);
-        for (i, column) in self.columns.iter().enumerate() {
-            if i > 0 {
-                s.push_str(", ");
-            }
-            write!(&mut s, "{:?} {:?}", column.name, column.ty).unwrap();
-        }
-        s.push(']');
-        visitor.write_str(&s);
+        visitor.write_str("CreateTable");
     }
 }
 
@@ -33,18 +25,7 @@ pub struct CreateIndex {
 
 impl Explain for CreateIndex {
     fn visit(&self, visitor: &mut ExplainVisitor) {
-        let mut s = format!(
-            "CreateIndex name={:?} table={:?} column_indexes=[",
-            self.name, self.table_name,
-        );
-        for (i, index) in self.column_indexes.iter().enumerate() {
-            if i > 0 {
-                s.push_str(", ");
-            }
-            write!(&mut s, "{index}").unwrap();
-        }
-        write!(&mut s, "] is_unique={}", self.is_unique).unwrap();
-        visitor.write_str(&s);
+        visitor.write_str("CreateIndex");
     }
 }
 
@@ -52,7 +33,7 @@ pub struct DropObject(pub parser::DropObject);
 
 impl Explain for DropObject {
     fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Drop {:?} {:?}", self.0.kind, self.0.name);
+        visitor.write_str("Drop");
     }
 }
 
