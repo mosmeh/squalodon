@@ -176,16 +176,16 @@ impl Column {
 }
 
 trait Explain {
-    fn visit(&self, visitor: &mut ExplainVisitor);
+    fn fmt_explain(&self, f: &mut ExplainFormatter);
 }
 
 #[derive(Default)]
-struct ExplainVisitor {
+struct ExplainFormatter {
     rows: Vec<String>,
     depth: isize,
 }
 
-impl ExplainVisitor {
+impl ExplainFormatter {
     fn write_str(&mut self, s: &str) {
         let mut row = String::new();
         for _ in 0..(self.depth - 1) {
@@ -222,35 +222,35 @@ pub enum PlanNode<'txn, 'db, T: Storage> {
 
 impl<T: Storage> PlanNode<'_, '_, T> {
     pub fn explain(&self) -> Vec<String> {
-        let mut visitor = ExplainVisitor::default();
-        self.visit(&mut visitor);
-        visitor.rows
+        let mut f = ExplainFormatter::default();
+        self.fmt_explain(&mut f);
+        f.rows
     }
 }
 
 impl<T: Storage> Explain for PlanNode<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        visitor.depth += 1;
+    fn fmt_explain(&self, f: &mut ExplainFormatter) {
+        f.depth += 1;
         match self {
-            Self::Explain(n) => n.visit(visitor),
-            Self::CreateTable(n) => n.visit(visitor),
-            Self::CreateIndex(n) => n.visit(visitor),
-            Self::Drop(n) => n.visit(visitor),
-            Self::Values(n) => n.visit(visitor),
-            Self::Scan(n) => n.visit(visitor),
-            Self::Project(n) => n.visit(visitor),
-            Self::Filter(n) => n.visit(visitor),
-            Self::Sort(n) => n.visit(visitor),
-            Self::Limit(n) => n.visit(visitor),
-            Self::CrossProduct(n) => n.visit(visitor),
-            Self::Aggregate(n) => n.visit(visitor),
-            Self::Union(n) => n.visit(visitor),
-            Self::Spool(n) => n.visit(visitor),
-            Self::Insert(n) => n.visit(visitor),
-            Self::Update(n) => n.visit(visitor),
-            Self::Delete(n) => n.visit(visitor),
+            Self::Explain(n) => n.fmt_explain(f),
+            Self::CreateTable(n) => n.fmt_explain(f),
+            Self::CreateIndex(n) => n.fmt_explain(f),
+            Self::Drop(n) => n.fmt_explain(f),
+            Self::Values(n) => n.fmt_explain(f),
+            Self::Scan(n) => n.fmt_explain(f),
+            Self::Project(n) => n.fmt_explain(f),
+            Self::Filter(n) => n.fmt_explain(f),
+            Self::Sort(n) => n.fmt_explain(f),
+            Self::Limit(n) => n.fmt_explain(f),
+            Self::CrossProduct(n) => n.fmt_explain(f),
+            Self::Aggregate(n) => n.fmt_explain(f),
+            Self::Union(n) => n.fmt_explain(f),
+            Self::Spool(n) => n.fmt_explain(f),
+            Self::Insert(n) => n.fmt_explain(f),
+            Self::Update(n) => n.fmt_explain(f),
+            Self::Delete(n) => n.fmt_explain(f),
         }
-        visitor.depth -= 1;
+        f.depth -= 1;
     }
 }
 
@@ -259,9 +259,9 @@ pub struct Spool<'txn, 'db, T: Storage> {
 }
 
 impl<T: Storage> Explain for Spool<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        visitor.write_str("Spool");
-        self.source.visit(visitor);
+    fn fmt_explain(&self, f: &mut ExplainFormatter) {
+        f.write_str("Spool");
+        self.source.fmt_explain(f);
     }
 }
 

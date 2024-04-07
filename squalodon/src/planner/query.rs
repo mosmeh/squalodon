@@ -1,7 +1,7 @@
 use super::{
     aggregate::AggregateCollection,
     expression::{ExpressionBinder, TypedExpression},
-    Explain, ExplainVisitor, Plan, PlanNode, Planner, PlannerResult,
+    Explain, ExplainFormatter, Plan, PlanNode, Planner, PlannerResult,
 };
 use crate::{
     catalog::TableFnPtr,
@@ -29,8 +29,8 @@ impl<T: Storage> Values<T> {
 }
 
 impl<T: Storage> Explain for Values<T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        visitor.write_str("Values");
+    fn fmt_explain(&self, f: &mut ExplainFormatter) {
+        f.write_str("Values");
     }
 }
 
@@ -45,14 +45,14 @@ pub enum Scan<'txn, 'db, T: Storage> {
 }
 
 impl<T: Storage> Explain for Scan<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
+    fn fmt_explain(&self, f: &mut ExplainFormatter) {
         match self {
             Self::SeqScan { table } => {
-                write!(visitor, "SeqScan on {}", table.name());
+                write!(f, "SeqScan on {}", table.name());
             }
             Self::FunctionScan { source, .. } => {
-                visitor.write_str("FunctionScan");
-                source.visit(visitor);
+                f.write_str("FunctionScan");
+                source.fmt_explain(f);
             }
         }
     }
@@ -64,17 +64,17 @@ pub struct Project<'txn, 'db, T: Storage> {
 }
 
 impl<T: Storage> Explain for Project<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        let mut f = "Project ".to_owned();
+    fn fmt_explain(&self, f: &mut ExplainFormatter) {
+        let mut s = "Project ".to_owned();
         for (i, expr) in self.exprs.iter().enumerate() {
             if i == 0 {
-                write!(f, "{expr}").unwrap();
+                write!(s, "{expr}").unwrap();
             } else {
-                write!(f, ", {expr}").unwrap();
+                write!(s, ", {expr}").unwrap();
             }
         }
-        visitor.write_str(&f);
-        self.source.visit(visitor);
+        f.write_str(&s);
+        self.source.fmt_explain(f);
     }
 }
 
@@ -84,9 +84,9 @@ pub struct Filter<'txn, 'db, T: Storage> {
 }
 
 impl<T: Storage> Explain for Filter<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Filter {}", self.cond);
-        self.source.visit(visitor);
+    fn fmt_explain(&self, f: &mut ExplainFormatter) {
+        write!(f, "Filter {}", self.cond);
+        self.source.fmt_explain(f);
     }
 }
 
@@ -96,17 +96,17 @@ pub struct Sort<'txn, 'db, T: Storage> {
 }
 
 impl<T: Storage> Explain for Sort<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        let mut f = "Sort by ".to_owned();
+    fn fmt_explain(&self, f: &mut ExplainFormatter) {
+        let mut s = "Sort by ".to_owned();
         for (i, order_by) in self.order_by.iter().enumerate() {
             if i == 0 {
-                write!(f, "{order_by}").unwrap();
+                write!(s, "{order_by}").unwrap();
             } else {
-                write!(f, ", {order_by}").unwrap();
+                write!(s, ", {order_by}").unwrap();
             }
         }
-        visitor.write_str(&f);
-        self.source.visit(visitor);
+        f.write_str(&s);
+        self.source.fmt_explain(f);
     }
 }
 
@@ -117,9 +117,9 @@ pub struct Limit<'txn, 'db, T: Storage> {
 }
 
 impl<T: Storage> Explain for Limit<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        visitor.write_str("Limit");
-        self.source.visit(visitor);
+    fn fmt_explain(&self, f: &mut ExplainFormatter) {
+        f.write_str("Limit");
+        self.source.fmt_explain(f);
     }
 }
 
@@ -148,10 +148,10 @@ pub struct CrossProduct<'txn, 'db, T: Storage> {
 }
 
 impl<T: Storage> Explain for CrossProduct<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        visitor.write_str("CrossProduct");
-        self.left.visit(visitor);
-        self.right.visit(visitor);
+    fn fmt_explain(&self, f: &mut ExplainFormatter) {
+        f.write_str("CrossProduct");
+        self.left.fmt_explain(f);
+        self.right.fmt_explain(f);
     }
 }
 
@@ -161,10 +161,10 @@ pub struct Union<'txn, 'db, T: Storage> {
 }
 
 impl<T: Storage> Explain for Union<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        visitor.write_str("Union");
-        self.left.visit(visitor);
-        self.right.visit(visitor);
+    fn fmt_explain(&self, f: &mut ExplainFormatter) {
+        f.write_str("Union");
+        self.left.fmt_explain(f);
+        self.right.fmt_explain(f);
     }
 }
 

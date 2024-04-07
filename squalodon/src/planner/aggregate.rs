@@ -1,6 +1,6 @@
 use super::{
     expression::{ExpressionBinder, TypedExpression},
-    Explain, ExplainVisitor, Plan, PlanNode, Planner, PlannerError, PlannerResult,
+    Explain, ExplainFormatter, Plan, PlanNode, Planner, PlannerError, PlannerResult,
 };
 use crate::{
     catalog::{AggregateFunction, AggregateInitFnPtr},
@@ -22,11 +22,11 @@ pub enum Aggregate<'txn, 'db, T: Storage> {
 }
 
 impl<T: Storage> Explain for Aggregate<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
+    fn fmt_explain(&self, f: &mut ExplainFormatter) {
         match self {
             Self::Ungrouped { source, .. } => {
-                visitor.write_str("UngroupedAggregate");
-                source.visit(visitor);
+                f.write_str("UngroupedAggregate");
+                source.fmt_explain(f);
             }
             Self::Hash { source, column_ops } => {
                 let mut s = "HashAggregate".to_owned();
@@ -41,8 +41,8 @@ impl<T: Storage> Explain for Aggregate<'_, '_, T> {
                     s.push_str(if i == 0 { " " } else { ", " });
                     write!(&mut s, "{column_index}").unwrap();
                 }
-                visitor.write_str(&s);
-                source.visit(visitor);
+                f.write_str(&s);
+                source.fmt_explain(f);
             }
         }
     }

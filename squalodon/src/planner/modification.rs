@@ -1,6 +1,6 @@
 use super::{
     expression::{ExpressionBinder, TypedExpression},
-    Explain, ExplainVisitor, Plan, PlanNode, Planner, PlannerError, PlannerResult,
+    Explain, ExplainFormatter, Plan, PlanNode, Planner, PlannerError, PlannerResult,
 };
 use crate::{parser, planner, rows::ColumnIndex, storage::Table, Storage};
 
@@ -10,9 +10,9 @@ pub struct Insert<'txn, 'db, T: Storage> {
 }
 
 impl<T: Storage> Explain for Insert<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Insert on {}", self.table.name());
-        self.source.visit(visitor);
+    fn fmt_explain(&self, f: &mut ExplainFormatter) {
+        write!(f, "Insert on {}", self.table.name());
+        self.source.fmt_explain(f);
     }
 }
 
@@ -22,9 +22,9 @@ pub struct Update<'txn, 'db, T: Storage> {
 }
 
 impl<T: Storage> Explain for Update<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Update on {}", self.table.name());
-        self.source.visit(visitor);
+    fn fmt_explain(&self, f: &mut ExplainFormatter) {
+        write!(f, "Update on {}", self.table.name());
+        self.source.fmt_explain(f);
     }
 }
 
@@ -34,9 +34,9 @@ pub struct Delete<'txn, 'db, T: Storage> {
 }
 
 impl<T: Storage> Explain for Delete<'_, '_, T> {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        write!(visitor, "Delete on {}", self.table.name());
-        self.source.visit(visitor);
+    fn fmt_explain(&self, f: &mut ExplainFormatter) {
+        write!(f, "Delete on {}", self.table.name());
+        self.source.fmt_explain(f);
     }
 }
 

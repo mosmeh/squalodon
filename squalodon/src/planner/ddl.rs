@@ -1,4 +1,4 @@
-use super::{Explain, ExplainVisitor, Plan, PlanNode, Planner, PlannerError, PlannerResult};
+use super::{Explain, ExplainFormatter, Plan, PlanNode, Planner, PlannerError, PlannerResult};
 use crate::{catalog, parser, rows::ColumnIndex, Storage};
 use std::collections::HashSet;
 
@@ -11,8 +11,8 @@ pub struct CreateTable {
 }
 
 impl Explain for CreateTable {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        visitor.write_str("CreateTable");
+    fn fmt_explain(&self, f: &mut ExplainFormatter) {
+        f.write_str("CreateTable");
     }
 }
 
@@ -24,16 +24,16 @@ pub struct CreateIndex {
 }
 
 impl Explain for CreateIndex {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        visitor.write_str("CreateIndex");
+    fn fmt_explain(&self, f: &mut ExplainFormatter) {
+        f.write_str("CreateIndex");
     }
 }
 
 pub struct DropObject(pub parser::DropObject);
 
 impl Explain for DropObject {
-    fn visit(&self, visitor: &mut ExplainVisitor) {
-        visitor.write_str("Drop");
+    fn fmt_explain(&self, f: &mut ExplainFormatter) {
+        f.write_str("Drop");
     }
 }
 
