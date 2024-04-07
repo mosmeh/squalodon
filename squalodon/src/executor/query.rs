@@ -16,7 +16,7 @@ pub struct Values<'txn> {
 impl<'txn> Values<'txn> {
     pub fn new<T: Storage>(
         ctx: &'txn ConnectionContext<'txn, '_, T>,
-        rows: Vec<Vec<Expression<T>>>,
+        rows: Vec<Vec<Expression<'txn, T>>>,
     ) -> Self {
         let rows = rows.into_iter().map(|row| {
             let columns = row
@@ -96,7 +96,7 @@ impl<T: Storage> Node for FunctionScan<'_, '_, T> {
 pub struct Project<'txn, 'db, T: Storage> {
     pub ctx: &'txn ConnectionContext<'txn, 'db, T>,
     pub source: Box<ExecutorNode<'txn, 'db, T>>,
-    pub exprs: Vec<Expression<T>>,
+    pub exprs: Vec<Expression<'txn, T>>,
 }
 
 impl<T: Storage> Node for Project<'_, '_, T> {
@@ -114,7 +114,7 @@ impl<T: Storage> Node for Project<'_, '_, T> {
 pub struct Filter<'txn, 'db, T: Storage> {
     pub ctx: &'txn ConnectionContext<'txn, 'db, T>,
     pub source: Box<ExecutorNode<'txn, 'db, T>>,
-    pub cond: Expression<T>,
+    pub cond: Expression<'txn, T>,
 }
 
 impl<T: Storage> Node for Filter<'_, '_, T> {

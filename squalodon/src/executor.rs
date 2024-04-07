@@ -196,9 +196,9 @@ impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
             }
             PlanNode::Values(planner::Values { rows }) => Self::Values(Values::new(ctx, rows)),
             PlanNode::Scan(planner::Scan::SeqScan { table }) => Self::SeqScan(SeqScan::new(table)),
-            PlanNode::Scan(planner::Scan::FunctionScan { source, fn_ptr }) => {
+            PlanNode::Scan(planner::Scan::FunctionScan { source, function }) => {
                 let source = Self::new(ctx, *source)?;
-                Self::FunctionScan(FunctionScan::new(ctx, source, fn_ptr))
+                Self::FunctionScan(FunctionScan::new(ctx, source, function.fn_ptr))
             }
             PlanNode::Project(planner::Project { source, exprs }) => Self::Project(Project {
                 ctx,

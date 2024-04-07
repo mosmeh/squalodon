@@ -1,6 +1,6 @@
 use super::{aggregate::AggregatePlanner, Plan, PlanNode, Planner, PlannerError, PlannerResult};
 use crate::{
-    catalog::{Aggregator, ScalarEvalFnPtr},
+    catalog::{Aggregator, ScalarFunction},
     connection::ConnectionContext,
     executor::{ExecutorError, ExecutorResult},
     parser::{self, BinaryOp, FunctionArgs, UnaryOp},
@@ -11,38 +11,38 @@ use crate::{
 };
 use std::collections::HashMap;
 
-pub enum Expression<T: Storage> {
+pub enum Expression<'a, T: Storage> {
     Constant(Value),
     ColumnRef(ColumnIndex),
     Cast {
-        expr: Box<Expression<T>>,
+        expr: Box<Expression<'a, T>>,
         ty: Type,
     },
     UnaryOp {
         op: UnaryOp,
-        expr: Box<Expression<T>>,
+        expr: Box<Expression<'a, T>>,
     },
     BinaryOp {
         op: BinaryOp,
-        lhs: Box<Expression<T>>,
-        rhs: Box<Expression<T>>,
+        lhs: Box<Expression<'a, T>>,
+        rhs: Box<Expression<'a, T>>,
     },
     Case {
-        branches: Vec<CaseBranch<T>>,
-        else_branch: Option<Box<Expression<T>>>,
+        branches: Vec<CaseBranch<'a, T>>,
+        else_branch: Option<Box<Expression<'a, T>>>,
     },
     Like {
-        str_expr: Box<Expression<T>>,
-        pattern: Box<Expression<T>>,
+        str_expr: Box<Expression<'a, T>>,
+        pattern: Box<Expression<'a, T>>,
         case_insensitive: bool,
     },
     Function {
-        eval: ScalarEvalFnPtr<T>,
-        args: Vec<Expression<T>>,
+        function: &'a ScalarFunction<T>,
+        args: Vec<Expression<'a, T>>,
     },
 }
 
-impl<T: Storage> Clone for Expression<T> {
+impl<T: Storage> Clone for Expression<'_, T> {
     fn clone(&self) -> Self {
         match self {
             Self::Constant(value) => Self::Constant(value.clone()),
@@ -76,15 +76,15 @@ impl<T: Storage> Clone for Expression<T> {
                 pattern: pattern.clone(),
                 case_insensitive: *case_insensitive,
             },
-            Self::Function { eval, args } => Self::Function {
-                eval: *eval,
+            Self::Function { function, args } => Self::Function {
+                function: *function,
                 args: args.clone(),
             },
         }
     }
 }
 
-impl<T: Storage> std::fmt::Display for Expression<T> {
+impl<T: Storage> std::fmt::Display for Expression<'_, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Constant(value) => write!(f, "{value:?}"),
@@ -116,8 +116,8 @@ impl<T: Storage> std::fmt::Display for Expression<T> {
                 f.write_str(if *case_insensitive { "ILIKE" } else { "LIKE" })?;
                 write!(f, " {pattern})")
             }
-            Self::Function { eval, args } => {
-                write!(f, "({eval:?})(")?;
+            Self::Function { function, args } => {
+                write!(f, "{}(", function.name)?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         f.write_str(", ")?;
@@ -130,7 +130,7 @@ impl<T: Storage> std::fmt::Display for Expression<T> {
     }
 }
 
-impl<T: Storage> Expression<T> {
+impl<T: Storage> Expression<'_, T> {
     fn unary_op(ctx: &ConnectionContext<T>, op: UnaryOp, expr: Self) -> Self {
         if let Self::Constant(_) = &expr {
             if let Ok(value) = op.eval(ctx, &Row::empty(), &expr) {
@@ -182,12 +182,12 @@ impl<T: Storage> Expression<T> {
     }
 }
 
-pub struct CaseBranch<T: Storage> {
-    pub condition: Expression<T>,
-    pub result: Expression<T>,
+pub struct CaseBranch<'a, T: Storage> {
+    pub condition: Expression<'a, T>,
+    pub result: Expression<'a, T>,
 }
 
-impl<T: Storage> Clone for CaseBranch<T> {
+impl<T: Storage> Clone for CaseBranch<'_, T> {
     fn clone(&self) -> Self {
         Self {
             condition: self.condition.clone(),
@@ -196,12 +196,12 @@ impl<T: Storage> Clone for CaseBranch<T> {
     }
 }
 
-pub struct TypedExpression<T: Storage> {
-    pub expr: planner::Expression<T>,
+pub struct TypedExpression<'a, T: Storage> {
+    pub expr: planner::Expression<'a, T>,
     pub ty: NullableType,
 }
 
-impl<T: Storage> Clone for TypedExpression<T> {
+impl<T: Storage> Clone for TypedExpression<'_, T> {
     fn clone(&self) -> Self {
         Self {
             expr: self.expr.clone(),
@@ -210,7 +210,7 @@ impl<T: Storage> Clone for TypedExpression<T> {
     }
 }
 
-impl<T: Storage> From<Value> for TypedExpression<T> {
+impl<T: Storage> From<Value> for TypedExpression<'_, T> {
     fn from(value: Value) -> Self {
         let ty = value.ty();
         Self {
@@ -220,11 +220,11 @@ impl<T: Storage> From<Value> for TypedExpression<T> {
     }
 }
 
-impl<T: Storage> TypedExpression<T> {
+impl<'a, T: Storage> TypedExpression<'a, T> {
     pub fn expect_type<I: Into<NullableType>>(
         self,
         expected: I,
-    ) -> PlannerResult<planner::Expression<T>> {
+    ) -> PlannerResult<planner::Expression<'a, T>> {
         if self.ty.is_compatible_with(expected.into()) {
             Ok(self.expr)
         } else {
@@ -235,7 +235,7 @@ impl<T: Storage> TypedExpression<T> {
 
 pub struct ExpressionBinder<'a, 'txn, 'db, T: Storage> {
     planner: &'a Planner<'txn, 'db, T>,
-    aliases: Option<&'a HashMap<String, TypedExpression<T>>>,
+    aliases: Option<&'a HashMap<String, TypedExpression<'txn, T>>>,
     aggregates: Option<&'a AggregatePlanner<'a, 'txn, 'db, T>>,
 }
 
@@ -248,7 +248,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
         }
     }
 
-    pub fn with_aliases(&self, aliases: &'a HashMap<String, TypedExpression<T>>) -> Self {
+    pub fn with_aliases(&self, aliases: &'a HashMap<String, TypedExpression<'txn, T>>) -> Self {
         Self {
             aliases: Some(aliases),
             ..*self
@@ -266,7 +266,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
         &self,
         source: Plan<'txn, 'db, T>,
         expr: parser::Expression,
-    ) -> PlannerResult<(Plan<'txn, 'db, T>, TypedExpression<T>)> {
+    ) -> PlannerResult<(Plan<'txn, 'db, T>, TypedExpression<'txn, T>)> {
         match expr {
             parser::Expression::Constant(value) => Ok((source, value.into())),
             parser::Expression::ColumnRef(column_ref) => {
@@ -499,7 +499,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                 }
                 let ty = (function.bind)(&arg_types)?;
                 let expr = planner::Expression::Function {
-                    eval: function.eval,
+                    function,
                     args: arg_exprs,
                 };
                 Ok((plan, TypedExpression { expr, ty }))
@@ -611,7 +611,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
     pub fn bind_without_source(
         &self,
         expr: parser::Expression,
-    ) -> PlannerResult<TypedExpression<T>> {
+    ) -> PlannerResult<TypedExpression<'txn, T>> {
         self.bind(Plan::empty_source(), expr).map(|(_, e)| e)
     }
 }
@@ -621,7 +621,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
 fn attach_subquery<'txn, 'db, T: Storage>(
     source: Plan<'txn, 'db, T>,
     subquery: Plan<'txn, 'db, T>,
-) -> (Plan<'txn, 'db, T>, TypedExpression<T>) {
+) -> (Plan<'txn, 'db, T>, TypedExpression<'txn, T>) {
     let subquery_column_index = ColumnIndex(source.schema.0.len());
     let subquery_column_type = subquery.schema.0[0].ty;
 

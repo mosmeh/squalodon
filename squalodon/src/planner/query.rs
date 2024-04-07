@@ -4,7 +4,7 @@ use super::{
     Explain, ExplainFormatter, Plan, PlanNode, Planner, PlannerResult,
 };
 use crate::{
-    catalog::TableFnPtr,
+    catalog::TableFunction,
     parser::{self, NullOrder, Order},
     planner,
     rows::ColumnIndex,
@@ -14,12 +14,12 @@ use crate::{
 };
 use std::{collections::HashMap, fmt::Write};
 
-pub struct Values<T: Storage> {
-    pub rows: Vec<Vec<planner::Expression<T>>>,
+pub struct Values<'a, T: Storage> {
+    pub rows: Vec<Vec<planner::Expression<'a, T>>>,
 }
 
-impl<T: Storage> Values<T> {
-    pub fn new(rows: Vec<Vec<planner::Expression<T>>>) -> Self {
+impl<'a, T: Storage> Values<'a, T> {
+    pub fn new(rows: Vec<Vec<planner::Expression<'a, T>>>) -> Self {
         Self { rows }
     }
 
@@ -28,7 +28,7 @@ impl<T: Storage> Values<T> {
     }
 }
 
-impl<T: Storage> Explain for Values<T> {
+impl<T: Storage> Explain for Values<'_, T> {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         f.write_str("Values");
     }
@@ -40,7 +40,7 @@ pub enum Scan<'txn, 'db, T: Storage> {
     },
     FunctionScan {
         source: Box<PlanNode<'txn, 'db, T>>,
-        fn_ptr: TableFnPtr<T>,
+        function: &'txn TableFunction<T>,
     },
 }
 
@@ -50,8 +50,8 @@ impl<T: Storage> Explain for Scan<'_, '_, T> {
             Self::SeqScan { table } => {
                 write!(f, "SeqScan on {}", table.name());
             }
-            Self::FunctionScan { source, .. } => {
-                f.write_str("FunctionScan");
+            Self::FunctionScan { source, function } => {
+                write!(f, "FunctionScan on {}", function.name);
                 source.fmt_explain(f);
             }
         }
@@ -60,7 +60,7 @@ impl<T: Storage> Explain for Scan<'_, '_, T> {
 
 pub struct Project<'txn, 'db, T: Storage> {
     pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub exprs: Vec<planner::Expression<T>>,
+    pub exprs: Vec<planner::Expression<'txn, T>>,
 }
 
 impl<T: Storage> Explain for Project<'_, '_, T> {
@@ -80,7 +80,7 @@ impl<T: Storage> Explain for Project<'_, '_, T> {
 
 pub struct Filter<'txn, 'db, T: Storage> {
     pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub cond: planner::Expression<T>,
+    pub cond: planner::Expression<'txn, T>,
 }
 
 impl<T: Storage> Explain for Filter<'_, '_, T> {
@@ -92,7 +92,7 @@ impl<T: Storage> Explain for Filter<'_, '_, T> {
 
 pub struct Sort<'txn, 'db, T: Storage> {
     pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub order_by: Vec<OrderBy<T>>,
+    pub order_by: Vec<OrderBy<'txn, T>>,
 }
 
 impl<T: Storage> Explain for Sort<'_, '_, T> {
@@ -112,8 +112,8 @@ impl<T: Storage> Explain for Sort<'_, '_, T> {
 
 pub struct Limit<'txn, 'db, T: Storage> {
     pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub limit: Option<planner::Expression<T>>,
-    pub offset: Option<planner::Expression<T>>,
+    pub limit: Option<planner::Expression<'txn, T>>,
+    pub offset: Option<planner::Expression<'txn, T>>,
 }
 
 impl<T: Storage> Explain for Limit<'_, '_, T> {
@@ -123,13 +123,13 @@ impl<T: Storage> Explain for Limit<'_, '_, T> {
     }
 }
 
-pub struct OrderBy<T: Storage> {
-    pub expr: planner::Expression<T>,
+pub struct OrderBy<'a, T: Storage> {
+    pub expr: planner::Expression<'a, T>,
     pub order: Order,
     pub null_order: NullOrder,
 }
 
-impl<T: Storage> std::fmt::Display for OrderBy<T> {
+impl<T: Storage> std::fmt::Display for OrderBy<'_, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.expr)?;
         if self.order != Default::default() {
@@ -513,10 +513,10 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         limit: Option<parser::Expression>,
         offset: Option<parser::Expression>,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
-        fn bind_expr<T: Storage>(
-            expr_binder: &ExpressionBinder<'_, '_, '_, T>,
+        fn bind_expr<'txn, T: Storage>(
+            expr_binder: &ExpressionBinder<'_, 'txn, '_, T>,
             expr: Option<parser::Expression>,
-        ) -> PlannerResult<Option<planner::Expression<T>>> {
+        ) -> PlannerResult<Option<planner::Expression<'txn, T>>> {
             let Some(expr) = expr else {
                 return Ok(None);
             };
@@ -611,9 +611,9 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         name: String,
         args: Vec<parser::Expression>,
     ) -> PlannerResult<Plan<'txn, 'db, T>> {
-        let table_function = self.ctx.catalog().table_function(&name)?;
+        let function = self.ctx.catalog().table_function(&name)?;
         let mut exprs = Vec::with_capacity(args.len());
-        for (expr, column) in args.into_iter().zip(table_function.result_columns.iter()) {
+        for (expr, column) in args.into_iter().zip(function.result_columns.iter()) {
             let expr = expr_binder
                 .bind_without_source(expr)?
                 .expect_type(column.ty)?;
@@ -623,11 +623,11 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
             source: Box::new(PlanNode::Values(planner::Values::one_empty_row())),
             exprs,
         });
-        let columns: Vec<_> = table_function.result_columns.clone();
+        let columns: Vec<_> = function.result_columns.clone();
         Ok(Plan {
             node: PlanNode::Scan(planner::Scan::FunctionScan {
                 source: Box::new(node),
-                fn_ptr: table_function.fn_ptr,
+                function,
             }),
             schema: columns.into(),
         })

@@ -316,7 +316,7 @@ struct AggregateCall {
 
 struct BoundAggregate<'a, T: Storage> {
     function: &'a AggregateFunction,
-    arg: planner::Expression<T>,
+    arg: planner::Expression<'a, T>,
     is_distinct: bool,
     result_column: planner::Column,
 }

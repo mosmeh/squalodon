@@ -105,6 +105,7 @@ pub enum Function<T: Storage> {
 }
 
 pub struct ScalarFunction<T: Storage> {
+    pub name: &'static str,
     pub bind: ScalarBindFnPtr,
     pub eval: ScalarEvalFnPtr<T>,
 }
@@ -112,6 +113,7 @@ pub struct ScalarFunction<T: Storage> {
 impl<T: Storage> Clone for ScalarFunction<T> {
     fn clone(&self) -> Self {
         Self {
+            name: self.name,
             bind: self.bind,
             eval: self.eval,
         }
@@ -136,6 +138,7 @@ pub trait Aggregator {
 }
 
 pub struct TableFunction<T: Storage> {
+    pub name: &'static str,
     pub fn_ptr: TableFnPtr<T>,
     pub result_columns: Vec<planner::Column>,
 }
@@ -143,6 +146,7 @@ pub struct TableFunction<T: Storage> {
 impl<T: Storage> Clone for TableFunction<T> {
     fn clone(&self) -> Self {
         Self {
+            name: self.name,
             fn_ptr: self.fn_ptr,
             result_columns: self.result_columns.clone(),
         }
@@ -187,9 +191,13 @@ impl<T: Storage> Catalog<T> {
 
         Ok(Self {
             next_object_id: (max_object_id + 1).into(),
-            scalar_functions: builtin::scalar_function::load().collect(),
+            scalar_functions: builtin::scalar_function::load()
+                .map(|f| (f.name, f))
+                .collect(),
             aggregate_functions: builtin::aggregate_function::load().collect(),
-            table_functions: builtin::table_function::load().collect(),
+            table_functions: builtin::table_function::load()
+                .map(|f| (f.name, f))
+                .collect(),
         })
     }
 

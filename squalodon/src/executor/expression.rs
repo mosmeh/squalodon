@@ -7,7 +7,7 @@ use crate::{
     ExecutorError, Row, Value,
 };
 
-impl<T: Storage> Expression<T> {
+impl<T: Storage> Expression<'_, T> {
     pub fn eval(&self, ctx: &ConnectionContext<T>, row: &Row) -> ExecutorResult<Value> {
         match self {
             Self::Constant(v) => Ok(v.clone()),
@@ -27,12 +27,12 @@ impl<T: Storage> Expression<T> {
                 pattern,
                 case_insensitive,
             } => eval_like(ctx, row, str_expr, pattern, *case_insensitive),
-            Self::Function { eval, args } => {
+            Self::Function { function, args } => {
                 let args: Vec<_> = args
                     .iter()
                     .map(|arg| arg.eval(ctx, row))
                     .collect::<ExecutorResult<_>>()?;
-                eval(ctx, &args)
+                (function.eval)(ctx, &args)
             }
         }
     }

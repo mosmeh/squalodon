@@ -70,7 +70,7 @@ pub type PlannerResult<T> = std::result::Result<T, PlannerError>;
 pub fn bind_expr<'txn, T: Storage>(
     ctx: &'txn ConnectionContext<'txn, '_, T>,
     expr: parser::Expression,
-) -> PlannerResult<Expression<T>> {
+) -> PlannerResult<Expression<'txn, T>> {
     let planner = Planner::new(ctx);
     let TypedExpression { expr, .. } = ExpressionBinder::new(&planner).bind_without_source(expr)?;
     Ok(expr)
@@ -205,7 +205,7 @@ pub enum PlanNode<'txn, 'db, T: Storage> {
     CreateTable(CreateTable),
     CreateIndex(CreateIndex),
     Drop(DropObject),
-    Values(Values<T>),
+    Values(Values<'txn, T>),
     Scan(Scan<'txn, 'db, T>),
     Project(Project<'txn, 'db, T>),
     Filter(Filter<'txn, 'db, T>),
