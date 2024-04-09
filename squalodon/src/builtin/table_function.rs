@@ -55,13 +55,13 @@ pub fn load<T: Storage>() -> impl Iterator<Item = TableFunction<T>> {
         TableFunction {
             name: "squalodon_functions",
             fn_ptr: |ctx, _| {
-                let rows = ctx.catalog().functions().map(|(name, function)| {
+                let rows = ctx.catalog().functions().map(|function| {
                     let kind = match function {
                         Function::Scalar(_) => "scalar",
                         Function::Aggregate(_) => "aggregate",
                         Function::Table(_) => "table",
                     };
-                    Row(vec![name.into(), kind.into()])
+                    Row(vec![function.name().into(), kind.into()])
                 });
                 Ok(Box::new(rows))
             },

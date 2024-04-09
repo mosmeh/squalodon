@@ -377,17 +377,17 @@ impl Node for HashAggregate {
 }
 
 pub struct ApplyAggregateOp {
-    pub input: ColumnIndex,
     pub init: AggregateInitFnPtr,
     pub is_distinct: bool,
+    pub input: ColumnIndex,
 }
 
 impl ApplyAggregateOp {
     pub fn from_plan(plan: &planner::ApplyAggregateOp, inputs: &[ColumnId]) -> Self {
         Self {
-            input: plan.input.to_index(inputs),
-            init: plan.init,
+            init: plan.function.init,
             is_distinct: plan.is_distinct,
+            input: plan.input.to_index(inputs),
         }
     }
 }

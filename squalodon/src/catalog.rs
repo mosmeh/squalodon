@@ -97,35 +97,33 @@ pub struct Index {
     pub is_unique: bool,
 }
 
-#[allow(dead_code)]
-pub enum Function<T: Storage> {
-    Scalar(ScalarFunction<T>),
-    Aggregate(AggregateFunction),
-    Table(TableFunction<T>),
+pub enum Function<'a, T: Storage> {
+    Scalar(&'a ScalarFunction<T>),
+    Aggregate(&'a AggregateFunction),
+    Table(&'a TableFunction<T>),
 }
 
-#[derive(Debug)]
+impl<'a, T: Storage> Function<'a, T> {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Scalar(f) => f.name,
+            Self::Aggregate(f) => f.name,
+            Self::Table(f) => f.name,
+        }
+    }
+}
+
 pub struct ScalarFunction<T: Storage> {
     pub name: &'static str,
     pub bind: ScalarBindFnPtr,
     pub eval: ScalarEvalFnPtr<T>,
 }
 
-impl<T: Storage> Clone for ScalarFunction<T> {
-    fn clone(&self) -> Self {
-        Self {
-            name: self.name,
-            bind: self.bind,
-            eval: self.eval,
-        }
-    }
-}
-
 pub type ScalarBindFnPtr = fn(&[NullableType]) -> PlannerResult<NullableType>;
 pub type ScalarEvalFnPtr<T> = fn(&ConnectionContext<'_, '_, T>, &[Value]) -> ExecutorResult<Value>;
 
-#[derive(Clone)]
 pub struct AggregateFunction {
+    pub name: &'static str,
     pub bind: AggregateBindFnPtr,
     pub init: AggregateInitFnPtr,
 }
@@ -142,16 +140,6 @@ pub struct TableFunction<T: Storage> {
     pub name: &'static str,
     pub fn_ptr: TableFnPtr<T>,
     pub result_columns: Vec<planner::Column>,
-}
-
-impl<T: Storage> Clone for TableFunction<T> {
-    fn clone(&self) -> Self {
-        Self {
-            name: self.name,
-            fn_ptr: self.fn_ptr,
-            result_columns: self.result_columns.clone(),
-        }
-    }
 }
 
 pub type TableFnPtr<T> = for<'a> fn(
@@ -195,7 +183,9 @@ impl<T: Storage> Catalog<T> {
             scalar_functions: builtin::scalar_function::load()
                 .map(|f| (f.name, f))
                 .collect(),
-            aggregate_functions: builtin::aggregate_function::load().collect(),
+            aggregate_functions: builtin::aggregate_function::load()
+                .map(|f| (f.name, f))
+                .collect(),
             table_functions: builtin::table_function::load()
                 .map(|f| (f.name, f))
                 .collect(),
@@ -378,23 +368,15 @@ impl<'txn, 'db, T: Storage> CatalogRef<'txn, 'db, T> {
         Ok(())
     }
 
-    pub fn functions(&self) -> impl Iterator<Item = (String, Function<T>)> + '_ {
-        self.catalog
-            .scalar_functions
-            .iter()
-            .map(|(name, f)| ((*name).to_owned(), Function::Scalar(f.clone())))
-            .chain(
-                self.catalog
-                    .aggregate_functions
-                    .iter()
-                    .map(|(name, f)| ((*name).to_owned(), Function::Aggregate(f.clone()))),
-            )
-            .chain(
-                self.catalog
-                    .table_functions
-                    .iter()
-                    .map(|(name, f)| ((*name).to_owned(), Function::Table(f.clone()))),
-            )
+    pub fn functions(&self) -> impl Iterator<Item = Function<T>> + '_ {
+        let scalar = self.catalog.scalar_functions.values().map(Function::Scalar);
+        let aggregate = self
+            .catalog
+            .aggregate_functions
+            .values()
+            .map(Function::Aggregate);
+        let table = self.catalog.table_functions.values().map(Function::Table);
+        scalar.chain(aggregate).chain(table)
     }
 
     pub fn scalar_function(&self, name: &str) -> CatalogResult<&ScalarFunction<T>> {

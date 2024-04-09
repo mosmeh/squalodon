@@ -2,7 +2,7 @@ use super::{
     aggregate::AggregatePlanner, Column, ColumnId, PlanNode, Planner, PlannerError, PlannerResult,
 };
 use crate::{
-    catalog::{Aggregator, ScalarFunction},
+    catalog::{AggregateFunction, Aggregator, ScalarFunction},
     connection::ConnectionContext,
     executor::{ExecutorError, ExecutorResult},
     parser::{self, BinaryOp, FunctionArgs, UnaryOp},
@@ -628,6 +628,9 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                     }
                 }
 
+                static ASSERT_SINGLE_ROW: AggregateFunction =
+                    internal_aggregate_function::<AssertSingleRow>();
+
                 let column_name = query.to_string();
                 let subquery = self.planner.plan_query(*query)?;
 
@@ -641,10 +644,10 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                 let subquery_type = column_map[input].ty;
                 let output = column_map.insert(Column::new(column_name, subquery_type));
                 let subquery = subquery.ungrouped_aggregate(vec![ApplyAggregateOp {
+                    function: &ASSERT_SINGLE_ROW,
+                    is_distinct: false,
                     input,
                     output,
-                    init: || Box::<AssertSingleRow>::default(),
-                    is_distinct: false,
                 }]);
 
                 let plan = source.cross_product(subquery);
@@ -673,6 +676,8 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                     }
                 }
 
+                static EXISTS: AggregateFunction = internal_aggregate_function::<Exists>();
+
                 let column_name = format!("EXISTS ({query})");
                 let subquery = self.planner.plan_query(*query)?;
 
@@ -687,10 +692,10 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                     .column_map()
                     .insert(Column::new(column_name, Type::Boolean));
                 let subquery = subquery.ungrouped_aggregate(vec![ApplyAggregateOp {
+                    function: &EXISTS,
+                    is_distinct: false,
                     input,
                     output,
-                    init: || Box::<Exists>::default(),
-                    is_distinct: false,
                 }]);
 
                 let plan = source.cross_product(subquery);
@@ -716,5 +721,13 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
     ) -> PlannerResult<TypedExpression<'txn, T>> {
         self.bind(PlanNode::new_empty_values(), expr)
             .map(|(_, expr)| expr)
+    }
+}
+
+const fn internal_aggregate_function<T: Aggregator + Default + 'static>() -> AggregateFunction {
+    AggregateFunction {
+        name: "(internal)",
+        bind: |_| unreachable!(),
+        init: || Box::<T>::default(),
     }
 }

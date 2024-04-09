@@ -2,20 +2,17 @@ use super::{
     expression::{ExpressionBinder, TypedExpression},
     Column, ColumnId, ExplainFormatter, Node, PlanNode, Planner, PlannerError, PlannerResult,
 };
-use crate::{
-    catalog::{AggregateFunction, AggregateInitFnPtr},
-    parser, planner, CatalogError, Storage, Type,
-};
+use crate::{catalog::AggregateFunction, parser, planner, CatalogError, Storage, Type};
 use std::{collections::HashMap, fmt::Write};
 
 pub enum Aggregate<'txn, 'db, T: Storage> {
     Ungrouped {
         source: Box<PlanNode<'txn, 'db, T>>,
-        ops: Vec<ApplyAggregateOp>,
+        ops: Vec<ApplyAggregateOp<'txn>>,
     },
     Hash {
         source: Box<PlanNode<'txn, 'db, T>>,
-        ops: Vec<AggregateOp>,
+        ops: Vec<AggregateOp<'txn>>,
     },
 }
 
@@ -26,7 +23,12 @@ impl<T: Storage> Node for Aggregate<'_, '_, T> {
                 let mut s = "UngroupedAggregate".to_owned();
                 for (i, op) in ops.iter().enumerate() {
                     s.push_str(if i == 0 { " " } else { ", " });
-                    write!(&mut s, "{} -> {}", op.input, op.output).unwrap();
+                    write!(
+                        &mut s,
+                        "{}({}) -> {}",
+                        op.function.name, op.input, op.output
+                    )
+                    .unwrap();
                 }
                 f.write_str(&s);
                 source.fmt_explain(f);
@@ -34,14 +36,17 @@ impl<T: Storage> Node for Aggregate<'_, '_, T> {
             Self::Hash { source, ops, .. } => {
                 let mut s = "HashAggregate".to_owned();
                 let iter = ops.iter().filter_map(|op| match op {
-                    AggregateOp::ApplyAggregate(ApplyAggregateOp { input, output, .. }) => {
-                        Some((*input, *output))
-                    }
+                    AggregateOp::ApplyAggregate(ApplyAggregateOp {
+                        function,
+                        input,
+                        output,
+                        ..
+                    }) => Some((function.name, *input, *output)),
                     _ => None,
                 });
-                for (i, (input, output)) in iter.enumerate() {
+                for (i, (name, input, output)) in iter.enumerate() {
                     s.push_str(if i == 0 { " " } else { ", " });
-                    write!(&mut s, "{input} -> {output}").unwrap();
+                    write!(&mut s, "{name}({input}) -> {output}").unwrap();
                 }
                 f.write_str(&s);
                 source.fmt_explain(f);
@@ -72,28 +77,28 @@ impl<T: Storage> Node for Aggregate<'_, '_, T> {
     }
 }
 
-pub struct ApplyAggregateOp {
+pub struct ApplyAggregateOp<'a> {
+    pub function: &'a AggregateFunction,
+    pub is_distinct: bool,
     pub input: ColumnId,
     pub output: ColumnId,
-    pub init: AggregateInitFnPtr,
-    pub is_distinct: bool,
 }
 
-pub enum AggregateOp {
-    ApplyAggregate(ApplyAggregateOp),
+pub enum AggregateOp<'a> {
+    ApplyAggregate(ApplyAggregateOp<'a>),
     GroupBy { target: ColumnId },
     Passthrough { target: ColumnId },
 }
 
-impl<T: Storage> PlanNode<'_, '_, T> {
-    pub(super) fn ungrouped_aggregate(self, ops: Vec<ApplyAggregateOp>) -> Self {
+impl<'txn, T: Storage> PlanNode<'txn, '_, T> {
+    pub(super) fn ungrouped_aggregate(self, ops: Vec<ApplyAggregateOp<'txn>>) -> Self {
         PlanNode::Aggregate(Aggregate::Ungrouped {
             source: Box::new(self),
             ops,
         })
     }
 
-    pub(super) fn hash_aggregate(self, ops: Vec<AggregateOp>) -> Self {
+    pub(super) fn hash_aggregate(self, ops: Vec<AggregateOp<'txn>>) -> Self {
         PlanNode::Aggregate(Aggregate::Hash {
             source: Box::new(self),
             ops,
@@ -295,7 +300,7 @@ impl<'txn, 'db, T: Storage> AggregatePlanner<'_, 'txn, 'db, T> {
 
         let ops = self.collected.aggregates.iter().zip(aggregate_outputs).map(
             |((func_call, aggregate), input)| ApplyAggregateOp {
-                init: aggregate.function.init,
+                function: aggregate.function,
                 is_distinct: func_call.is_distinct,
                 input: *input,
                 output: aggregate.output,

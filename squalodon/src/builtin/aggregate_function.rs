@@ -6,51 +6,41 @@ use crate::{
 };
 use std::ops::Add;
 
-pub fn load() -> impl Iterator<Item = (&'static str, AggregateFunction)> {
+pub fn load() -> impl Iterator<Item = AggregateFunction> {
     [
-        (
-            "avg",
-            AggregateFunction {
-                bind: |ty| match ty {
-                    NullableType::Null => Ok(NullableType::Null),
-                    NullableType::NonNull(ty) if ty.is_numeric() => Ok(Type::Real.into()),
-                    NullableType::NonNull(_) => Err(PlannerError::TypeError),
-                },
-                init: || Box::<Average>::default(),
+        AggregateFunction {
+            name: "avg",
+            bind: |ty| match ty {
+                NullableType::Null => Ok(NullableType::Null),
+                NullableType::NonNull(ty) if ty.is_numeric() => Ok(Type::Real.into()),
+                NullableType::NonNull(_) => Err(PlannerError::TypeError),
             },
-        ),
-        (
-            "count",
-            AggregateFunction {
-                bind: |_| Ok(Type::Integer.into()),
-                init: || Box::<Count>::default(),
+            init: || Box::<Average>::default(),
+        },
+        AggregateFunction {
+            name: "count",
+            bind: |_| Ok(Type::Integer.into()),
+            init: || Box::<Count>::default(),
+        },
+        AggregateFunction {
+            name: "max",
+            bind: Ok,
+            init: || Box::<Max>::default(),
+        },
+        AggregateFunction {
+            name: "min",
+            bind: Ok,
+            init: || Box::<Min>::default(),
+        },
+        AggregateFunction {
+            name: "sum",
+            bind: |ty| match ty {
+                NullableType::Null => Ok(NullableType::Null),
+                NullableType::NonNull(ty) if ty.is_numeric() => Ok(NullableType::NonNull(ty)),
+                NullableType::NonNull(_) => Err(PlannerError::TypeError),
             },
-        ),
-        (
-            "max",
-            AggregateFunction {
-                bind: Ok,
-                init: || Box::<Max>::default(),
-            },
-        ),
-        (
-            "min",
-            AggregateFunction {
-                bind: Ok,
-                init: || Box::<Min>::default(),
-            },
-        ),
-        (
-            "sum",
-            AggregateFunction {
-                bind: |ty| match ty {
-                    NullableType::Null => Ok(NullableType::Null),
-                    NullableType::NonNull(ty) if ty.is_numeric() => Ok(NullableType::NonNull(ty)),
-                    NullableType::NonNull(_) => Err(PlannerError::TypeError),
-                },
-                init: || Box::<Sum>::default(),
-            },
-        ),
+            init: || Box::<Sum>::default(),
+        },
     ]
     .into_iter()
 }
