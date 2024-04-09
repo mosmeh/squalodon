@@ -403,7 +403,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         for order_by in &modifier.order_by {
             plan = aggregate_collection.gather(plan, &order_by.expr)?;
         }
-        let aggregate_planner = aggregate_collection.finish();
+        let mut aggregate_planner = aggregate_collection.finish();
 
         // Next, we expand * and resolve aliases in SELECT clause.
         let mut projection_exprs = Vec::new();

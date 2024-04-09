@@ -330,6 +330,17 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
         source: PlanNode<'txn, 'db, T>,
         expr: parser::Expression,
     ) -> PlannerResult<(PlanNode<'txn, 'db, T>, TypedExpression<'txn, T>)> {
+        if let Some(column_id) = self
+            .aggregates
+            .and_then(|aggregates| aggregates.resolve_group_by(&expr))
+        {
+            let expr = TypedExpression {
+                expr: planner::Expression::ColumnRef(column_id),
+                ty: self.planner.column_map()[column_id].ty,
+            };
+            return Ok((source, expr));
+        }
+
         match expr {
             parser::Expression::Constant(value) => Ok((source, value.into())),
             parser::Expression::ColumnRef(column_ref) => {
@@ -553,7 +564,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                             return Err(PlannerError::AggregateNotAllowed);
                         };
                         let id = aggregates
-                            .resolve(&function_call)
+                            .resolve_aggregate_function(&function_call)
                             .ok_or_else(|| PlannerError::UnknownColumn("(aggregate)".to_owned()))?;
                         let ty = self.planner.column_map()[id].ty;
                         let expr = TypedExpression {

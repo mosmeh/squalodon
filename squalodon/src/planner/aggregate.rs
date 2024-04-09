@@ -115,7 +115,10 @@ impl<'a, 'txn, 'db, T: Storage> AggregateCollection<'a, 'txn, 'db, T> {
     }
 
     pub fn finish(self) -> AggregatePlanner<'a, 'txn, 'db, T> {
-        AggregatePlanner(self)
+        AggregatePlanner {
+            collected: self,
+            group_by: HashMap::new(),
+        }
     }
 
     pub fn gather(
@@ -241,27 +244,30 @@ impl<'a, 'txn, 'db, T: Storage> AggregateCollection<'a, 'txn, 'db, T> {
     }
 }
 
-pub struct AggregatePlanner<'a, 'txn, 'db, T: Storage>(AggregateCollection<'a, 'txn, 'db, T>);
+pub struct AggregatePlanner<'a, 'txn, 'db, T: Storage> {
+    collected: AggregateCollection<'a, 'txn, 'db, T>,
+    group_by: HashMap<parser::Expression, ColumnId>,
+}
 
 impl<'txn, 'db, T: Storage> AggregatePlanner<'_, 'txn, 'db, T> {
     pub fn has_aggregates(&self) -> bool {
-        !self.0.aggregates.is_empty()
+        !self.collected.aggregates.is_empty()
     }
 
     pub fn plan(
-        &self,
+        &mut self,
         expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
         source: PlanNode<'txn, 'db, T>,
         group_by: Vec<parser::Expression>,
     ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
-        let mut plan = source;
-        let mut exprs = Vec::with_capacity(self.0.aggregates.len() + group_by.len());
+        let num_aggregates = self.collected.aggregates.len();
+        let mut exprs = Vec::with_capacity(num_aggregates + group_by.len());
 
         // The first `aggregates.len()` columns are the aggregated columns
         // that are passed to the respective aggregate functions.
         {
-            let column_map = self.0.planner.column_map();
-            for aggregate in self.0.aggregates.values() {
+            let column_map = self.collected.planner.column_map();
+            for aggregate in self.collected.aggregates.values() {
                 exprs.push(TypedExpression {
                     expr: aggregate.arg.clone(),
                     ty: column_map[aggregate.output].ty,
@@ -270,31 +276,34 @@ impl<'txn, 'db, T: Storage> AggregatePlanner<'_, 'txn, 'db, T> {
         }
 
         // The rest of the columns are the columns in the GROUP BY clause.
+        let mut plan = source;
         let has_group_by = !group_by.is_empty();
-        for group_by in group_by {
-            let (new_plan, expr) = expr_binder.bind(plan, group_by)?;
+        for group_by in &group_by {
+            let (new_plan, expr) = expr_binder.bind(plan, group_by.clone())?;
             plan = new_plan;
             exprs.push(expr);
         }
 
-        let plan = plan.project(&mut self.0.planner.column_map(), exprs);
+        let plan = plan.project(&mut self.collected.planner.column_map(), exprs);
         let outputs = plan.outputs();
+        let (aggregate_outputs, group_by_outputs) = outputs.split_at(num_aggregates);
+        if has_group_by {
+            for (group_by, output) in group_by.into_iter().zip(group_by_outputs) {
+                self.group_by.insert(group_by, *output);
+            }
+        }
 
-        let ops = self
-            .0
-            .aggregates
-            .iter()
-            .zip(outputs.iter().take(self.0.aggregates.len()))
-            .map(|((func_call, aggregate), input)| ApplyAggregateOp {
+        let ops = self.collected.aggregates.iter().zip(aggregate_outputs).map(
+            |((func_call, aggregate), input)| ApplyAggregateOp {
                 init: aggregate.function.init,
                 is_distinct: func_call.is_distinct,
                 input: *input,
                 output: aggregate.output,
-            });
+            },
+        );
         if has_group_by {
-            let group_by_ops = outputs
+            let group_by_ops = group_by_outputs
                 .iter()
-                .skip(self.0.aggregates.len())
                 .map(|target| AggregateOp::GroupBy { target: *target });
             let ops = ops
                 .map(AggregateOp::ApplyAggregate)
@@ -306,11 +315,18 @@ impl<'txn, 'db, T: Storage> AggregatePlanner<'_, 'txn, 'db, T> {
         }
     }
 
-    pub fn resolve(&self, function_call: &parser::FunctionCall) -> Option<ColumnId> {
-        self.0
+    pub fn resolve_aggregate_function(
+        &self,
+        function_call: &parser::FunctionCall,
+    ) -> Option<ColumnId> {
+        self.collected
             .aggregates
             .get(function_call)
             .map(|aggregate| aggregate.output)
+    }
+
+    pub fn resolve_group_by(&self, expr: &parser::Expression) -> Option<ColumnId> {
+        self.group_by.get(expr).copied()
     }
 }
 
