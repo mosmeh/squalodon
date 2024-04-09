@@ -1,4 +1,6 @@
-use super::{aggregate::AggregatePlanner, Plan, PlanNode, Planner, PlannerError, PlannerResult};
+use super::{
+    aggregate::AggregatePlanner, Column, ColumnId, PlanNode, Planner, PlannerError, PlannerResult,
+};
 use crate::{
     catalog::{Aggregator, ScalarFunction},
     connection::ConnectionContext,
@@ -11,38 +13,38 @@ use crate::{
 };
 use std::collections::HashMap;
 
-pub enum Expression<'a, T: Storage> {
+pub enum Expression<'a, T: Storage, C> {
     Constant(Value),
-    ColumnRef(ColumnIndex),
+    ColumnRef(C),
     Cast {
-        expr: Box<Expression<'a, T>>,
+        expr: Box<Expression<'a, T, C>>,
         ty: Type,
     },
     UnaryOp {
         op: UnaryOp,
-        expr: Box<Expression<'a, T>>,
+        expr: Box<Expression<'a, T, C>>,
     },
     BinaryOp {
         op: BinaryOp,
-        lhs: Box<Expression<'a, T>>,
-        rhs: Box<Expression<'a, T>>,
+        lhs: Box<Expression<'a, T, C>>,
+        rhs: Box<Expression<'a, T, C>>,
     },
     Case {
-        branches: Vec<CaseBranch<'a, T>>,
-        else_branch: Option<Box<Expression<'a, T>>>,
+        branches: Vec<CaseBranch<'a, T, C>>,
+        else_branch: Option<Box<Expression<'a, T, C>>>,
     },
     Like {
-        str_expr: Box<Expression<'a, T>>,
-        pattern: Box<Expression<'a, T>>,
+        str_expr: Box<Expression<'a, T, C>>,
+        pattern: Box<Expression<'a, T, C>>,
         case_insensitive: bool,
     },
     Function {
         function: &'a ScalarFunction<T>,
-        args: Vec<Expression<'a, T>>,
+        args: Vec<Expression<'a, T, C>>,
     },
 }
 
-impl<T: Storage> Clone for Expression<'_, T> {
+impl<T: Storage, C: Copy> Clone for Expression<'_, T, C> {
     fn clone(&self) -> Self {
         match self {
             Self::Constant(value) => Self::Constant(value.clone()),
@@ -84,11 +86,11 @@ impl<T: Storage> Clone for Expression<'_, T> {
     }
 }
 
-impl<T: Storage> std::fmt::Display for Expression<'_, T> {
+impl<T: Storage, C: std::fmt::Display> std::fmt::Display for Expression<'_, T, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Constant(value) => write!(f, "{value:?}"),
-            Self::ColumnRef(index) => write!(f, "{index}"),
+            Self::ColumnRef(c) => write!(f, "{c}"),
             Self::Cast { expr, ty } => write!(f, "CAST({expr} AS {ty})"),
             Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
             Self::BinaryOp { op, lhs, rhs } => {
@@ -130,34 +132,41 @@ impl<T: Storage> std::fmt::Display for Expression<'_, T> {
     }
 }
 
-impl<T: Storage> Expression<'_, T> {
-    fn unary_op(ctx: &ConnectionContext<T>, op: UnaryOp, expr: Self) -> Self {
-        if let Self::Constant(_) = &expr {
-            if let Ok(value) = op.eval(ctx, &Row::empty(), &expr) {
+impl<'a, T: Storage> Expression<'a, T, ColumnId> {
+    pub fn cast(self, ty: Type) -> Self {
+        Self::Cast {
+            expr: Box::new(self),
+            ty,
+        }
+    }
+
+    fn unary_op(self, ctx: &ConnectionContext<T>, op: UnaryOp) -> Self {
+        if let Self::Constant(_) = &self {
+            if let Ok(value) = op.eval(ctx, &Row::empty(), &self) {
                 return Self::Constant(value);
             }
         }
         Self::UnaryOp {
             op,
-            expr: Box::new(expr),
+            expr: Box::new(self),
         }
     }
 
-    fn binary_op(ctx: &ConnectionContext<T>, op: BinaryOp, lhs: Self, rhs: Self) -> Self {
+    fn binary_op(self, ctx: &ConnectionContext<T>, op: BinaryOp, other: Self) -> Self {
         if let BinaryOp::Add | BinaryOp::Mul | BinaryOp::Eq | BinaryOp::And | BinaryOp::Or = op {
             // If the operation is commutative, make sure the constant is on
             // the right hand side.
-            match (&lhs, &rhs) {
+            match (&self, &other) {
                 (Self::Constant(_), Self::Constant(_)) => (),
-                (Self::Constant(_), _) => return Self::binary_op(ctx, op, rhs, lhs),
+                (Self::Constant(_), _) => return self.binary_op(ctx, op, other),
                 _ => (),
             }
         }
-        match (op, &lhs, &rhs) {
+        match (op, &self, &other) {
             (BinaryOp::Add | BinaryOp::Sub, _, Self::Constant(Value::Integer(0)))
             | (BinaryOp::Mul, _, Self::Constant(Value::Integer(1)))
             | (BinaryOp::And, _, Self::Constant(Value::Boolean(true)))
-            | (BinaryOp::Or, _, Self::Constant(Value::Boolean(false))) => return lhs,
+            | (BinaryOp::Or, _, Self::Constant(Value::Boolean(false))) => return self,
             (BinaryOp::Mul, _, Self::Constant(Value::Integer(0))) => {
                 return Self::Constant(Value::Integer(0))
             }
@@ -168,7 +177,7 @@ impl<T: Storage> Expression<'_, T> {
                 return Self::Constant(Value::Boolean(true))
             }
             (op, Self::Constant(_), Self::Constant(_)) => {
-                if let Ok(value) = op.eval(ctx, &Row::empty(), &lhs, &rhs) {
+                if let Ok(value) = op.eval(ctx, &Row::empty(), &self, &other) {
                     return Self::Constant(value);
                 }
             }
@@ -176,18 +185,72 @@ impl<T: Storage> Expression<'_, T> {
         }
         Self::BinaryOp {
             op,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
+            lhs: Box::new(self),
+            rhs: Box::new(other),
+        }
+    }
+
+    pub fn into_executable(self, columns: &[ColumnId]) -> Expression<'a, T, ColumnIndex> {
+        match self {
+            Self::Constant(value) => Expression::Constant(value),
+            Self::ColumnRef(id) => Expression::ColumnRef(id.to_index(columns)),
+            Self::Cast { expr, ty } => Expression::Cast {
+                expr: Box::new(expr.into_executable(columns)),
+                ty,
+            },
+            Self::UnaryOp { op, expr } => Expression::UnaryOp {
+                op,
+                expr: Box::new(expr.into_executable(columns)),
+            },
+            Self::BinaryOp { op, lhs, rhs } => Expression::BinaryOp {
+                op,
+                lhs: Box::new(lhs.into_executable(columns)),
+                rhs: Box::new(rhs.into_executable(columns)),
+            },
+            Self::Case {
+                branches,
+                else_branch,
+            } => {
+                let branches = branches
+                    .into_iter()
+                    .map(|branch| CaseBranch {
+                        condition: branch.condition.into_executable(columns),
+                        result: branch.result.into_executable(columns),
+                    })
+                    .collect();
+                let else_branch =
+                    else_branch.map(|else_branch| Box::new(else_branch.into_executable(columns)));
+                Expression::Case {
+                    branches,
+                    else_branch,
+                }
+            }
+            Self::Like {
+                str_expr,
+                pattern,
+                case_insensitive,
+            } => Expression::Like {
+                str_expr: Box::new(str_expr.into_executable(columns)),
+                pattern: Box::new(pattern.into_executable(columns)),
+                case_insensitive,
+            },
+            Self::Function { function, args } => {
+                let args = args
+                    .into_iter()
+                    .map(|arg| arg.into_executable(columns))
+                    .collect();
+                Expression::Function { function, args }
+            }
         }
     }
 }
 
-pub struct CaseBranch<'a, T: Storage> {
-    pub condition: Expression<'a, T>,
-    pub result: Expression<'a, T>,
+pub struct CaseBranch<'a, T: Storage, C> {
+    pub condition: Expression<'a, T, C>,
+    pub result: Expression<'a, T, C>,
 }
 
-impl<T: Storage> Clone for CaseBranch<'_, T> {
+impl<T: Storage, C: Copy> Clone for CaseBranch<'_, T, C> {
     fn clone(&self) -> Self {
         Self {
             condition: self.condition.clone(),
@@ -197,7 +260,7 @@ impl<T: Storage> Clone for CaseBranch<'_, T> {
 }
 
 pub struct TypedExpression<'a, T: Storage> {
-    pub expr: planner::Expression<'a, T>,
+    pub expr: planner::Expression<'a, T, ColumnId>,
     pub ty: NullableType,
 }
 
@@ -224,7 +287,7 @@ impl<'a, T: Storage> TypedExpression<'a, T> {
     pub fn expect_type<I: Into<NullableType>>(
         self,
         expected: I,
-    ) -> PlannerResult<planner::Expression<'a, T>> {
+    ) -> PlannerResult<planner::Expression<'a, T, ColumnId>> {
         if self.ty.is_compatible_with(expected.into()) {
             Ok(self.expr)
         } else {
@@ -264,9 +327,9 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
 
     pub fn bind(
         &self,
-        source: Plan<'txn, 'db, T>,
+        source: PlanNode<'txn, 'db, T>,
         expr: parser::Expression,
-    ) -> PlannerResult<(Plan<'txn, 'db, T>, TypedExpression<'txn, T>)> {
+    ) -> PlannerResult<(PlanNode<'txn, 'db, T>, TypedExpression<'txn, T>)> {
         match expr {
             parser::Expression::Constant(value) => Ok((source, value.into())),
             parser::Expression::ColumnRef(column_ref) => {
@@ -278,17 +341,38 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                         return Ok((source, expr.clone()));
                     }
                 }
-                let (index, column) = source.schema.resolve_column(&column_ref)?;
-                let expr = planner::Expression::ColumnRef(index);
+                let column_map = self.planner.column_map();
+                let mut candidates = source.outputs().into_iter().filter_map(|id| {
+                    let column = &column_map[id];
+                    if column.column_name != column_ref.column_name {
+                        return None;
+                    }
+                    match (&column.table_name, &column_ref.table_name) {
+                        (Some(a), Some(b)) if a == b => Some((id, column)),
+                        (_, None) => {
+                            // If the column reference does not specify
+                            // a table name, it ambiguously matches any column
+                            // with the same name.
+                            Some((id, column))
+                        }
+                        (_, Some(_)) => None,
+                    }
+                });
+                let (id, column) = candidates
+                    .next()
+                    .ok_or_else(|| PlannerError::UnknownColumn(column_ref.column_name.clone()))?;
+                if candidates.next().is_some() {
+                    return Err(PlannerError::AmbiguousColumn(
+                        column_ref.column_name.clone(),
+                    ));
+                }
+                let expr = planner::Expression::ColumnRef(id);
                 let ty = column.ty;
                 Ok((source, TypedExpression { expr, ty }))
             }
             parser::Expression::Cast { expr, ty } => {
                 let (plan, TypedExpression { expr, .. }) = self.bind(source, *expr)?;
-                let expr = planner::Expression::Cast {
-                    expr: expr.into(),
-                    ty,
-                };
+                let expr = expr.cast(ty);
                 let ty = ty.into();
                 Ok((plan, TypedExpression { expr, ty }))
             }
@@ -304,7 +388,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                     }
                     _ => return Err(PlannerError::TypeError),
                 };
-                let expr = planner::Expression::unary_op(self.planner.ctx, op, expr);
+                let expr = expr.unary_op(self.planner.ctx, op);
                 Ok((plan, TypedExpression { expr, ty }))
             }
             parser::Expression::BinaryOp { op, lhs, rhs } => {
@@ -357,7 +441,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                         _ => return Err(PlannerError::TypeError),
                     },
                 };
-                let expr = planner::Expression::binary_op(self.planner.ctx, op, lhs.expr, rhs.expr);
+                let expr = lhs.expr.binary_op(self.planner.ctx, op, rhs.expr);
                 Ok((plan, TypedExpression { expr, ty }))
             }
             parser::Expression::Case {
@@ -457,22 +541,24 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                     },
                 ))
             }
-            parser::Expression::Function {
-                name,
-                args,
-                is_distinct,
-            } => {
-                match self.planner.ctx.catalog().aggregate_function(&name) {
+            parser::Expression::Function(function_call) => {
+                match self
+                    .planner
+                    .ctx
+                    .catalog()
+                    .aggregate_function(&function_call.name)
+                {
                     Ok(_) => {
                         let Some(aggregates) = &self.aggregates else {
                             return Err(PlannerError::AggregateNotAllowed);
                         };
-                        let (index, column) = aggregates
-                            .resolve(name, args, is_distinct)
+                        let id = aggregates
+                            .resolve(&function_call)
                             .ok_or_else(|| PlannerError::UnknownColumn("(aggregate)".to_owned()))?;
+                        let ty = self.planner.column_map()[id].ty;
                         let expr = TypedExpression {
-                            expr: planner::Expression::ColumnRef(index),
-                            ty: column.ty,
+                            expr: planner::Expression::ColumnRef(id),
+                            ty,
                         };
                         return Ok((source, expr));
                     }
@@ -480,11 +566,15 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                     Err(e) => return Err(e.into()),
                 }
 
-                let function = self.planner.ctx.catalog().scalar_function(&name)?;
-                if is_distinct {
+                let function = self
+                    .planner
+                    .ctx
+                    .catalog()
+                    .scalar_function(&function_call.name)?;
+                if function_call.is_distinct {
                     return Err(PlannerError::InvalidArgument);
                 }
-                let args = match args {
+                let args = match function_call.args {
                     FunctionArgs::Expressions(args) => args,
                     FunctionArgs::Wildcard => return Err(PlannerError::InvalidArgument),
                 };
@@ -528,30 +618,30 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                 }
 
                 let column_name = query.to_string();
-                let subquery_plan = self.planner.plan_query(*query)?;
-                let [subquery_result_column] = subquery_plan
-                    .schema
-                    .0
+                let subquery = self.planner.plan_query(*query)?;
+
+                let [input] = subquery
+                    .outputs()
                     .try_into()
                     .map_err(|_| PlannerError::MultipleColumnsFromSubquery)?;
 
                 // Equivalent to `SELECT assert_single_row(subquery)`
-                let subquery_plan = Plan {
-                    node: PlanNode::Aggregate(planner::Aggregate::Ungrouped {
-                        source: Box::new(subquery_plan.node),
-                        column_ops: vec![ApplyAggregateOp {
-                            init: || Box::<AssertSingleRow>::default(),
-                            is_distinct: false,
-                        }],
-                    }),
-                    schema: vec![planner::Column {
-                        table_name: None,
-                        column_name,
-                        ty: subquery_result_column.ty,
-                    }]
-                    .into(),
+                let mut column_map = self.planner.column_map();
+                let subquery_type = column_map[input].ty;
+                let output = column_map.insert(Column::new(column_name, subquery_type));
+                let subquery = subquery.ungrouped_aggregate(vec![ApplyAggregateOp {
+                    input,
+                    output,
+                    init: || Box::<AssertSingleRow>::default(),
+                    is_distinct: false,
+                }]);
+
+                let plan = source.cross_product(subquery);
+                let expr = TypedExpression {
+                    expr: planner::Expression::ColumnRef(output),
+                    ty: subquery_type,
                 };
-                Ok(attach_subquery(source, subquery_plan))
+                Ok((plan, expr))
             }
             parser::Expression::Exists(query) => {
                 /// An aggregator that produces a boolean indicating whether
@@ -573,30 +663,31 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
                 }
 
                 let column_name = format!("EXISTS ({query})");
-                let subquery_plan = self.planner.plan_query(*query)?;
+                let subquery = self.planner.plan_query(*query)?;
 
                 // Equivalent to `SELECT exists(SELECT * FROM subquery LIMIT 1)`
-                let subquery_node = PlanNode::Limit(planner::Limit {
-                    source: Box::new(subquery_plan.node),
-                    limit: Some(planner::Expression::Constant(1.into())),
-                    offset: None,
-                });
-                let subquery_plan = Plan {
-                    node: PlanNode::Aggregate(planner::Aggregate::Ungrouped {
-                        source: Box::new(subquery_node),
-                        column_ops: vec![ApplyAggregateOp {
-                            init: || Box::<Exists>::default(),
-                            is_distinct: false,
-                        }],
-                    }),
-                    schema: vec![planner::Column {
-                        table_name: None,
-                        column_name,
-                        ty: Type::Boolean.into(),
-                    }]
-                    .into(),
+                let subquery = subquery.limit(Some(Value::from(1).into()), None)?;
+                let [input] = subquery
+                    .outputs()
+                    .try_into()
+                    .map_err(|_| PlannerError::MultipleColumnsFromSubquery)?;
+                let output = self
+                    .planner
+                    .column_map()
+                    .insert(Column::new(column_name, Type::Boolean));
+                let subquery = subquery.ungrouped_aggregate(vec![ApplyAggregateOp {
+                    input,
+                    output,
+                    init: || Box::<Exists>::default(),
+                    is_distinct: false,
+                }]);
+
+                let plan = source.cross_product(subquery);
+                let expr = TypedExpression {
+                    expr: planner::Expression::ColumnRef(output),
+                    ty: Type::Boolean.into(),
                 };
-                Ok(attach_subquery(source, subquery_plan))
+                Ok((plan, expr))
             }
             parser::Expression::Parameter(i) => {
                 let value = match self.planner.params.get(i.get() - 1) {
@@ -612,32 +703,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
         &self,
         expr: parser::Expression,
     ) -> PlannerResult<TypedExpression<'txn, T>> {
-        self.bind(Plan::empty_source(), expr).map(|(_, e)| e)
+        self.bind(PlanNode::new_empty_values(), expr)
+            .map(|(_, expr)| expr)
     }
-}
-
-/// Attaches a subquery to the source plan and returns the new plan and
-/// an expression that references the first column of the subquery.
-fn attach_subquery<'txn, 'db, T: Storage>(
-    source: Plan<'txn, 'db, T>,
-    subquery: Plan<'txn, 'db, T>,
-) -> (Plan<'txn, 'db, T>, TypedExpression<'txn, T>) {
-    let subquery_column_index = ColumnIndex(source.schema.0.len());
-    let subquery_column_type = subquery.schema.0[0].ty;
-
-    let mut columns = source.schema.0;
-    columns.extend(subquery.schema.0);
-
-    let plan = Plan {
-        node: PlanNode::CrossProduct(planner::CrossProduct {
-            left: Box::new(source.node),
-            right: Box::new(subquery.node),
-        }),
-        schema: columns.into(),
-    };
-    let expr = TypedExpression {
-        expr: planner::Expression::ColumnRef(subquery_column_index),
-        ty: subquery_column_type,
-    };
-    (plan, expr)
 }

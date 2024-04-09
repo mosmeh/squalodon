@@ -4,7 +4,7 @@ mod modification;
 mod query;
 
 pub use ddl::{Constraint, CreateIndex, CreateTable, DropObject, ObjectKind};
-pub use expression::{BinaryOp, ColumnRef, Expression, FunctionArgs, UnaryOp};
+pub use expression::{BinaryOp, ColumnRef, Expression, FunctionArgs, FunctionCall, UnaryOp};
 pub use modification::{Delete, Insert, Update};
 pub use query::{
     Distinct, Join, NullOrder, Order, OrderBy, Projection, Query, QueryBody, QueryModifier, Select,

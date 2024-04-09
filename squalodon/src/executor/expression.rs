@@ -2,16 +2,36 @@ use super::ExecutorResult;
 use crate::{
     connection::ConnectionContext,
     parser::{BinaryOp, UnaryOp},
-    planner::{CaseBranch, Expression},
+    planner::{CaseBranch, ColumnId, Expression},
+    rows::ColumnIndex,
     storage::Storage,
     ExecutorError, Row, Value,
 };
 
-impl<T: Storage> Expression<'_, T> {
+pub trait ExtractColumn {
+    fn extract_column<'a>(&self, row: &'a Row) -> ExecutorResult<&'a Value>;
+}
+
+impl ExtractColumn for ColumnId {
+    fn extract_column<'a>(&self, _: &'a Row) -> ExecutorResult<&'a Value> {
+        // Called during planning to check if the expression is constant-foldable.
+        // This error signals that the expression references a column,
+        // which means it's not constant-foldable.
+        Err(ExecutorError::EvaluationError)
+    }
+}
+
+impl ExtractColumn for ColumnIndex {
+    fn extract_column<'a>(&self, row: &'a Row) -> ExecutorResult<&'a Value> {
+        Ok(&row.0[self.0])
+    }
+}
+
+impl<T: Storage, C: ExtractColumn> Expression<'_, T, C> {
     pub fn eval(&self, ctx: &ConnectionContext<T>, row: &Row) -> ExecutorResult<Value> {
         match self {
             Self::Constant(v) => Ok(v.clone()),
-            Self::ColumnRef(index) => row.0.get(index.0).cloned().ok_or(ExecutorError::OutOfRange),
+            Self::ColumnRef(c) => c.extract_column(row).cloned(),
             Self::Cast { expr, ty } => expr
                 .eval(ctx, row)?
                 .cast(*ty)
@@ -39,11 +59,11 @@ impl<T: Storage> Expression<'_, T> {
 }
 
 impl UnaryOp {
-    pub fn eval<T: Storage>(
+    pub fn eval<T: Storage, C: ExtractColumn>(
         self,
         ctx: &ConnectionContext<T>,
         row: &Row,
-        expr: &Expression<T>,
+        expr: &Expression<T, C>,
     ) -> ExecutorResult<Value> {
         let expr = expr.eval(ctx, row)?;
         match (self, expr) {
@@ -58,12 +78,12 @@ impl UnaryOp {
 }
 
 impl BinaryOp {
-    pub fn eval<T: Storage>(
+    pub fn eval<T: Storage, C: ExtractColumn>(
         self,
         ctx: &ConnectionContext<T>,
         row: &Row,
-        lhs: &Expression<T>,
-        rhs: &Expression<T>,
+        lhs: &Expression<T, C>,
+        rhs: &Expression<T, C>,
     ) -> ExecutorResult<Value> {
         let lhs = lhs.eval(ctx, row)?;
         if lhs == Value::Null {
@@ -145,11 +165,11 @@ impl BinaryOp {
     }
 }
 
-fn eval_case<T: Storage>(
+fn eval_case<T: Storage, C: ExtractColumn>(
     ctx: &ConnectionContext<T>,
     row: &Row,
-    branches: &[CaseBranch<T>],
-    else_branch: Option<&Expression<T>>,
+    branches: &[CaseBranch<T, C>],
+    else_branch: Option<&Expression<T, C>>,
 ) -> ExecutorResult<Value> {
     for CaseBranch { condition, result } in branches {
         if condition.eval(ctx, row)? == Value::Boolean(true) {
@@ -159,11 +179,11 @@ fn eval_case<T: Storage>(
     else_branch.map_or(Ok(Value::Null), |else_branch| else_branch.eval(ctx, row))
 }
 
-fn eval_like<T: Storage>(
+fn eval_like<T: Storage, C: ExtractColumn>(
     ctx: &ConnectionContext<T>,
     row: &Row,
-    str_expr: &Expression<T>,
-    pattern: &Expression<T>,
+    str_expr: &Expression<T, C>,
+    pattern: &Expression<T, C>,
     case_insensitive: bool,
 ) -> ExecutorResult<Value> {
     let Value::Text(string) = str_expr.eval(ctx, row)? else {

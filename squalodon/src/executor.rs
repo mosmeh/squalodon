@@ -10,8 +10,8 @@ use crate::{
 };
 use modification::{Delete, Insert, Update};
 use query::{
-    CrossProduct, Filter, FunctionScan, HashAggregate, Limit, Project, SeqScan, Sort,
-    UngroupedAggregate, Union, Values,
+    AggregateOp, ApplyAggregateOp, CrossProduct, Filter, FunctionScan, HashAggregate, Limit,
+    Project, SeqScan, Sort, UngroupedAggregate, Union, Values,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -27,6 +27,9 @@ pub enum ExecutorError {
 
     #[error("Invalid LIKE pattern")]
     InvalidLikePattern,
+
+    #[error("Cannot evaluate the expression in the current context")]
+    EvaluationError,
 
     #[error("Storage error: {0}")]
     Storage(#[from] StorageError),
@@ -143,9 +146,9 @@ impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
         plan_node: PlanNode<'txn, 'db, T>,
     ) -> ExecutorResult<Self> {
         let executor = match plan_node {
-            PlanNode::Explain(plan) => {
-                let rows = plan
-                    .explain()
+            PlanNode::Explain(explain) => {
+                let rows = explain
+                    .dump()
                     .into_iter()
                     .map(|row| vec![Expression::Constant(Value::Text(row))])
                     .collect();
@@ -194,58 +197,101 @@ impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
                 }
                 Self::Values(Values::one_empty_row())
             }
-            PlanNode::Values(planner::Values { rows }) => Self::Values(Values::new(ctx, rows)),
-            PlanNode::Scan(planner::Scan::SeqScan { table }) => Self::SeqScan(SeqScan::new(table)),
-            PlanNode::Scan(planner::Scan::FunctionScan { source, function }) => {
+            PlanNode::Values(planner::Values { rows, .. }) => {
+                let rows = rows
+                    .into_iter()
+                    .map(|row| {
+                        row.into_iter()
+                            .map(|expr| expr.into_executable(&[]))
+                            .collect()
+                    })
+                    .collect();
+                Self::Values(Values::new(ctx, rows))
+            }
+            PlanNode::Scan(planner::Scan::SeqScan { table, .. }) => {
+                Self::SeqScan(SeqScan::new(table))
+            }
+            PlanNode::Scan(planner::Scan::FunctionScan {
+                source, function, ..
+            }) => {
                 let source = Self::new(ctx, *source)?;
                 Self::FunctionScan(FunctionScan::new(ctx, source, function.fn_ptr))
             }
-            PlanNode::Project(planner::Project { source, exprs }) => Self::Project(Project {
-                ctx,
-                source: Self::new(ctx, *source)?.into(),
-                exprs,
-            }),
-            PlanNode::Filter(planner::Filter { source, cond }) => Self::Filter(Filter {
-                ctx,
-                source: Self::new(ctx, *source)?.into(),
-                cond,
-            }),
+            PlanNode::Project(planner::Project {
+                source,
+                outputs: columns,
+            }) => {
+                let outputs = source.outputs();
+                let exprs = columns
+                    .into_iter()
+                    .map(|(_, expr)| expr.into_executable(&outputs))
+                    .collect();
+                Self::Project(Project {
+                    ctx,
+                    source: Self::new(ctx, *source)?.into(),
+                    exprs,
+                })
+            }
+            PlanNode::Filter(planner::Filter { source, condition }) => {
+                let condition = condition.into_executable(&source.outputs());
+                Self::Filter(Filter {
+                    ctx,
+                    source: Self::new(ctx, *source)?.into(),
+                    condition,
+                })
+            }
             PlanNode::Sort(planner::Sort { source, order_by }) => {
+                let outputs = source.outputs();
+                let order_by = order_by
+                    .into_iter()
+                    .map(|order_by| order_by.into_executable(&outputs))
+                    .collect();
                 Self::Sort(Sort::new(ctx, Self::new(ctx, *source)?, order_by)?)
             }
             PlanNode::Limit(planner::Limit {
                 source,
                 limit,
                 offset,
-            }) => Self::Limit(Limit::new(ctx, Self::new(ctx, *source)?, limit, offset)?),
+            }) => {
+                let outputs = source.outputs();
+                let limit = limit.map(|expr| expr.into_executable(&outputs));
+                let offset = offset.map(|expr| expr.into_executable(&outputs));
+                Self::Limit(Limit::new(ctx, Self::new(ctx, *source)?, limit, offset)?)
+            }
             PlanNode::CrossProduct(planner::CrossProduct { left, right }) => Self::CrossProduct(
                 CrossProduct::new(Self::new(ctx, *left)?, Self::new(ctx, *right)?)?,
             ),
-            PlanNode::Aggregate(planner::Aggregate::Ungrouped { source, column_ops }) => {
-                Self::UngroupedAggregate(UngroupedAggregate::new(
-                    Self::new(ctx, *source)?,
-                    column_ops,
-                )?)
+            PlanNode::Aggregate(planner::Aggregate::Ungrouped { source, ops, .. }) => {
+                let outputs = source.outputs();
+                let ops = ops
+                    .into_iter()
+                    .map(|op| ApplyAggregateOp::from_plan(&op, &outputs))
+                    .collect();
+                Self::UngroupedAggregate(UngroupedAggregate::new(Self::new(ctx, *source)?, ops)?)
             }
-            PlanNode::Aggregate(planner::Aggregate::Hash {
-                source,
-                column_ops: column_roles,
-            }) => Self::HashAggregate(HashAggregate::new(Self::new(ctx, *source)?, column_roles)?),
-            PlanNode::Union(planner::Union { left, right }) => Self::Union(Union {
+            PlanNode::Aggregate(planner::Aggregate::Hash { source, ops, .. }) => {
+                let outputs = source.outputs();
+                let ops = ops
+                    .into_iter()
+                    .map(|op| AggregateOp::from_plan(&op, &outputs))
+                    .collect();
+                Self::HashAggregate(HashAggregate::new(Self::new(ctx, *source)?, ops)?)
+            }
+            PlanNode::Union(planner::Union { left, right, .. }) => Self::Union(Union {
                 left: Box::new(Self::new(ctx, *left)?),
                 right: Box::new(Self::new(ctx, *right)?),
             }),
             PlanNode::Spool(planner::Spool { source }) => {
                 Self::Spool(Spool::new(Self::new(ctx, *source)?)?)
             }
-            PlanNode::Insert(planner::Insert { source, table }) => {
-                Self::Insert(Insert::new(Box::new(Self::new(ctx, *source)?), table)?)
+            PlanNode::Insert(planner::Insert { source, table, .. }) => {
+                Self::Insert(Insert::new(Self::new(ctx, *source)?, table)?)
             }
-            PlanNode::Update(planner::Update { source, table }) => {
-                Self::Update(Update::new(Box::new(Self::new(ctx, *source)?), table)?)
+            PlanNode::Update(planner::Update { source, table, .. }) => {
+                Self::Update(Update::new(Self::new(ctx, *source)?, table)?)
             }
-            PlanNode::Delete(planner::Delete { source, table }) => {
-                Self::Delete(Delete::new(Box::new(Self::new(ctx, *source)?), table)?)
+            PlanNode::Delete(planner::Delete { source, table, .. }) => {
+                Self::Delete(Delete::new(Self::new(ctx, *source)?, table)?)
             }
         };
         Ok(executor)

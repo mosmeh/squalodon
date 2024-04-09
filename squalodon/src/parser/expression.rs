@@ -28,11 +28,7 @@ pub enum Expression {
         branches: Vec<CaseBranch>,
         else_branch: Option<Box<Expression>>,
     },
-    Function {
-        name: String,
-        args: FunctionArgs,
-        is_distinct: bool,
-    },
+    Function(FunctionCall),
     ScalarSubquery(Box<Query>),
     Exists(Box<Query>),
     Parameter(NonZeroUsize),
@@ -59,18 +55,7 @@ impl std::fmt::Display for Expression {
                 }
                 f.write_str(" END")
             }
-            Self::Function {
-                name,
-                args,
-                is_distinct,
-            } => {
-                write!(f, "{name}(")?;
-                if *is_distinct {
-                    f.write_str("DISTINCT ")?;
-                }
-                args.fmt(f)?;
-                f.write_str(")")
-            }
+            Self::Function(function_call) => function_call.fmt(f),
             Self::Like {
                 str_expr,
                 pattern,
@@ -240,6 +225,24 @@ impl std::fmt::Display for CaseBranch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FunctionCall {
+    pub name: String,
+    pub args: FunctionArgs,
+    pub is_distinct: bool,
+}
+
+impl std::fmt::Display for FunctionCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}(", self.name)?;
+        if self.is_distinct {
+            f.write_str("DISTINCT ")?;
+        }
+        self.args.fmt(f)?;
+        f.write_str(")")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FunctionArgs {
     Wildcard,
     Expressions(Vec<Expression>),
@@ -367,11 +370,11 @@ impl Parser<'_> {
                         self.expect(Token::RightParen)?;
                         FunctionArgs::Expressions(exprs)
                     };
-                    Expression::Function {
+                    Expression::Function(FunctionCall {
                         name: ident,
                         args,
                         is_distinct,
-                    }
+                    })
                 }
                 Token::Dot => {
                     self.lexer.consume()?;

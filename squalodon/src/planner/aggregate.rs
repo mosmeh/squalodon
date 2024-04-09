@@ -1,76 +1,116 @@
 use super::{
     expression::{ExpressionBinder, TypedExpression},
-    Explain, ExplainFormatter, Plan, PlanNode, Planner, PlannerError, PlannerResult,
+    Column, ColumnId, ExplainFormatter, Node, PlanNode, Planner, PlannerError, PlannerResult,
 };
 use crate::{
     catalog::{AggregateFunction, AggregateInitFnPtr},
-    parser, planner,
-    rows::ColumnIndex,
-    CatalogError, Storage, Type,
+    parser, planner, CatalogError, Storage, Type,
 };
 use std::{collections::HashMap, fmt::Write};
 
 pub enum Aggregate<'txn, 'db, T: Storage> {
     Ungrouped {
         source: Box<PlanNode<'txn, 'db, T>>,
-        column_ops: Vec<ApplyAggregateOp>,
+        ops: Vec<ApplyAggregateOp>,
     },
     Hash {
         source: Box<PlanNode<'txn, 'db, T>>,
-        column_ops: Vec<AggregateOp>,
+        ops: Vec<AggregateOp>,
     },
 }
 
-impl<T: Storage> Explain for Aggregate<'_, '_, T> {
+impl<T: Storage> Node for Aggregate<'_, '_, T> {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         match self {
-            Self::Ungrouped { source, .. } => {
-                f.write_str("UngroupedAggregate");
+            Self::Ungrouped { source, ops } => {
+                let mut s = "UngroupedAggregate".to_owned();
+                for (i, op) in ops.iter().enumerate() {
+                    s.push_str(if i == 0 { " " } else { ", " });
+                    write!(&mut s, "{} -> {}", op.input, op.output).unwrap();
+                }
+                f.write_str(&s);
                 source.fmt_explain(f);
             }
-            Self::Hash { source, column_ops } => {
+            Self::Hash { source, ops, .. } => {
                 let mut s = "HashAggregate".to_owned();
-                for (i, column_index) in column_ops
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, op)| {
-                        matches!(op, AggregateOp::ApplyAggregate(_)).then_some(ColumnIndex(i))
-                    })
-                    .enumerate()
-                {
+                let iter = ops.iter().filter_map(|op| match op {
+                    AggregateOp::ApplyAggregate(ApplyAggregateOp { input, output, .. }) => {
+                        Some((*input, *output))
+                    }
+                    _ => None,
+                });
+                for (i, (input, output)) in iter.enumerate() {
                     s.push_str(if i == 0 { " " } else { ", " });
-                    write!(&mut s, "{column_index}").unwrap();
+                    write!(&mut s, "{input} -> {output}").unwrap();
                 }
                 f.write_str(&s);
                 source.fmt_explain(f);
             }
         }
     }
+
+    fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
+        match self {
+            Self::Ungrouped { ops, .. } => {
+                for op in ops {
+                    columns.push(op.output);
+                }
+            }
+            Self::Hash { ops, .. } => {
+                for op in ops {
+                    match op {
+                        AggregateOp::ApplyAggregate(ApplyAggregateOp { output, .. }) => {
+                            columns.push(*output);
+                        }
+                        AggregateOp::GroupBy { target } | AggregateOp::Passthrough { target } => {
+                            columns.push(*target);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub struct ApplyAggregateOp {
+    pub input: ColumnId,
+    pub output: ColumnId,
     pub init: AggregateInitFnPtr,
     pub is_distinct: bool,
 }
 
 pub enum AggregateOp {
-    GroupBy,
     ApplyAggregate(ApplyAggregateOp),
-    Passthrough,
+    GroupBy { target: ColumnId },
+    Passthrough { target: ColumnId },
+}
+
+impl<T: Storage> PlanNode<'_, '_, T> {
+    pub(super) fn ungrouped_aggregate(self, ops: Vec<ApplyAggregateOp>) -> Self {
+        PlanNode::Aggregate(Aggregate::Ungrouped {
+            source: Box::new(self),
+            ops,
+        })
+    }
+
+    pub(super) fn hash_aggregate(self, ops: Vec<AggregateOp>) -> Self {
+        PlanNode::Aggregate(Aggregate::Hash {
+            source: Box::new(self),
+            ops,
+        })
+    }
 }
 
 pub struct AggregateCollection<'a, 'txn, 'db, T: Storage> {
     planner: &'a Planner<'txn, 'db, T>,
-    aggregate_calls: HashMap<AggregateCall, usize>,
-    bound_aggregates: Vec<BoundAggregate<'txn, T>>,
+    aggregates: HashMap<parser::FunctionCall, BoundAggregate<'txn, T>>,
 }
 
 impl<'a, 'txn, 'db, T: Storage> AggregateCollection<'a, 'txn, 'db, T> {
     pub fn new(planner: &'a Planner<'txn, 'db, T>) -> Self {
         Self {
             planner,
-            aggregate_calls: HashMap::new(),
-            bound_aggregates: Vec::new(),
+            aggregates: HashMap::new(),
         }
     }
 
@@ -80,18 +120,18 @@ impl<'a, 'txn, 'db, T: Storage> AggregateCollection<'a, 'txn, 'db, T> {
 
     pub fn gather(
         &mut self,
-        source: Plan<'txn, 'db, T>,
+        source: PlanNode<'txn, 'db, T>,
         expr: &parser::Expression,
-    ) -> PlannerResult<Plan<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
         self.gather_inner(source, expr, false)
     }
 
     fn gather_inner(
         &mut self,
-        source: Plan<'txn, 'db, T>,
+        source: PlanNode<'txn, 'db, T>,
         expr: &parser::Expression,
         in_aggregate_args: bool,
-    ) -> PlannerResult<Plan<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
         match expr {
             parser::Expression::Constant(_)
             | parser::Expression::ColumnRef(_)
@@ -114,10 +154,10 @@ impl<'a, 'txn, 'db, T: Storage> AggregateCollection<'a, 'txn, 'db, T> {
                     plan = self.gather_inner(plan, &branch.condition, in_aggregate_args)?;
                     plan = self.gather_inner(plan, &branch.result, in_aggregate_args)?;
                 }
-                match else_branch {
-                    Some(else_branch) => self.gather_inner(plan, else_branch, in_aggregate_args),
-                    None => Ok(plan),
+                if let Some(else_branch) = else_branch {
+                    plan = self.gather_inner(plan, else_branch, in_aggregate_args)?;
                 }
+                Ok(plan)
             }
             parser::Expression::Like {
                 str_expr, pattern, ..
@@ -125,21 +165,22 @@ impl<'a, 'txn, 'db, T: Storage> AggregateCollection<'a, 'txn, 'db, T> {
                 let plan = self.gather_inner(source, str_expr, in_aggregate_args)?;
                 self.gather_inner(plan, pattern, in_aggregate_args)
             }
-            parser::Expression::Function {
-                name,
-                args,
-                is_distinct,
-            } => {
-                match self.planner.ctx.catalog().aggregate_function(name) {
+            parser::Expression::Function(function_call) => {
+                match self
+                    .planner
+                    .ctx
+                    .catalog()
+                    .aggregate_function(&function_call.name)
+                {
                     Ok(function) => {
                         if in_aggregate_args {
                             // Nested aggregate functions are not allowed.
                             return Err(PlannerError::AggregateNotAllowed);
                         }
 
-                        let (plan, bound_expr) = match args {
+                        let (plan, bound_expr) = match &function_call.args {
                             parser::FunctionArgs::Wildcard
-                                if name.eq_ignore_ascii_case("count") =>
+                                if function_call.name.eq_ignore_ascii_case("count") =>
                             {
                                 // `count(*)` is a special case equivalent to `count(1)`.
                                 (
@@ -157,40 +198,35 @@ impl<'a, 'txn, 'db, T: Storage> AggregateCollection<'a, 'txn, 'db, T> {
                             _ => return Err(PlannerError::ArityError),
                         };
 
-                        let aggregate = AggregateCall {
-                            function_name: name.clone(),
-                            args: args.clone(),
-                            is_distinct: *is_distinct,
-                        };
                         let std::collections::hash_map::Entry::Vacant(entry) =
-                            self.aggregate_calls.entry(aggregate)
+                            self.aggregates.entry(function_call.clone())
                         else {
                             return Ok(plan);
                         };
 
-                        let index = self.bound_aggregates.len();
-                        self.bound_aggregates.push(BoundAggregate {
+                        let output = self.planner.column_map().insert(Column::new(
+                            expr.to_string(),
+                            (function.bind)(bound_expr.ty)?,
+                        ));
+                        entry.insert(BoundAggregate {
                             function,
                             arg: bound_expr.expr,
-                            is_distinct: *is_distinct,
-                            result_column: planner::Column {
-                                table_name: None,
-                                column_name: expr.to_string(),
-                                ty: (function.bind)(bound_expr.ty)?,
-                            },
+                            output,
                         });
-                        entry.insert(index);
                         return Ok(plan);
                     }
                     Err(CatalogError::UnknownEntry(_, _)) => (),
                     Err(err) => return Err(err.into()),
                 }
 
-                self.planner.ctx.catalog().scalar_function(name)?; // Check if the function exists
-                if *is_distinct {
+                self.planner
+                    .ctx
+                    .catalog()
+                    .scalar_function(&function_call.name)?; // Check if the function exists
+                if function_call.is_distinct {
                     return Err(PlannerError::InvalidArgument);
                 }
-                match args {
+                match &function_call.args {
                     parser::FunctionArgs::Wildcard => Err(PlannerError::InvalidArgument),
                     parser::FunctionArgs::Expressions(args) => {
                         let mut plan = source;
@@ -209,114 +245,77 @@ pub struct AggregatePlanner<'a, 'txn, 'db, T: Storage>(AggregateCollection<'a, '
 
 impl<'txn, 'db, T: Storage> AggregatePlanner<'_, 'txn, 'db, T> {
     pub fn has_aggregates(&self) -> bool {
-        !self.0.aggregate_calls.is_empty()
+        !self.0.aggregates.is_empty()
     }
 
     pub fn plan(
         &self,
         expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
-        source: Plan<'txn, 'db, T>,
+        source: PlanNode<'txn, 'db, T>,
         group_by: Vec<parser::Expression>,
-    ) -> PlannerResult<Plan<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
         let mut plan = source;
-        let mut exprs = Vec::with_capacity(self.0.bound_aggregates.len());
-        let mut columns = Vec::with_capacity(self.0.bound_aggregates.len());
+        let mut exprs = Vec::with_capacity(self.0.aggregates.len() + group_by.len());
 
-        // The first `bound_aggregates.len()` columns are the aggregated columns
+        // The first `aggregates.len()` columns are the aggregated columns
         // that are passed to the respective aggregate functions.
-        for bound_aggregate in &self.0.bound_aggregates {
-            exprs.push(bound_aggregate.arg.clone());
-            columns.push(bound_aggregate.result_column.clone());
+        {
+            let column_map = self.0.planner.column_map();
+            for aggregate in self.0.aggregates.values() {
+                exprs.push(TypedExpression {
+                    expr: aggregate.arg.clone(),
+                    ty: column_map[aggregate.output].ty,
+                });
+            }
         }
 
         // The rest of the columns are the columns in the GROUP BY clause.
-        for group_by in &group_by {
-            let table_name;
-            let column_name;
-            if let parser::Expression::ColumnRef(column_ref) = group_by {
-                table_name = column_ref.table_name.clone();
-                column_name = column_ref.column_name.clone();
-            } else {
-                table_name = None;
-                column_name = group_by.to_string();
-            };
-
-            let (new_plan, TypedExpression { expr, ty }) =
-                expr_binder.bind(plan, group_by.clone())?;
+        let has_group_by = !group_by.is_empty();
+        for group_by in group_by {
+            let (new_plan, expr) = expr_binder.bind(plan, group_by)?;
             plan = new_plan;
-
             exprs.push(expr);
-            columns.push(planner::Column {
-                table_name,
-                column_name,
-                ty,
-            });
         }
 
-        let node = PlanNode::Project(planner::Project {
-            source: Box::new(plan.node),
-            exprs,
-        });
+        let plan = plan.project(&mut self.0.planner.column_map(), exprs);
+        let outputs = plan.outputs();
 
-        let column_ops = self
+        let ops = self
             .0
-            .bound_aggregates
+            .aggregates
             .iter()
-            .map(|bound_aggregate| ApplyAggregateOp {
-                init: bound_aggregate.function.init,
-                is_distinct: bound_aggregate.is_distinct,
+            .zip(outputs.iter().take(self.0.aggregates.len()))
+            .map(|((func_call, aggregate), input)| ApplyAggregateOp {
+                init: aggregate.function.init,
+                is_distinct: func_call.is_distinct,
+                input: *input,
+                output: aggregate.output,
             });
-        let node = if group_by.is_empty() {
-            Aggregate::Ungrouped {
-                source: Box::new(node),
-                column_ops: column_ops.collect(),
-            }
-        } else {
-            let column_ops = column_ops
+        if has_group_by {
+            let group_by_ops = outputs
+                .iter()
+                .skip(self.0.aggregates.len())
+                .map(|target| AggregateOp::GroupBy { target: *target });
+            let ops = ops
                 .map(AggregateOp::ApplyAggregate)
-                .chain(group_by.iter().map(|_| AggregateOp::GroupBy))
+                .chain(group_by_ops)
                 .collect();
-            Aggregate::Hash {
-                source: Box::new(node),
-                column_ops,
-            }
-        };
-        Ok(Plan {
-            node: PlanNode::Aggregate(node),
-            schema: columns.into(),
-        })
+            Ok(plan.hash_aggregate(ops))
+        } else {
+            Ok(plan.ungrouped_aggregate(ops.collect()))
+        }
     }
 
-    pub fn resolve(
-        &self,
-        function_name: String,
-        args: parser::FunctionArgs,
-        is_distinct: bool,
-    ) -> Option<(ColumnIndex, &planner::Column)> {
+    pub fn resolve(&self, function_call: &parser::FunctionCall) -> Option<ColumnId> {
         self.0
-            .aggregate_calls
-            .get(&AggregateCall {
-                function_name,
-                args,
-                is_distinct,
-            })
-            .map(|&index| {
-                let bound_aggregate = &self.0.bound_aggregates[index];
-                (ColumnIndex(index), &bound_aggregate.result_column)
-            })
+            .aggregates
+            .get(function_call)
+            .map(|aggregate| aggregate.output)
     }
-}
-
-#[derive(PartialEq, Eq, Hash)]
-struct AggregateCall {
-    function_name: String,
-    args: parser::FunctionArgs,
-    is_distinct: bool,
 }
 
 struct BoundAggregate<'a, T: Storage> {
     function: &'a AggregateFunction,
-    arg: planner::Expression<'a, T>,
-    is_distinct: bool,
-    result_column: planner::Column,
+    arg: planner::Expression<'a, T, ColumnId>,
+    output: ColumnId,
 }

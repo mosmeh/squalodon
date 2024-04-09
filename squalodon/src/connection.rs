@@ -110,7 +110,7 @@ impl<'db, T: Storage> Connection<'db, T> {
 
         let mut param_values = Vec::with_capacity(params.len());
         for expr in params {
-            param_values.push(planner::bind_expr(&ctx, expr)?.eval(&ctx, &Row::empty())?);
+            param_values.push(planner::plan_expr(&ctx, expr)?.eval(&ctx, &Row::empty())?);
         }
 
         let plan = planner::plan(&ctx, statement, param_values)?;
@@ -175,7 +175,6 @@ fn execute_plan<'db, T: Storage>(
 ) -> Result<Rows> {
     let Plan { node, schema } = plan;
     let columns: Vec<_> = schema
-        .0
         .into_iter()
         .map(|column| {
             Column {

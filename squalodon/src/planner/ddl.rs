@@ -1,4 +1,4 @@
-use super::{Explain, ExplainFormatter, Plan, PlanNode, Planner, PlannerError, PlannerResult};
+use super::{ColumnId, ExplainFormatter, Node, PlanNode, Planner, PlannerError, PlannerResult};
 use crate::{catalog, parser, rows::ColumnIndex, Storage};
 use std::collections::HashSet;
 
@@ -10,10 +10,12 @@ pub struct CreateTable {
     pub create_indexes: Vec<CreateIndex>,
 }
 
-impl Explain for CreateTable {
+impl Node for CreateTable {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         f.write_str("CreateTable");
     }
+
+    fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
 }
 
 pub struct CreateIndex {
@@ -23,17 +25,35 @@ pub struct CreateIndex {
     pub is_unique: bool,
 }
 
-impl Explain for CreateIndex {
+impl Node for CreateIndex {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         f.write_str("CreateIndex");
     }
+
+    fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
 }
 
 pub struct DropObject(pub parser::DropObject);
 
-impl Explain for DropObject {
+impl Node for DropObject {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         f.write_str("Drop");
+    }
+
+    fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
+}
+
+impl<T: Storage> PlanNode<'_, '_, T> {
+    fn new_create_table(create_table: CreateTable) -> Self {
+        Self::CreateTable(create_table)
+    }
+
+    fn new_create_index(create_index: CreateIndex) -> Self {
+        Self::CreateIndex(create_index)
+    }
+
+    fn new_drop(drop_object: parser::DropObject) -> Self {
+        Self::Drop(DropObject(drop_object))
     }
 }
 
@@ -42,7 +62,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
     pub fn plan_create_table(
         &self,
         create_table: parser::CreateTable,
-    ) -> PlannerResult<Plan<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
         let mut column_names = HashSet::new();
         for column in &create_table.columns {
             if !column_names.insert(column.name.as_str()) {
@@ -103,13 +123,13 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
             constraints: bound_constraints.into_iter().collect(),
             create_indexes,
         };
-        Ok(Plan::sink(PlanNode::CreateTable(create_table)))
+        Ok(PlanNode::new_create_table(create_table))
     }
 
     pub fn plan_create_index(
         &self,
         create_index: parser::CreateIndex,
-    ) -> PlannerResult<Plan<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
         let table = self.ctx.catalog().table(create_index.table_name)?;
         let column_indexes =
             column_indexes_from_names(table.columns(), &create_index.column_names)?;
@@ -119,12 +139,12 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
             column_indexes,
             is_unique: create_index.is_unique,
         };
-        Ok(Plan::sink(PlanNode::CreateIndex(create_index)))
+        Ok(PlanNode::new_create_index(create_index))
     }
 
     #[allow(clippy::unused_self)]
-    pub fn plan_drop(&self, drop_object: parser::DropObject) -> Plan<'txn, 'db, T> {
-        Plan::sink(PlanNode::Drop(DropObject(drop_object)))
+    pub fn plan_drop(&self, drop_object: parser::DropObject) -> PlanNode<'txn, 'db, T> {
+        PlanNode::new_drop(drop_object)
     }
 }
 

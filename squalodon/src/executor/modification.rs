@@ -7,7 +7,7 @@ pub struct Insert {
 
 impl Insert {
     pub fn new<T: Storage>(
-        source: Box<ExecutorNode<'_, '_, T>>,
+        source: ExecutorNode<'_, '_, T>,
         table: Table<'_, '_, T>,
     ) -> ExecutorResult<Self> {
         let mut count = 0;
@@ -33,7 +33,7 @@ pub struct Update {
 
 impl Update {
     pub fn new<T: Storage>(
-        source: Box<ExecutorNode<'_, '_, T>>,
+        source: ExecutorNode<'_, '_, T>,
         table: Table<'_, '_, T>,
     ) -> ExecutorResult<Self> {
         let num_columns = table.columns().len();
@@ -63,7 +63,7 @@ pub struct Delete {
 
 impl Delete {
     pub fn new<T: Storage>(
-        source: Box<ExecutorNode<'_, '_, T>>,
+        source: ExecutorNode<'_, '_, T>,
         table: Table<'_, '_, T>,
     ) -> ExecutorResult<Self> {
         let mut count = 0;

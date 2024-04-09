@@ -104,6 +104,7 @@ pub enum Function<T: Storage> {
     Table(TableFunction<T>),
 }
 
+#[derive(Debug)]
 pub struct ScalarFunction<T: Storage> {
     pub name: &'static str,
     pub bind: ScalarBindFnPtr,
