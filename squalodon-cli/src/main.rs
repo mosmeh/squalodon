@@ -134,18 +134,20 @@ impl<'conn, 'db, T: Storage> Repl<'conn, 'db, T> {
                 csv,
                 tsv,
                 skip_header,
+                escape,
                 filename,
                 table,
             } => {
                 let mut builder = csv::ReaderBuilder::new();
                 if ascii {
-                    builder
-                        .delimiter(b'\x1f')
-                        .terminator(csv::Terminator::Any(b'\x1e'));
+                    builder.ascii();
                 } else if csv {
                     // Default
                 } else if tsv {
                     builder.delimiter(b'\t');
+                }
+                if let Some(escape) = escape {
+                    builder.escape(Some(escape.try_into()?));
                 }
                 let reader = builder.has_headers(skip_header).from_path(filename)?;
                 self.conn.execute("BEGIN", [])?;
@@ -229,6 +231,10 @@ enum Metacommand {
         /// Skip the first line
         #[arg(long)]
         skip_header: bool,
+
+        /// Escape character
+        #[arg(long)]
+        escape: Option<char>,
 
         filename: PathBuf,
         table: String,
