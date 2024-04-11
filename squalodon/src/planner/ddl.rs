@@ -1,5 +1,5 @@
 use super::{ColumnId, ExplainFormatter, Node, PlanNode, Planner, PlannerError, PlannerResult};
-use crate::{catalog, parser, rows::ColumnIndex, Storage};
+use crate::{catalog, parser, rows::ColumnIndex, storage::Transaction};
 use std::collections::HashSet;
 
 pub struct CreateTable {
@@ -43,7 +43,7 @@ impl Node for DropObject {
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
 }
 
-impl<T: Storage> PlanNode<'_, '_, T> {
+impl<T> PlanNode<'_, T> {
     fn new_create_table(create_table: CreateTable) -> Self {
         Self::CreateTable(create_table)
     }
@@ -57,12 +57,12 @@ impl<T: Storage> PlanNode<'_, '_, T> {
     }
 }
 
-impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
+impl<'a, T> Planner<'a, T> {
     #[allow(clippy::unused_self)]
     pub fn plan_create_table(
         &self,
         create_table: parser::CreateTable,
-    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'a, T>> {
         let mut column_names = HashSet::new();
         for column in &create_table.columns {
             if !column_names.insert(column.name.as_str()) {
@@ -126,10 +126,17 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         Ok(PlanNode::new_create_table(create_table))
     }
 
+    #[allow(clippy::unused_self)]
+    pub fn plan_drop(&self, drop_object: parser::DropObject) -> PlanNode<'a, T> {
+        PlanNode::new_drop(drop_object)
+    }
+}
+
+impl<'a, T: Transaction> Planner<'a, T> {
     pub fn plan_create_index(
         &self,
         create_index: parser::CreateIndex,
-    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'a, T>> {
         let table = self.ctx.catalog().table(create_index.table_name)?;
         let column_indexes =
             column_indexes_from_names(table.columns(), &create_index.column_names)?;
@@ -140,11 +147,6 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
             is_unique: create_index.is_unique,
         };
         Ok(PlanNode::new_create_index(create_index))
-    }
-
-    #[allow(clippy::unused_self)]
-    pub fn plan_drop(&self, drop_object: parser::DropObject) -> PlanNode<'txn, 'db, T> {
-        PlanNode::new_drop(drop_object)
     }
 }
 

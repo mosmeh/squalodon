@@ -8,12 +8,13 @@ use crate::{
     parser::{self, BinaryOp, FunctionArgs, UnaryOp},
     planner::{self, aggregate::ApplyAggregateOp},
     rows::ColumnIndex,
+    storage::Transaction,
     types::{NullableType, Type},
-    CatalogError, Row, Storage, Value,
+    CatalogError, Row, Value,
 };
 use std::collections::HashMap;
 
-pub enum Expression<'a, T: Storage, C> {
+pub enum Expression<'a, T, C> {
     Constant(Value),
     ColumnRef(C),
     Cast {
@@ -44,11 +45,11 @@ pub enum Expression<'a, T: Storage, C> {
     },
 }
 
-impl<T: Storage, C: Copy> Clone for Expression<'_, T, C> {
+impl<T, C: Clone> Clone for Expression<'_, T, C> {
     fn clone(&self) -> Self {
         match self {
             Self::Constant(value) => Self::Constant(value.clone()),
-            Self::ColumnRef(index) => Self::ColumnRef(*index),
+            Self::ColumnRef(index) => Self::ColumnRef(index.clone()),
             Self::Cast { expr, ty } => Self::Cast {
                 expr: expr.clone(),
                 ty: *ty,
@@ -86,7 +87,7 @@ impl<T: Storage, C: Copy> Clone for Expression<'_, T, C> {
     }
 }
 
-impl<T: Storage, C: std::fmt::Display> std::fmt::Display for Expression<'_, T, C> {
+impl<T, C: std::fmt::Display> std::fmt::Display for Expression<'_, T, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Constant(value) => write!(f, "{value:?}"),
@@ -132,7 +133,7 @@ impl<T: Storage, C: std::fmt::Display> std::fmt::Display for Expression<'_, T, C
     }
 }
 
-impl<'a, T: Storage> Expression<'a, T, ColumnId> {
+impl<'a, T> Expression<'a, T, ColumnId> {
     pub fn cast(self, ty: Type) -> Self {
         Self::Cast {
             expr: Box::new(self),
@@ -245,12 +246,12 @@ impl<'a, T: Storage> Expression<'a, T, ColumnId> {
     }
 }
 
-pub struct CaseBranch<'a, T: Storage, C> {
+pub struct CaseBranch<'a, T, C> {
     pub condition: Expression<'a, T, C>,
     pub result: Expression<'a, T, C>,
 }
 
-impl<T: Storage, C: Copy> Clone for CaseBranch<'_, T, C> {
+impl<T, C: Clone> Clone for CaseBranch<'_, T, C> {
     fn clone(&self) -> Self {
         Self {
             condition: self.condition.clone(),
@@ -259,12 +260,12 @@ impl<T: Storage, C: Copy> Clone for CaseBranch<'_, T, C> {
     }
 }
 
-pub struct TypedExpression<'a, T: Storage> {
+pub struct TypedExpression<'a, T> {
     pub expr: planner::Expression<'a, T, ColumnId>,
     pub ty: NullableType,
 }
 
-impl<T: Storage> Clone for TypedExpression<'_, T> {
+impl<T> Clone for TypedExpression<'_, T> {
     fn clone(&self) -> Self {
         Self {
             expr: self.expr.clone(),
@@ -273,7 +274,7 @@ impl<T: Storage> Clone for TypedExpression<'_, T> {
     }
 }
 
-impl<T: Storage> From<Value> for TypedExpression<'_, T> {
+impl<T> From<Value> for TypedExpression<'_, T> {
     fn from(value: Value) -> Self {
         let ty = value.ty();
         Self {
@@ -283,7 +284,7 @@ impl<T: Storage> From<Value> for TypedExpression<'_, T> {
     }
 }
 
-impl<'a, T: Storage> TypedExpression<'a, T> {
+impl<'a, T> TypedExpression<'a, T> {
     pub fn expect_type<I: Into<NullableType>>(
         self,
         expected: I,
@@ -296,14 +297,14 @@ impl<'a, T: Storage> TypedExpression<'a, T> {
     }
 }
 
-pub struct ExpressionBinder<'a, 'txn, 'db, T: Storage> {
-    planner: &'a Planner<'txn, 'db, T>,
-    aliases: Option<&'a HashMap<String, TypedExpression<'txn, T>>>,
-    aggregates: Option<&'a AggregatePlanner<'a, 'txn, 'db, T>>,
+pub struct ExpressionBinder<'a, 'b, T> {
+    planner: &'a Planner<'b, T>,
+    aliases: Option<&'a HashMap<String, TypedExpression<'b, T>>>,
+    aggregates: Option<&'a AggregatePlanner<'a, 'b, T>>,
 }
 
-impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
-    pub fn new(planner: &'a Planner<'txn, 'db, T>) -> Self {
+impl<'a, 'b, T> ExpressionBinder<'a, 'b, T> {
+    pub fn new(planner: &'a Planner<'b, T>) -> Self {
         Self {
             planner,
             aliases: None,
@@ -311,25 +312,27 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
         }
     }
 
-    pub fn with_aliases(&self, aliases: &'a HashMap<String, TypedExpression<'txn, T>>) -> Self {
+    pub fn with_aliases(&self, aliases: &'a HashMap<String, TypedExpression<'b, T>>) -> Self {
         Self {
             aliases: Some(aliases),
             ..*self
         }
     }
 
-    pub fn with_aggregates(&self, aggregates: &'a AggregatePlanner<'a, 'txn, 'db, T>) -> Self {
+    pub fn with_aggregates(&self, aggregates: &'a AggregatePlanner<'a, 'b, T>) -> Self {
         Self {
             aggregates: Some(aggregates),
             ..*self
         }
     }
+}
 
+impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
     pub fn bind(
         &self,
-        source: PlanNode<'txn, 'db, T>,
+        source: PlanNode<'b, T>,
         expr: parser::Expression,
-    ) -> PlannerResult<(PlanNode<'txn, 'db, T>, TypedExpression<'txn, T>)> {
+    ) -> PlannerResult<(PlanNode<'b, T>, TypedExpression<'b, T>)> {
         if let Some(column_id) = self
             .aggregates
             .and_then(|aggregates| aggregates.resolve_group_by(&expr))
@@ -718,7 +721,7 @@ impl<'a, 'txn, 'db, T: Storage> ExpressionBinder<'a, 'txn, 'db, T> {
     pub fn bind_without_source(
         &self,
         expr: parser::Expression,
-    ) -> PlannerResult<TypedExpression<'txn, T>> {
+    ) -> PlannerResult<TypedExpression<'b, T>> {
         self.bind(PlanNode::new_empty_values(), expr)
             .map(|(_, expr)| expr)
     }

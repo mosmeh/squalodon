@@ -6,7 +6,8 @@ use crate::{
     connection::ConnectionContext,
     parser::ObjectKind,
     planner::{self, Expression, PlanNode},
-    storage, CatalogError, Row, Storage, StorageError, Value,
+    storage::{self, Transaction},
+    CatalogError, Row, StorageError, Value,
 };
 use modification::{Delete, Insert, Update};
 use query::{
@@ -99,18 +100,18 @@ impl<E: Into<ExecutorError>> IntoOutput for Option<std::result::Result<Row, E>> 
     }
 }
 
-pub struct Executor<'txn, 'db, T: Storage>(ExecutorNode<'txn, 'db, T>);
+pub struct Executor<'a, T>(ExecutorNode<'a, T>);
 
-impl<'txn, 'db, T: Storage> Executor<'txn, 'db, T> {
+impl<'a, T: Transaction> Executor<'a, T> {
     pub fn new(
-        ctx: &'txn ConnectionContext<'txn, 'db, T>,
-        plan_node: PlanNode<'txn, 'db, T>,
+        ctx: &'a ConnectionContext<'a, T>,
+        plan_node: PlanNode<'a, T>,
     ) -> ExecutorResult<Self> {
         ExecutorNode::new(ctx, plan_node).map(Self)
     }
 }
 
-impl<T: Storage> Iterator for Executor<'_, '_, T> {
+impl<T> Iterator for Executor<'_, T> {
     type Item = ExecutorResult<Row>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -122,29 +123,26 @@ impl<T: Storage> Iterator for Executor<'_, '_, T> {
     }
 }
 
-enum ExecutorNode<'txn, 'db, T: Storage> {
-    Values(Values<'txn>),
-    SeqScan(SeqScan<'txn>),
-    FunctionScan(FunctionScan<'txn, 'db, T>),
-    Project(Project<'txn, 'db, T>),
-    Filter(Filter<'txn, 'db, T>),
+enum ExecutorNode<'a, T> {
+    Values(Values<'a>),
+    SeqScan(SeqScan<'a>),
+    FunctionScan(FunctionScan<'a, T>),
+    Project(Project<'a, T>),
+    Filter(Filter<'a, T>),
     Sort(Sort),
-    Limit(Limit<'txn, 'db, T>),
-    CrossProduct(CrossProduct<'txn, 'db, T>),
+    Limit(Limit<'a, T>),
+    CrossProduct(CrossProduct<'a, T>),
     UngroupedAggregate(UngroupedAggregate),
     HashAggregate(HashAggregate),
-    Union(Union<'txn, 'db, T>),
+    Union(Union<'a, T>),
     Spool(Spool),
     Insert(Insert),
     Update(Update),
     Delete(Delete),
 }
 
-impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
-    fn new(
-        ctx: &'txn ConnectionContext<'txn, 'db, T>,
-        plan_node: PlanNode<'txn, 'db, T>,
-    ) -> ExecutorResult<Self> {
+impl<'a, T: Transaction> ExecutorNode<'a, T> {
+    fn new(ctx: &'a ConnectionContext<'a, T>, plan_node: PlanNode<'a, T>) -> ExecutorResult<Self> {
         let executor = match plan_node {
             PlanNode::Explain(explain) => {
                 let rows = explain
@@ -298,7 +296,7 @@ impl<'txn, 'db, T: Storage> ExecutorNode<'txn, 'db, T> {
     }
 }
 
-impl<T: Storage> Node for ExecutorNode<'_, '_, T> {
+impl<T> Node for ExecutorNode<'_, T> {
     fn next_row(&mut self) -> Output {
         match self {
             Self::Values(e) => e.next_row(),
@@ -320,7 +318,7 @@ impl<T: Storage> Node for ExecutorNode<'_, '_, T> {
     }
 }
 
-impl<T: Storage> Iterator for ExecutorNode<'_, '_, T> {
+impl<T> Iterator for ExecutorNode<'_, T> {
     type Item = ExecutorResult<Row>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -337,7 +335,7 @@ pub struct Spool {
 }
 
 impl Spool {
-    fn new<T: Storage>(source: ExecutorNode<'_, '_, T>) -> ExecutorResult<Self> {
+    fn new<T>(source: ExecutorNode<'_, T>) -> ExecutorResult<Self> {
         let rows: Vec<_> = source.into_iter().collect::<ExecutorResult<_>>()?;
         Ok(Self {
             rows: rows.into_iter(),

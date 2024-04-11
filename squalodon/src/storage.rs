@@ -67,14 +67,14 @@ pub trait Transaction {
     fn commit(self);
 }
 
-pub(crate) struct Table<'txn, 'db, T: Storage + 'db> {
-    txn: &'txn T::Transaction<'db>,
+pub(crate) struct Table<'a, T> {
+    txn: &'a T,
     name: String,
     def: catalog::Table,
-    indexes: Vec<Index<'txn, 'db, T>>,
+    indexes: Vec<Index<'a, T>>,
 }
 
-impl<T: Storage> Clone for Table<'_, '_, T> {
+impl<T> Clone for Table<'_, T> {
     fn clone(&self) -> Self {
         Self {
             txn: self.txn,
@@ -85,9 +85,9 @@ impl<T: Storage> Clone for Table<'_, '_, T> {
     }
 }
 
-impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
+impl<'a, T> Table<'a, T> {
     pub fn new(
-        txn: &'txn T::Transaction<'db>,
+        txn: &'a T,
         name: String,
         def: catalog::Table,
         indexes: Vec<catalog::Index>,
@@ -117,11 +117,13 @@ impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
         &self.def.constraints
     }
 
-    pub fn indexes(&self) -> &[Index<'txn, 'db, T>] {
+    pub fn indexes(&self) -> &[Index<'a, T>] {
         &self.indexes
     }
+}
 
-    pub fn scan(&self) -> Box<dyn Iterator<Item = StorageResult<Row>> + 'txn> {
+impl<'a, T: Transaction> Table<'a, T> {
+    pub fn scan(&self) -> Box<dyn Iterator<Item = StorageResult<Row>> + 'a> {
         let start = self.def.id.serialize();
         let mut end = start;
         end[end.len() - 1] += 1;
@@ -132,7 +134,7 @@ impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
         Box::new(iter)
     }
 
-    pub fn insert<'a, R: Into<&'a [Value]>>(&self, row: R) -> StorageResult<()> {
+    pub fn insert<'r, R: Into<&'r [Value]>>(&self, row: R) -> StorageResult<()> {
         let row = row.into();
         let key = self.prepare_for_write(row)?;
         if !self.txn.insert(key.clone(), bincode::serialize(row)?) {
@@ -141,10 +143,10 @@ impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
         self.update_indexes(None, Some((row, &key)))
     }
 
-    pub fn update<'a, 'b, R, S>(&self, old_row: R, new_row: S) -> StorageResult<()>
+    pub fn update<'r1, 'r2, R, S>(&self, old_row: R, new_row: S) -> StorageResult<()>
     where
-        R: Into<&'a [Value]>,
-        S: Into<&'b [Value]>,
+        R: Into<&'r1 [Value]>,
+        S: Into<&'r2 [Value]>,
     {
         let old_row = old_row.into();
         let old_key = self.prepare_for_write(old_row)?;
@@ -160,7 +162,7 @@ impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
         self.update_indexes(Some((old_row, &old_key)), Some((new_row, &new_key)))
     }
 
-    pub fn delete<'a, R: Into<&'a [Value]>>(&self, row: R) -> StorageResult<()> {
+    pub fn delete<'r, R: Into<&'r [Value]>>(&self, row: R) -> StorageResult<()> {
         let row = row.into();
         let key = self.prepare_for_write(row)?;
         self.txn.remove(key.clone()).unwrap();
@@ -237,13 +239,13 @@ impl<'txn, 'db, T: Storage> Table<'txn, 'db, T> {
     }
 }
 
-pub(crate) struct Index<'txn, 'db, T: Storage + 'db> {
-    txn: &'txn T::Transaction<'db>,
+pub(crate) struct Index<'a, T> {
+    txn: &'a T,
     name: String,
     def: catalog::Index,
 }
 
-impl<T: Storage> Clone for Index<'_, '_, T> {
+impl<T> Clone for Index<'_, T> {
     fn clone(&self) -> Self {
         Self {
             txn: self.txn,
@@ -253,8 +255,8 @@ impl<T: Storage> Clone for Index<'_, '_, T> {
     }
 }
 
-impl<'txn, 'db, T: Storage> Index<'txn, 'db, T> {
-    pub fn new(txn: &'txn T::Transaction<'db>, name: String, def: catalog::Index) -> Self {
+impl<'a, T> Index<'a, T> {
+    pub fn new(txn: &'a T, name: String, def: catalog::Index) -> Self {
         Self { txn, name, def }
     }
 

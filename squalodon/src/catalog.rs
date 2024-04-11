@@ -97,13 +97,13 @@ pub struct Index {
     pub is_unique: bool,
 }
 
-pub enum Function<'a, T: Storage> {
+pub enum Function<'a, T> {
     Scalar(&'a ScalarFunction<T>),
     Aggregate(&'a AggregateFunction),
     Table(&'a TableFunction<T>),
 }
 
-impl<'a, T: Storage> Function<'a, T> {
+impl<'a, T> Function<'a, T> {
     pub fn name(&self) -> &str {
         match self {
             Self::Scalar(f) => f.name,
@@ -113,14 +113,14 @@ impl<'a, T: Storage> Function<'a, T> {
     }
 }
 
-pub struct ScalarFunction<T: Storage> {
+pub struct ScalarFunction<T> {
     pub name: &'static str,
     pub bind: ScalarBindFnPtr,
     pub eval: ScalarEvalFnPtr<T>,
 }
 
 pub type ScalarBindFnPtr = fn(&[NullableType]) -> PlannerResult<NullableType>;
-pub type ScalarEvalFnPtr<T> = fn(&ConnectionContext<'_, '_, T>, &[Value]) -> ExecutorResult<Value>;
+pub type ScalarEvalFnPtr<T> = fn(&ConnectionContext<'_, T>, &[Value]) -> ExecutorResult<Value>;
 
 pub struct AggregateFunction {
     pub name: &'static str,
@@ -136,26 +136,39 @@ pub trait Aggregator {
     fn finish(&self) -> Value;
 }
 
-pub struct TableFunction<T: Storage> {
+pub struct TableFunction<T> {
     pub name: &'static str,
     pub fn_ptr: TableFnPtr<T>,
     pub result_columns: Vec<planner::Column>,
 }
 
 pub type TableFnPtr<T> = for<'a> fn(
-    &'a ConnectionContext<'a, '_, T>,
+    &'a ConnectionContext<'a, T>,
     &Row,
 ) -> ExecutorResult<Box<dyn Iterator<Item = Row> + 'a>>;
 
-pub struct Catalog<T: Storage> {
+pub struct Catalog<T> {
     next_object_id: AtomicU64,
     scalar_functions: HashMap<&'static str, ScalarFunction<T>>,
     aggregate_functions: HashMap<&'static str, AggregateFunction>,
     table_functions: HashMap<&'static str, TableFunction<T>>,
 }
 
-impl<T: Storage> Catalog<T> {
-    pub fn load(storage: &T) -> CatalogResult<Self> {
+impl<T> Catalog<T> {
+    pub fn with<'a>(&'a self, txn: &'a T) -> CatalogRef<'a, T> {
+        CatalogRef { catalog: self, txn }
+    }
+
+    fn generate_object_id(&self) -> ObjectId {
+        ObjectId(
+            self.next_object_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+}
+
+impl<T: Transaction> Catalog<T> {
+    pub fn load<S: Storage>(storage: &S) -> CatalogResult<Self> {
         let mut max_object_id = ObjectId::MAX_SYSTEM.0;
 
         let txn = storage.transaction();
@@ -191,29 +204,15 @@ impl<T: Storage> Catalog<T> {
                 .collect(),
         })
     }
-
-    pub fn with<'txn, 'db: 'txn>(
-        &'db self,
-        txn: &'txn T::Transaction<'db>,
-    ) -> CatalogRef<'txn, 'db, T> {
-        CatalogRef { catalog: self, txn }
-    }
-
-    fn generate_object_id(&self) -> ObjectId {
-        ObjectId(
-            self.next_object_id
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        )
-    }
 }
 
-pub struct CatalogRef<'txn, 'db, T: Storage + 'db> {
-    catalog: &'txn Catalog<T>,
-    txn: &'txn T::Transaction<'db>,
+pub struct CatalogRef<'a, T> {
+    catalog: &'a Catalog<T>,
+    txn: &'a T,
 }
 
-impl<'txn, 'db, T: Storage> CatalogRef<'txn, 'db, T> {
-    pub fn table(&self, name: String) -> CatalogResult<storage::Table<'txn, 'db, T>> {
+impl<'a, T: Transaction> CatalogRef<'a, T> {
+    pub fn table(&self, name: String) -> CatalogResult<storage::Table<'a, T>> {
         let mut key = ObjectId::TABLE_CATALOG.serialize().to_vec();
         key.extend_from_slice(name.as_bytes());
         self.txn.get(&key).map_or(
@@ -222,9 +221,7 @@ impl<'txn, 'db, T: Storage> CatalogRef<'txn, 'db, T> {
         )
     }
 
-    pub fn tables(
-        &self,
-    ) -> Box<dyn Iterator<Item = CatalogResult<storage::Table<'txn, 'db, T>>> + '_> {
+    pub fn tables(&self) -> Box<dyn Iterator<Item = CatalogResult<storage::Table<'a, T>>> + '_> {
         let start = ObjectId::TABLE_CATALOG.serialize();
         let mut end = start;
         end[end.len() - 1] += 1;
@@ -235,7 +232,7 @@ impl<'txn, 'db, T: Storage> CatalogRef<'txn, 'db, T> {
         Box::new(iter)
     }
 
-    fn read_table(&self, key: &[u8], value: &[u8]) -> CatalogResult<storage::Table<'txn, 'db, T>> {
+    fn read_table(&self, key: &[u8], value: &[u8]) -> CatalogResult<storage::Table<'a, T>> {
         if key.len() < ObjectId::SERIALIZED_LEN {
             return Err(CatalogError::InvalidEncoding);
         }
@@ -367,7 +364,9 @@ impl<'txn, 'db, T: Storage> CatalogRef<'txn, 'db, T> {
         }
         Ok(())
     }
+}
 
+impl<T> CatalogRef<'_, T> {
     pub fn functions(&self) -> impl Iterator<Item = Function<T>> + '_ {
         let scalar = self.catalog.scalar_functions.values().map(Function::Scalar);
         let aggregate = self

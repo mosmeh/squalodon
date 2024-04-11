@@ -69,18 +69,18 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub struct Database<T: Storage> {
+pub struct Database<'a, T: Storage + 'a> {
     storage: T,
-    catalog: Catalog<T>,
+    catalog: Catalog<T::Transaction<'a>>,
 }
 
-impl<T: Storage> Database<T> {
+impl<'a, T: Storage> Database<'a, T> {
     pub fn new(storage: T) -> Result<Self> {
         let catalog = Catalog::load(&storage)?;
         Ok(Self { storage, catalog })
     }
 
-    pub fn connect(&self) -> Connection<T> {
+    pub fn connect(&'a self) -> Connection<'a, T> {
         Connection::new(self)
     }
 }

@@ -4,7 +4,6 @@ use crate::{
     parser::{BinaryOp, UnaryOp},
     planner::{CaseBranch, ColumnId, Expression},
     rows::ColumnIndex,
-    storage::Storage,
     ExecutorError, Row, Value,
 };
 
@@ -27,7 +26,7 @@ impl ExtractColumn for ColumnIndex {
     }
 }
 
-impl<T: Storage, C: ExtractColumn> Expression<'_, T, C> {
+impl<T, C: ExtractColumn> Expression<'_, T, C> {
     pub fn eval(&self, ctx: &ConnectionContext<T>, row: &Row) -> ExecutorResult<Value> {
         match self {
             Self::Constant(v) => Ok(v.clone()),
@@ -59,7 +58,7 @@ impl<T: Storage, C: ExtractColumn> Expression<'_, T, C> {
 }
 
 impl UnaryOp {
-    pub fn eval<T: Storage, C: ExtractColumn>(
+    pub fn eval<T, C: ExtractColumn>(
         self,
         ctx: &ConnectionContext<T>,
         row: &Row,
@@ -78,7 +77,7 @@ impl UnaryOp {
 }
 
 impl BinaryOp {
-    pub fn eval<T: Storage, C: ExtractColumn>(
+    pub fn eval<T, C: ExtractColumn>(
         self,
         ctx: &ConnectionContext<T>,
         row: &Row,
@@ -165,7 +164,7 @@ impl BinaryOp {
     }
 }
 
-fn eval_case<T: Storage, C: ExtractColumn>(
+fn eval_case<T, C: ExtractColumn>(
     ctx: &ConnectionContext<T>,
     row: &Row,
     branches: &[CaseBranch<T, C>],
@@ -179,7 +178,7 @@ fn eval_case<T: Storage, C: ExtractColumn>(
     else_branch.map_or(Ok(Value::Null), |else_branch| else_branch.eval(ctx, row))
 }
 
-fn eval_like<T: Storage, C: ExtractColumn>(
+fn eval_like<T, C: ExtractColumn>(
     ctx: &ConnectionContext<T>,
     row: &Row,
     str_expr: &Expression<T, C>,

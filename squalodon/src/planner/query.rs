@@ -8,18 +8,18 @@ use crate::{
     parser::{self, NullOrder, Order},
     planner,
     rows::ColumnIndex,
-    storage::Table,
+    storage::{Table, Transaction},
     types::NullableType,
-    PlannerError, Storage, Type,
+    PlannerError, Type,
 };
 use std::{collections::HashMap, fmt::Write};
 
-pub struct Values<'a, T: Storage> {
+pub struct Values<'a, T> {
     pub rows: Vec<Vec<planner::Expression<'a, T, ColumnId>>>,
     outputs: Vec<ColumnId>,
 }
 
-impl<'a, T: Storage> Values<'a, T> {
+impl<'a, T> Values<'a, T> {
     pub fn one_empty_row() -> Self {
         Self {
             rows: vec![Vec::new()],
@@ -28,7 +28,7 @@ impl<'a, T: Storage> Values<'a, T> {
     }
 }
 
-impl<T: Storage> Node for Values<'_, T> {
+impl<T> Node for Values<'_, T> {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         f.write_str("Values");
     }
@@ -38,19 +38,19 @@ impl<T: Storage> Node for Values<'_, T> {
     }
 }
 
-pub enum Scan<'txn, 'db, T: Storage> {
+pub enum Scan<'a, T> {
     SeqScan {
-        table: Table<'txn, 'db, T>,
+        table: Table<'a, T>,
         outputs: Vec<ColumnId>,
     },
     FunctionScan {
-        source: Box<PlanNode<'txn, 'db, T>>,
-        function: &'txn TableFunction<T>,
+        source: Box<PlanNode<'a, T>>,
+        function: &'a TableFunction<T>,
         outputs: Vec<ColumnId>,
     },
 }
 
-impl<T: Storage> Node for Scan<'_, '_, T> {
+impl<T> Node for Scan<'_, T> {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         match self {
             Self::SeqScan { table, .. } => {
@@ -74,12 +74,12 @@ impl<T: Storage> Node for Scan<'_, '_, T> {
     }
 }
 
-pub struct Project<'txn, 'db, T: Storage> {
-    pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub outputs: Vec<(ColumnId, planner::Expression<'txn, T, ColumnId>)>,
+pub struct Project<'a, T> {
+    pub source: Box<PlanNode<'a, T>>,
+    pub outputs: Vec<(ColumnId, planner::Expression<'a, T, ColumnId>)>,
 }
 
-impl<T: Storage> Node for Project<'_, '_, T> {
+impl<T> Node for Project<'_, T> {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         let mut s = "Project ".to_owned();
         for (i, (output, expr)) in self.outputs.iter().enumerate() {
@@ -97,12 +97,12 @@ impl<T: Storage> Node for Project<'_, '_, T> {
     }
 }
 
-pub struct Filter<'txn, 'db, T: Storage> {
-    pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub condition: planner::Expression<'txn, T, ColumnId>,
+pub struct Filter<'a, T> {
+    pub source: Box<PlanNode<'a, T>>,
+    pub condition: planner::Expression<'a, T, ColumnId>,
 }
 
-impl<T: Storage> Node for Filter<'_, '_, T> {
+impl<T> Node for Filter<'_, T> {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         write!(f, "Filter {}", self.condition);
         self.source.fmt_explain(f);
@@ -113,12 +113,12 @@ impl<T: Storage> Node for Filter<'_, '_, T> {
     }
 }
 
-pub struct Sort<'txn, 'db, T: Storage> {
-    pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub order_by: Vec<OrderBy<'txn, T, ColumnId>>,
+pub struct Sort<'a, T> {
+    pub source: Box<PlanNode<'a, T>>,
+    pub order_by: Vec<OrderBy<'a, T, ColumnId>>,
 }
 
-impl<T: Storage> Node for Sort<'_, '_, T> {
+impl<T> Node for Sort<'_, T> {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         let mut s = "Sort by ".to_owned();
         for (i, order_by) in self.order_by.iter().enumerate() {
@@ -137,13 +137,13 @@ impl<T: Storage> Node for Sort<'_, '_, T> {
     }
 }
 
-pub struct Limit<'txn, 'db, T: Storage> {
-    pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub limit: Option<planner::Expression<'txn, T, ColumnId>>,
-    pub offset: Option<planner::Expression<'txn, T, ColumnId>>,
+pub struct Limit<'a, T> {
+    pub source: Box<PlanNode<'a, T>>,
+    pub limit: Option<planner::Expression<'a, T, ColumnId>>,
+    pub offset: Option<planner::Expression<'a, T, ColumnId>>,
 }
 
-impl<T: Storage> Node for Limit<'_, '_, T> {
+impl<T> Node for Limit<'_, T> {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         f.write_str("Limit");
         self.source.fmt_explain(f);
@@ -154,13 +154,13 @@ impl<T: Storage> Node for Limit<'_, '_, T> {
     }
 }
 
-pub struct OrderBy<'a, T: Storage, C> {
+pub struct OrderBy<'a, T, C> {
     pub expr: planner::Expression<'a, T, C>,
     pub order: Order,
     pub null_order: NullOrder,
 }
 
-impl<T: Storage, C: std::fmt::Display> std::fmt::Display for OrderBy<'_, T, C> {
+impl<T, C: std::fmt::Display> std::fmt::Display for OrderBy<'_, T, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.expr)?;
         if self.order != Default::default() {
@@ -173,7 +173,7 @@ impl<T: Storage, C: std::fmt::Display> std::fmt::Display for OrderBy<'_, T, C> {
     }
 }
 
-impl<'a, T: Storage> OrderBy<'a, T, ColumnId> {
+impl<'a, T> OrderBy<'a, T, ColumnId> {
     pub fn into_executable(self, columns: &[ColumnId]) -> OrderBy<'a, T, ColumnIndex> {
         OrderBy {
             expr: self.expr.into_executable(columns),
@@ -183,12 +183,12 @@ impl<'a, T: Storage> OrderBy<'a, T, ColumnId> {
     }
 }
 
-pub struct CrossProduct<'txn, 'db, T: Storage> {
-    pub left: Box<PlanNode<'txn, 'db, T>>,
-    pub right: Box<PlanNode<'txn, 'db, T>>,
+pub struct CrossProduct<'a, T> {
+    pub left: Box<PlanNode<'a, T>>,
+    pub right: Box<PlanNode<'a, T>>,
 }
 
-impl<T: Storage> Node for CrossProduct<'_, '_, T> {
+impl<T> Node for CrossProduct<'_, T> {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         f.write_str("CrossProduct");
         self.left.fmt_explain(f);
@@ -201,13 +201,13 @@ impl<T: Storage> Node for CrossProduct<'_, '_, T> {
     }
 }
 
-pub struct Union<'txn, 'db, T: Storage> {
-    pub left: Box<PlanNode<'txn, 'db, T>>,
-    pub right: Box<PlanNode<'txn, 'db, T>>,
+pub struct Union<'a, T> {
+    pub left: Box<PlanNode<'a, T>>,
+    pub right: Box<PlanNode<'a, T>>,
     outputs: Vec<ColumnId>,
 }
 
-impl<T: Storage> Node for Union<'_, '_, T> {
+impl<T> Node for Union<'_, T> {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         f.write_str("Union");
         self.left.fmt_explain(f);
@@ -219,10 +219,10 @@ impl<T: Storage> Node for Union<'_, '_, T> {
     }
 }
 
-impl<'txn, 'db, T: Storage> PlanNode<'txn, 'db, T> {
+impl<'a, T> PlanNode<'a, T> {
     fn new_values(
         column_map: &mut ColumnMap,
-        rows: Vec<Vec<planner::Expression<'txn, T, ColumnId>>>,
+        rows: Vec<Vec<planner::Expression<'a, T, ColumnId>>>,
         column_types: Vec<NullableType>,
     ) -> Self {
         if rows.is_empty() {
@@ -240,22 +240,7 @@ impl<'txn, 'db, T: Storage> PlanNode<'txn, 'db, T> {
         Self::Values(Values::one_empty_row())
     }
 
-    fn new_seq_scan(column_map: &mut ColumnMap, table: Table<'txn, 'db, T>) -> Self {
-        let outputs = table
-            .columns()
-            .iter()
-            .map(|column| {
-                column_map.insert(Column {
-                    table_name: Some(table.name().to_owned()),
-                    column_name: column.name.clone(),
-                    ty: column.ty.into(),
-                })
-            })
-            .collect();
-        Self::Scan(Scan::SeqScan { table, outputs })
-    }
-
-    fn function_scan(self, column_map: &mut ColumnMap, function: &'txn TableFunction<T>) -> Self {
+    fn function_scan(self, column_map: &mut ColumnMap, function: &'a TableFunction<T>) -> Self {
         let outputs = function
             .result_columns
             .iter()
@@ -271,7 +256,7 @@ impl<'txn, 'db, T: Storage> PlanNode<'txn, 'db, T> {
     pub(super) fn project(
         self,
         column_map: &mut ColumnMap,
-        exprs: Vec<TypedExpression<'txn, T>>,
+        exprs: Vec<TypedExpression<'a, T>>,
     ) -> Self {
         let outputs = exprs
             .into_iter()
@@ -290,14 +275,14 @@ impl<'txn, 'db, T: Storage> PlanNode<'txn, 'db, T> {
         })
     }
 
-    fn filter(self, condition: TypedExpression<'txn, T>) -> PlannerResult<Self> {
+    fn filter(self, condition: TypedExpression<'a, T>) -> PlannerResult<Self> {
         Ok(Self::Filter(Filter {
             source: Box::new(self),
             condition: condition.expect_type(Type::Boolean)?,
         }))
     }
 
-    fn sort(self, order_by: Vec<OrderBy<'txn, T, ColumnId>>) -> Self {
+    fn sort(self, order_by: Vec<OrderBy<'a, T, ColumnId>>) -> Self {
         Self::Sort(Sort {
             source: Box::new(self),
             order_by,
@@ -306,8 +291,8 @@ impl<'txn, 'db, T: Storage> PlanNode<'txn, 'db, T> {
 
     pub(super) fn limit(
         self,
-        limit: Option<TypedExpression<'txn, T>>,
-        offset: Option<TypedExpression<'txn, T>>,
+        limit: Option<TypedExpression<'a, T>>,
+        offset: Option<TypedExpression<'a, T>>,
     ) -> PlannerResult<Self> {
         if limit.is_none() && offset.is_none() {
             return Ok(self);
@@ -362,8 +347,25 @@ impl<'txn, 'db, T: Storage> PlanNode<'txn, 'db, T> {
     }
 }
 
-impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
-    pub fn plan_query(&self, query: parser::Query) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+impl<'a, T: Transaction> PlanNode<'a, T> {
+    fn new_seq_scan(column_map: &mut ColumnMap, table: Table<'a, T>) -> Self {
+        let outputs = table
+            .columns()
+            .iter()
+            .map(|column| {
+                column_map.insert(Column {
+                    table_name: Some(table.name().to_owned()),
+                    column_name: column.name.clone(),
+                    ty: column.ty.into(),
+                })
+            })
+            .collect();
+        Self::Scan(Scan::SeqScan { table, outputs })
+    }
+}
+
+impl<'a, T: Transaction> Planner<'a, T> {
+    pub fn plan_query(&self, query: parser::Query) -> PlannerResult<PlanNode<'a, T>> {
         match query.body {
             parser::QueryBody::Select(select) => self.plan_select(select, query.modifier),
             parser::QueryBody::Union { all, left, right } => {
@@ -376,7 +378,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         &self,
         select: parser::Select,
         modifier: parser::QueryModifier,
-    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'a, T>> {
         let mut plan = self.plan_table_ref(&ExpressionBinder::new(self), select.from)?;
 
         // Any occurrences of aggregate functions in SELECT, HAVING and ORDER BY
@@ -495,7 +497,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         left: parser::Query,
         right: parser::Query,
         modifier: parser::QueryModifier,
-    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'a, T>> {
         let left = self.plan_query(left)?;
         let right = self.plan_query(right)?;
         let mut plan = left.union(&mut self.column_map(), right)?;
@@ -515,21 +517,21 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
     #[allow(clippy::unused_self)]
     pub fn plan_filter(
         &self,
-        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
-        source: PlanNode<'txn, 'db, T>,
+        expr_binder: &ExpressionBinder<'_, 'a, T>,
+        source: PlanNode<'a, T>,
         expr: parser::Expression,
-    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'a, T>> {
         let (plan, condition) = expr_binder.bind(source, expr)?;
         plan.filter(condition)
     }
 
     fn plan_projections(
         &self,
-        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
-        source: PlanNode<'txn, 'db, T>,
+        expr_binder: &ExpressionBinder<'_, 'a, T>,
+        source: PlanNode<'a, T>,
         projection_exprs: Vec<parser::Expression>,
         distinct: Option<parser::Distinct>,
-    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'a, T>> {
         let num_projected_columns = projection_exprs.len();
 
         let mut plan = source;
@@ -589,10 +591,10 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
     #[allow(clippy::unused_self)]
     fn plan_order_by(
         &self,
-        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
-        source: PlanNode<'txn, 'db, T>,
+        expr_binder: &ExpressionBinder<'_, 'a, T>,
+        source: PlanNode<'a, T>,
         order_by: Vec<parser::OrderBy>,
-    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'a, T>> {
         if order_by.is_empty() {
             return Ok(source);
         }
@@ -613,11 +615,11 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
     #[allow(clippy::unused_self)]
     fn plan_limit(
         &self,
-        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
-        source: PlanNode<'txn, 'db, T>,
+        expr_binder: &ExpressionBinder<'_, 'a, T>,
+        source: PlanNode<'a, T>,
         limit: Option<parser::Expression>,
         offset: Option<parser::Expression>,
-    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'a, T>> {
         let limit = limit
             .map(|expr| expr_binder.bind_without_source(expr))
             .transpose()?;
@@ -629,9 +631,9 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
 
     fn plan_table_ref(
         &self,
-        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
+        expr_binder: &ExpressionBinder<'_, 'a, T>,
         table_ref: parser::TableRef,
-    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'a, T>> {
         match table_ref {
             parser::TableRef::BaseTable { name } => {
                 Ok(self.plan_base_table(self.ctx.catalog().table(name)?))
@@ -645,15 +647,15 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         }
     }
 
-    pub fn plan_base_table(&self, table: Table<'txn, 'db, T>) -> PlanNode<'txn, 'db, T> {
+    pub fn plan_base_table(&self, table: Table<'a, T>) -> PlanNode<'a, T> {
         PlanNode::new_seq_scan(&mut self.column_map(), table)
     }
 
     fn plan_join(
         &self,
-        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
+        expr_binder: &ExpressionBinder<'_, 'a, T>,
         join: parser::Join,
-    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'a, T>> {
         let left = self.plan_table_ref(expr_binder, join.left)?;
         let right = self.plan_table_ref(expr_binder, join.right)?;
         let plan = left.cross_product(right);
@@ -666,10 +668,10 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
 
     fn plan_table_function(
         &self,
-        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
+        expr_binder: &ExpressionBinder<'_, 'a, T>,
         name: String,
         args: Vec<parser::Expression>,
-    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'a, T>> {
         let function = self.ctx.catalog().table_function(&name)?;
         let exprs = args
             .into_iter()
@@ -683,9 +685,9 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
 
     fn plan_values(
         &self,
-        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
+        expr_binder: &ExpressionBinder<'_, 'a, T>,
         values: parser::Values,
-    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'a, T>> {
         if values.rows.is_empty() {
             return Ok(PlanNode::new_empty_values());
         }

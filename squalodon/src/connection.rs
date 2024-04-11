@@ -11,15 +11,15 @@ use crate::{
 use fastrand::Rng;
 use std::{cell::RefCell, collections::HashMap};
 
-pub struct Connection<'db, T: Storage> {
-    db: &'db Database<T>,
-    txn_status: RefCell<TransactionState<'db, T>>,
+pub struct Connection<'a, T: Storage> {
+    db: &'a Database<'a, T>,
+    txn_status: RefCell<TransactionState<T::Transaction<'a>>>,
     prepared_statements: RefCell<HashMap<String, Statement>>,
     rng: RefCell<Rng>,
 }
 
-impl<'db, T: Storage> Connection<'db, T> {
-    pub(crate) fn new(db: &'db Database<T>) -> Self {
+impl<'a, T: Storage> Connection<'a, T> {
+    pub(crate) fn new(db: &'a Database<'a, T>) -> Self {
         Self {
             db,
             txn_status: TransactionState::Inactive.into(),
@@ -42,7 +42,7 @@ impl<'db, T: Storage> Connection<'db, T> {
     }
 
     /// Prepare a single SQL statement.
-    pub fn prepare(&self, sql: &str) -> Result<PreparedStatement<'_, 'db, T>> {
+    pub fn prepare(&self, sql: &str) -> Result<PreparedStatement<'_, 'a, T>> {
         let mut parser = Parser::new(sql);
         let statement = parser.next().transpose()?.ok_or(Error::NoStatement)?;
         if parser.next().is_some() {
@@ -169,10 +169,7 @@ impl<'db, T: Storage> Connection<'db, T> {
     }
 }
 
-fn execute_plan<'db, T: Storage>(
-    ctx: &ConnectionContext<'_, 'db, T>,
-    plan: Plan<'_, 'db, T>,
-) -> Result<Rows> {
+fn execute_plan<T: Transaction>(ctx: &ConnectionContext<'_, T>, plan: Plan<'_, T>) -> Result<Rows> {
     let Plan { node, schema } = plan;
     let columns: Vec<_> = schema
         .into_iter()
@@ -202,9 +199,9 @@ fn execute_plan<'db, T: Storage>(
     })
 }
 
-enum TransactionState<'a, T: Storage + 'a> {
+enum TransactionState<T> {
     /// We are in an explicit transaction started with BEGIN.
-    Active(T::Transaction<'a>),
+    Active(T),
 
     /// The explicit transaction has been aborted and waiting for
     /// COMMIT or ROLLBACK.
@@ -264,17 +261,17 @@ impl<T: Storage> PreparedStatement<'_, '_, T> {
     }
 }
 
-pub struct ConnectionContext<'txn, 'db, T: Storage> {
-    catalog: &'txn CatalogRef<'txn, 'db, T>,
-    rng: &'txn RefCell<Rng>,
+pub struct ConnectionContext<'a, T> {
+    catalog: &'a CatalogRef<'a, T>,
+    rng: &'a RefCell<Rng>,
 }
 
-impl<'txn, 'db: 'txn, T: Storage> ConnectionContext<'txn, 'db, T> {
-    pub fn new(catalog: &'txn CatalogRef<'txn, 'db, T>, rng: &'txn RefCell<Rng>) -> Self {
+impl<'a, T> ConnectionContext<'a, T> {
+    pub fn new(catalog: &'a CatalogRef<'a, T>, rng: &'a RefCell<Rng>) -> Self {
         Self { catalog, rng }
     }
 
-    pub fn catalog(&self) -> &CatalogRef<'txn, 'db, T> {
+    pub fn catalog(&self) -> &CatalogRef<'a, T> {
         self.catalog
     }
 

@@ -3,15 +3,19 @@ use super::{
     Column, ColumnId, ColumnMap, ExplainFormatter, Node, PlanNode, Planner, PlannerError,
     PlannerResult,
 };
-use crate::{parser, planner, storage::Table, Storage, Type};
+use crate::{
+    parser, planner,
+    storage::{Table, Transaction},
+    Type,
+};
 
-pub struct Insert<'txn, 'db, T: Storage> {
-    pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub table: Table<'txn, 'db, T>,
+pub struct Insert<'a, T> {
+    pub source: Box<PlanNode<'a, T>>,
+    pub table: Table<'a, T>,
     output: ColumnId,
 }
 
-impl<T: Storage> Node for Insert<'_, '_, T> {
+impl<T> Node for Insert<'_, T> {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         write!(f, "Insert on {}", self.table.name());
         self.source.fmt_explain(f);
@@ -22,13 +26,13 @@ impl<T: Storage> Node for Insert<'_, '_, T> {
     }
 }
 
-pub struct Update<'txn, 'db, T: Storage> {
-    pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub table: Table<'txn, 'db, T>,
+pub struct Update<'a, T> {
+    pub source: Box<PlanNode<'a, T>>,
+    pub table: Table<'a, T>,
     output: ColumnId,
 }
 
-impl<T: Storage> Node for Update<'_, '_, T> {
+impl<T> Node for Update<'_, T> {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         write!(f, "Update on {}", self.table.name());
         self.source.fmt_explain(f);
@@ -39,13 +43,13 @@ impl<T: Storage> Node for Update<'_, '_, T> {
     }
 }
 
-pub struct Delete<'txn, 'db, T: Storage> {
-    pub source: Box<PlanNode<'txn, 'db, T>>,
-    pub table: Table<'txn, 'db, T>,
+pub struct Delete<'a, T> {
+    pub source: Box<PlanNode<'a, T>>,
+    pub table: Table<'a, T>,
     output: ColumnId,
 }
 
-impl<T: Storage> Node for Delete<'_, '_, T> {
+impl<T> Node for Delete<'_, T> {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         write!(f, "Delete on {}", self.table.name());
         self.source.fmt_explain(f);
@@ -56,8 +60,8 @@ impl<T: Storage> Node for Delete<'_, '_, T> {
     }
 }
 
-impl<'txn, 'db, T: Storage> PlanNode<'txn, 'db, T> {
-    fn insert(self, column_map: &mut ColumnMap, table: Table<'txn, 'db, T>) -> Self {
+impl<'a, T> PlanNode<'a, T> {
+    fn insert(self, column_map: &mut ColumnMap, table: Table<'a, T>) -> Self {
         Self::Insert(Insert {
             source: Box::new(self),
             table,
@@ -65,7 +69,7 @@ impl<'txn, 'db, T: Storage> PlanNode<'txn, 'db, T> {
         })
     }
 
-    fn update(self, column_map: &mut ColumnMap, table: Table<'txn, 'db, T>) -> Self {
+    fn update(self, column_map: &mut ColumnMap, table: Table<'a, T>) -> Self {
         Self::Update(Update {
             source: Box::new(self),
             table,
@@ -73,7 +77,7 @@ impl<'txn, 'db, T: Storage> PlanNode<'txn, 'db, T> {
         })
     }
 
-    fn delete(self, column_map: &mut ColumnMap, table: Table<'txn, 'db, T>) -> Self {
+    fn delete(self, column_map: &mut ColumnMap, table: Table<'a, T>) -> Self {
         Self::Delete(Delete {
             source: Box::new(self),
             table,
@@ -82,8 +86,8 @@ impl<'txn, 'db, T: Storage> PlanNode<'txn, 'db, T> {
     }
 }
 
-impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
-    pub fn plan_insert(&self, insert: parser::Insert) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+impl<'a, T: Transaction> Planner<'a, T> {
+    pub fn plan_insert(&self, insert: parser::Insert) -> PlannerResult<PlanNode<'a, T>> {
         let table = self.ctx.catalog().table(insert.table_name)?;
         let plan = self.plan_query(insert.query)?;
         let outputs = plan.outputs();
@@ -142,7 +146,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         Ok(plan.insert(&mut column_map, table))
     }
 
-    pub fn plan_update(&self, update: parser::Update) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    pub fn plan_update(&self, update: parser::Update) -> PlannerResult<PlanNode<'a, T>> {
         let table = self.ctx.catalog().table(update.table_name)?;
         let expr_binder = ExpressionBinder::new(self);
 
@@ -204,7 +208,7 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         Ok(plan.update(&mut column_map, table))
     }
 
-    pub fn plan_delete(&self, delete: parser::Delete) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    pub fn plan_delete(&self, delete: parser::Delete) -> PlannerResult<PlanNode<'a, T>> {
         let table = self.ctx.catalog().table(delete.table_name)?;
         let mut plan = self.plan_base_table(table.clone());
         if let Some(where_clause) = delete.where_clause {

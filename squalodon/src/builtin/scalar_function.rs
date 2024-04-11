@@ -1,9 +1,8 @@
 use crate::{
-    catalog::ScalarFunction, storage::Storage, types::NullableType, ExecutorError, PlannerError,
-    Type, Value,
+    catalog::ScalarFunction, types::NullableType, ExecutorError, PlannerError, Type, Value,
 };
 
-pub fn load<T: Storage>() -> impl Iterator<Item = ScalarFunction<T>> {
+pub fn load<T>() -> impl Iterator<Item = ScalarFunction<T>> {
     [
         ScalarFunction {
             name: "length",

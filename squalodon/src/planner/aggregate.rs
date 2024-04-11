@@ -2,21 +2,23 @@ use super::{
     expression::{ExpressionBinder, TypedExpression},
     Column, ColumnId, ExplainFormatter, Node, PlanNode, Planner, PlannerError, PlannerResult,
 };
-use crate::{catalog::AggregateFunction, parser, planner, CatalogError, Storage, Type};
+use crate::{
+    catalog::AggregateFunction, parser, planner, storage::Transaction, CatalogError, Type,
+};
 use std::{collections::HashMap, fmt::Write};
 
-pub enum Aggregate<'txn, 'db, T: Storage> {
+pub enum Aggregate<'a, T> {
     Ungrouped {
-        source: Box<PlanNode<'txn, 'db, T>>,
-        ops: Vec<ApplyAggregateOp<'txn>>,
+        source: Box<PlanNode<'a, T>>,
+        ops: Vec<ApplyAggregateOp<'a>>,
     },
     Hash {
-        source: Box<PlanNode<'txn, 'db, T>>,
-        ops: Vec<AggregateOp<'txn>>,
+        source: Box<PlanNode<'a, T>>,
+        ops: Vec<AggregateOp<'a>>,
     },
 }
 
-impl<T: Storage> Node for Aggregate<'_, '_, T> {
+impl<T> Node for Aggregate<'_, T> {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         match self {
             Self::Ungrouped { source, ops } => {
@@ -90,15 +92,15 @@ pub enum AggregateOp<'a> {
     Passthrough { target: ColumnId },
 }
 
-impl<'txn, T: Storage> PlanNode<'txn, '_, T> {
-    pub(super) fn ungrouped_aggregate(self, ops: Vec<ApplyAggregateOp<'txn>>) -> Self {
+impl<'a, T> PlanNode<'a, T> {
+    pub(super) fn ungrouped_aggregate(self, ops: Vec<ApplyAggregateOp<'a>>) -> Self {
         PlanNode::Aggregate(Aggregate::Ungrouped {
             source: Box::new(self),
             ops,
         })
     }
 
-    pub(super) fn hash_aggregate(self, ops: Vec<AggregateOp<'txn>>) -> Self {
+    pub(super) fn hash_aggregate(self, ops: Vec<AggregateOp<'a>>) -> Self {
         PlanNode::Aggregate(Aggregate::Hash {
             source: Box::new(self),
             ops,
@@ -106,40 +108,42 @@ impl<'txn, T: Storage> PlanNode<'txn, '_, T> {
     }
 }
 
-pub struct AggregateCollection<'a, 'txn, 'db, T: Storage> {
-    planner: &'a Planner<'txn, 'db, T>,
-    aggregates: HashMap<parser::FunctionCall, BoundAggregate<'txn, T>>,
+pub struct AggregateCollection<'a, 'b, T> {
+    planner: &'a Planner<'b, T>,
+    aggregates: HashMap<parser::FunctionCall, BoundAggregate<'b, T>>,
 }
 
-impl<'a, 'txn, 'db, T: Storage> AggregateCollection<'a, 'txn, 'db, T> {
-    pub fn new(planner: &'a Planner<'txn, 'db, T>) -> Self {
+impl<'a, 'b, T> AggregateCollection<'a, 'b, T> {
+    pub fn new(planner: &'a Planner<'b, T>) -> Self {
         Self {
             planner,
             aggregates: HashMap::new(),
         }
     }
 
-    pub fn finish(self) -> AggregatePlanner<'a, 'txn, 'db, T> {
+    pub fn finish(self) -> AggregatePlanner<'a, 'b, T> {
         AggregatePlanner {
             collected: self,
             group_by: HashMap::new(),
         }
     }
+}
 
+impl<'a, 'b, T: Transaction> AggregateCollection<'a, 'b, T> {
     pub fn gather(
         &mut self,
-        source: PlanNode<'txn, 'db, T>,
+        source: PlanNode<'b, T>,
         expr: &parser::Expression,
-    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'b, T>> {
         self.gather_inner(source, expr, false)
     }
 
     fn gather_inner(
         &mut self,
-        source: PlanNode<'txn, 'db, T>,
+        source: PlanNode<'b, T>,
         expr: &parser::Expression,
         in_aggregate_args: bool,
-    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'b, T>> {
         match expr {
             parser::Expression::Constant(_)
             | parser::Expression::ColumnRef(_)
@@ -249,22 +253,38 @@ impl<'a, 'txn, 'db, T: Storage> AggregateCollection<'a, 'txn, 'db, T> {
     }
 }
 
-pub struct AggregatePlanner<'a, 'txn, 'db, T: Storage> {
-    collected: AggregateCollection<'a, 'txn, 'db, T>,
+pub struct AggregatePlanner<'a, 'b, T> {
+    collected: AggregateCollection<'a, 'b, T>,
     group_by: HashMap<parser::Expression, ColumnId>,
 }
 
-impl<'txn, 'db, T: Storage> AggregatePlanner<'_, 'txn, 'db, T> {
+impl<'b, T> AggregatePlanner<'_, 'b, T> {
     pub fn has_aggregates(&self) -> bool {
         !self.collected.aggregates.is_empty()
     }
 
+    pub fn resolve_aggregate_function(
+        &self,
+        function_call: &parser::FunctionCall,
+    ) -> Option<ColumnId> {
+        self.collected
+            .aggregates
+            .get(function_call)
+            .map(|aggregate| aggregate.output)
+    }
+
+    pub fn resolve_group_by(&self, expr: &parser::Expression) -> Option<ColumnId> {
+        self.group_by.get(expr).copied()
+    }
+}
+
+impl<'a, T: Transaction> AggregatePlanner<'_, 'a, T> {
     pub fn plan(
         &mut self,
-        expr_binder: &ExpressionBinder<'_, 'txn, 'db, T>,
-        source: PlanNode<'txn, 'db, T>,
+        expr_binder: &ExpressionBinder<'_, 'a, T>,
+        source: PlanNode<'a, T>,
         group_by: Vec<parser::Expression>,
-    ) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    ) -> PlannerResult<PlanNode<'a, T>> {
         let num_aggregates = self.collected.aggregates.len();
         let mut exprs = Vec::with_capacity(num_aggregates + group_by.len());
 
@@ -319,23 +339,8 @@ impl<'txn, 'db, T: Storage> AggregatePlanner<'_, 'txn, 'db, T> {
             Ok(plan.ungrouped_aggregate(ops.collect()))
         }
     }
-
-    pub fn resolve_aggregate_function(
-        &self,
-        function_call: &parser::FunctionCall,
-    ) -> Option<ColumnId> {
-        self.collected
-            .aggregates
-            .get(function_call)
-            .map(|aggregate| aggregate.output)
-    }
-
-    pub fn resolve_group_by(&self, expr: &parser::Expression) -> Option<ColumnId> {
-        self.group_by.get(expr).copied()
-    }
 }
-
-struct BoundAggregate<'a, T: Storage> {
+struct BoundAggregate<'a, T> {
     function: &'a AggregateFunction,
     arg: planner::Expression<'a, T, ColumnId>,
     output: ColumnId,

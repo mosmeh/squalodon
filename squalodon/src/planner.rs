@@ -13,8 +13,9 @@ use crate::{
     connection::ConnectionContext,
     parser,
     rows::ColumnIndex,
+    storage::Transaction,
     types::{NullableType, Params, Type},
-    CatalogError, Storage, StorageError, Value,
+    CatalogError, StorageError, Value,
 };
 use ddl::{CreateIndex, CreateTable, DropObject};
 use expression::{ExpressionBinder, TypedExpression};
@@ -71,20 +72,20 @@ pub enum PlannerError {
 
 pub type PlannerResult<T> = std::result::Result<T, PlannerError>;
 
-pub fn plan_expr<'txn, T: Storage>(
-    ctx: &'txn ConnectionContext<'txn, '_, T>,
+pub fn plan_expr<'a, T: Transaction>(
+    ctx: &'a ConnectionContext<'a, T>,
     expr: parser::Expression,
-) -> PlannerResult<Expression<'txn, T, ColumnId>> {
+) -> PlannerResult<Expression<'a, T, ColumnId>> {
     let planner = Planner::new(ctx);
     let TypedExpression { expr, .. } = ExpressionBinder::new(&planner).bind_without_source(expr)?;
     Ok(expr)
 }
 
-pub fn plan<'txn, 'db, T: Storage>(
-    ctx: &'txn ConnectionContext<'txn, 'db, T>,
+pub fn plan<'a, T: Transaction>(
+    ctx: &'a ConnectionContext<'a, T>,
     statement: parser::Statement,
     params: Vec<Value>,
-) -> PlannerResult<Plan<'txn, 'db, T>> {
+) -> PlannerResult<Plan<'a, T>> {
     let planner = Planner::new(ctx).with_params(params);
     let plan = planner.plan(statement)?;
     let column_map = planner.column_map();
@@ -96,8 +97,8 @@ pub fn plan<'txn, 'db, T: Storage>(
     Ok(Plan { node: plan, schema })
 }
 
-pub struct Plan<'txn, 'db, T: Storage> {
-    pub node: PlanNode<'txn, 'db, T>,
+pub struct Plan<'a, T> {
+    pub node: PlanNode<'a, T>,
     pub schema: Vec<Column>,
 }
 
@@ -144,27 +145,27 @@ impl ExplainFormatter {
     }
 }
 
-pub enum PlanNode<'txn, 'db, T: Storage> {
-    Explain(Explain<'txn, 'db, T>),
+pub enum PlanNode<'a, T> {
+    Explain(Explain<'a, T>),
     CreateTable(CreateTable),
     CreateIndex(CreateIndex),
     Drop(DropObject),
-    Values(Values<'txn, T>),
-    Scan(Scan<'txn, 'db, T>),
-    Project(Project<'txn, 'db, T>),
-    Filter(Filter<'txn, 'db, T>),
-    Sort(Sort<'txn, 'db, T>),
-    Limit(Limit<'txn, 'db, T>),
-    CrossProduct(CrossProduct<'txn, 'db, T>),
-    Aggregate(Aggregate<'txn, 'db, T>),
-    Union(Union<'txn, 'db, T>),
-    Spool(Spool<'txn, 'db, T>),
-    Insert(Insert<'txn, 'db, T>),
-    Update(Update<'txn, 'db, T>),
-    Delete(Delete<'txn, 'db, T>),
+    Values(Values<'a, T>),
+    Scan(Scan<'a, T>),
+    Project(Project<'a, T>),
+    Filter(Filter<'a, T>),
+    Sort(Sort<'a, T>),
+    Limit(Limit<'a, T>),
+    CrossProduct(CrossProduct<'a, T>),
+    Aggregate(Aggregate<'a, T>),
+    Union(Union<'a, T>),
+    Spool(Spool<'a, T>),
+    Insert(Insert<'a, T>),
+    Update(Update<'a, T>),
+    Delete(Delete<'a, T>),
 }
 
-impl<'txn, 'db, T: Storage> PlanNode<'txn, 'db, T> {
+impl<'a, T> PlanNode<'a, T> {
     pub fn outputs(&self) -> Vec<ColumnId> {
         let mut columns = Vec::new();
         self.append_outputs(&mut columns);
@@ -185,7 +186,7 @@ impl<'txn, 'db, T: Storage> PlanNode<'txn, 'db, T> {
     }
 }
 
-impl<T: Storage> Node for PlanNode<'_, '_, T> {
+impl<T> Node for PlanNode<'_, T> {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         f.depth += 1;
         match self {
@@ -233,12 +234,12 @@ impl<T: Storage> Node for PlanNode<'_, '_, T> {
     }
 }
 
-pub struct Explain<'txn, 'db, T: Storage> {
-    pub source: Box<PlanNode<'txn, 'db, T>>,
+pub struct Explain<'a, T> {
+    pub source: Box<PlanNode<'a, T>>,
     output: ColumnId,
 }
 
-impl<T: Storage> Node for Explain<'_, '_, T> {
+impl<T> Node for Explain<'_, T> {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         f.write_str("Explain");
         self.source.fmt_explain(f);
@@ -249,7 +250,7 @@ impl<T: Storage> Node for Explain<'_, '_, T> {
     }
 }
 
-impl<T: Storage> Explain<'_, '_, T> {
+impl<T> Explain<'_, T> {
     pub fn dump(&self) -> Vec<String> {
         let mut f = ExplainFormatter::default();
         self.source.fmt_explain(&mut f);
@@ -257,11 +258,11 @@ impl<T: Storage> Explain<'_, '_, T> {
     }
 }
 
-pub struct Spool<'txn, 'db, T: Storage> {
-    pub source: Box<PlanNode<'txn, 'db, T>>,
+pub struct Spool<'a, T> {
+    pub source: Box<PlanNode<'a, T>>,
 }
 
-impl<T: Storage> Node for Spool<'_, '_, T> {
+impl<T> Node for Spool<'_, T> {
     fn fmt_explain(&self, f: &mut ExplainFormatter) {
         f.write_str("Spool");
         self.source.fmt_explain(f);
@@ -306,14 +307,14 @@ impl std::ops::Index<ColumnId> for ColumnMap<'_> {
     }
 }
 
-struct Planner<'txn, 'db, T: Storage> {
-    ctx: &'txn ConnectionContext<'txn, 'db, T>,
+struct Planner<'a, T> {
+    ctx: &'a ConnectionContext<'a, T>,
     params: Vec<Value>,
     columns: Rc<RefCell<Vec<Column>>>,
 }
 
-impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
-    fn new(ctx: &'txn ConnectionContext<'txn, 'db, T>) -> Self {
+impl<'a, T> Planner<'a, T> {
+    fn new(ctx: &'a ConnectionContext<'a, T>) -> Self {
         Self {
             ctx,
             params: Vec::new(),
@@ -332,8 +333,10 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
     fn column_map(&self) -> ColumnMap<'_> {
         ColumnMap(self.columns.borrow_mut())
     }
+}
 
-    fn plan(&self, statement: parser::Statement) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+impl<'a, T: Transaction> Planner<'a, T> {
+    fn plan(&self, statement: parser::Statement) -> PlannerResult<PlanNode<'a, T>> {
         match statement {
             parser::Statement::Explain(statement) => self.plan_explain(*statement),
             parser::Statement::Prepare(_)
@@ -362,14 +365,14 @@ impl<'txn, 'db, T: Storage> Planner<'txn, 'db, T> {
         }
     }
 
-    fn rewrite_to<P: Params>(&self, sql: &str, params: P) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    fn rewrite_to<P: Params>(&self, sql: &str, params: P) -> PlannerResult<PlanNode<'a, T>> {
         let mut parser = parser::Parser::new(sql);
         let statement = parser.next().unwrap().unwrap();
         assert!(parser.next().is_none());
         self.with_params(params.into_values()).plan(statement)
     }
 
-    fn plan_explain(&self, statement: parser::Statement) -> PlannerResult<PlanNode<'txn, 'db, T>> {
+    fn plan_explain(&self, statement: parser::Statement) -> PlannerResult<PlanNode<'a, T>> {
         Ok(self.plan(statement)?.explain(&mut self.column_map()))
     }
 }

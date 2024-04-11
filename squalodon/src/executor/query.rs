@@ -4,19 +4,19 @@ use crate::{
     memcomparable::MemcomparableSerde,
     planner::{self, ColumnId, Expression, OrderBy},
     rows::ColumnIndex,
-    storage::{StorageResult, Table},
-    ExecutorError, Row, Storage, Value,
+    storage::{StorageResult, Table, Transaction},
+    ExecutorError, Row, Value,
 };
 use std::collections::{HashMap, HashSet};
 
-pub struct Values<'txn> {
-    rows: Box<dyn Iterator<Item = ExecutorResult<Row>> + 'txn>,
+pub struct Values<'a> {
+    rows: Box<dyn Iterator<Item = ExecutorResult<Row>> + 'a>,
 }
 
-impl<'txn> Values<'txn> {
-    pub fn new<T: Storage>(
-        ctx: &'txn ConnectionContext<'txn, '_, T>,
-        rows: Vec<Vec<Expression<'txn, T, ColumnIndex>>>,
+impl<'a> Values<'a> {
+    pub fn new<T>(
+        ctx: &'a ConnectionContext<'a, T>,
+        rows: Vec<Vec<Expression<'a, T, ColumnIndex>>>,
     ) -> Self {
         let rows = rows.into_iter().map(|row| {
             let columns = row
@@ -48,7 +48,7 @@ pub struct SeqScan<'a> {
 }
 
 impl<'a> SeqScan<'a> {
-    pub fn new<T: Storage>(table: Table<'a, '_, T>) -> Self {
+    pub fn new<T: Transaction>(table: Table<'a, T>) -> Self {
         Self { iter: table.scan() }
     }
 }
@@ -59,17 +59,17 @@ impl Node for SeqScan<'_> {
     }
 }
 
-pub struct FunctionScan<'txn, 'db, T: Storage> {
-    ctx: &'txn ConnectionContext<'txn, 'db, T>,
-    source: Box<ExecutorNode<'txn, 'db, T>>,
+pub struct FunctionScan<'a, T> {
+    ctx: &'a ConnectionContext<'a, T>,
+    source: Box<ExecutorNode<'a, T>>,
     fn_ptr: TableFnPtr<T>,
-    rows: Box<dyn Iterator<Item = Row> + 'txn>,
+    rows: Box<dyn Iterator<Item = Row> + 'a>,
 }
 
-impl<'txn, 'db, T: Storage> FunctionScan<'txn, 'db, T> {
+impl<'a, T> FunctionScan<'a, T> {
     pub fn new(
-        ctx: &'txn ConnectionContext<'txn, 'db, T>,
-        source: ExecutorNode<'txn, 'db, T>,
+        ctx: &'a ConnectionContext<'a, T>,
+        source: ExecutorNode<'a, T>,
         fn_ptr: TableFnPtr<T>,
     ) -> Self {
         Self {
@@ -81,7 +81,7 @@ impl<'txn, 'db, T: Storage> FunctionScan<'txn, 'db, T> {
     }
 }
 
-impl<T: Storage> Node for FunctionScan<'_, '_, T> {
+impl<T> Node for FunctionScan<'_, T> {
     fn next_row(&mut self) -> Output {
         loop {
             if let Some(row) = self.rows.next() {
@@ -93,13 +93,13 @@ impl<T: Storage> Node for FunctionScan<'_, '_, T> {
     }
 }
 
-pub struct Project<'txn, 'db, T: Storage> {
-    pub ctx: &'txn ConnectionContext<'txn, 'db, T>,
-    pub source: Box<ExecutorNode<'txn, 'db, T>>,
-    pub exprs: Vec<Expression<'txn, T, ColumnIndex>>,
+pub struct Project<'a, T> {
+    pub ctx: &'a ConnectionContext<'a, T>,
+    pub source: Box<ExecutorNode<'a, T>>,
+    pub exprs: Vec<Expression<'a, T, ColumnIndex>>,
 }
 
-impl<T: Storage> Node for Project<'_, '_, T> {
+impl<T> Node for Project<'_, T> {
     fn next_row(&mut self) -> Output {
         let row = self.source.next_row()?;
         let columns = self
@@ -111,13 +111,13 @@ impl<T: Storage> Node for Project<'_, '_, T> {
     }
 }
 
-pub struct Filter<'txn, 'db, T: Storage> {
-    pub ctx: &'txn ConnectionContext<'txn, 'db, T>,
-    pub source: Box<ExecutorNode<'txn, 'db, T>>,
-    pub condition: Expression<'txn, T, ColumnIndex>,
+pub struct Filter<'a, T> {
+    pub ctx: &'a ConnectionContext<'a, T>,
+    pub source: Box<ExecutorNode<'a, T>>,
+    pub condition: Expression<'a, T, ColumnIndex>,
 }
 
-impl<T: Storage> Node for Filter<'_, '_, T> {
+impl<T> Node for Filter<'_, T> {
     fn next_row(&mut self) -> Output {
         loop {
             let row = self.source.next_row()?;
@@ -135,9 +135,9 @@ pub struct Sort {
 }
 
 impl Sort {
-    pub fn new<T: Storage>(
-        ctx: &ConnectionContext<'_, '_, T>,
-        source: ExecutorNode<'_, '_, T>,
+    pub fn new<T>(
+        ctx: &ConnectionContext<'_, T>,
+        source: ExecutorNode<'_, T>,
         order_by: Vec<OrderBy<T, ColumnIndex>>,
     ) -> ExecutorResult<Self> {
         let mut rows = Vec::new();
@@ -166,22 +166,22 @@ impl Node for Sort {
     }
 }
 
-pub struct Limit<'txn, 'db, T: Storage> {
-    source: Box<ExecutorNode<'txn, 'db, T>>,
+pub struct Limit<'a, T> {
+    source: Box<ExecutorNode<'a, T>>,
     limit: Option<usize>,
     offset: usize,
     cursor: usize,
 }
 
-impl<'txn, 'db, T: Storage> Limit<'txn, 'db, T> {
+impl<'a, T> Limit<'a, T> {
     pub fn new(
-        ctx: &'txn ConnectionContext<'txn, 'db, T>,
-        source: ExecutorNode<'txn, 'db, T>,
+        ctx: &'a ConnectionContext<'a, T>,
+        source: ExecutorNode<'a, T>,
         limit: Option<Expression<T, ColumnIndex>>,
         offset: Option<Expression<T, ColumnIndex>>,
     ) -> ExecutorResult<Self> {
-        fn eval<T: Storage>(
-            ctx: &ConnectionContext<'_, '_, T>,
+        fn eval<T>(
+            ctx: &ConnectionContext<'_, T>,
             expr: Option<Expression<T, ColumnIndex>>,
         ) -> ExecutorResult<Option<usize>> {
             let Some(expr) = expr else {
@@ -203,7 +203,7 @@ impl<'txn, 'db, T: Storage> Limit<'txn, 'db, T> {
     }
 }
 
-impl<T: Storage> Node for Limit<'_, '_, T> {
+impl<T> Node for Limit<'_, T> {
     fn next_row(&mut self) -> Output {
         loop {
             let row = self.source.next_row()?;
@@ -223,17 +223,17 @@ impl<T: Storage> Node for Limit<'_, '_, T> {
     }
 }
 
-pub struct CrossProduct<'txn, 'db, T: Storage> {
-    outer_source: Box<ExecutorNode<'txn, 'db, T>>,
+pub struct CrossProduct<'a, T> {
+    outer_source: Box<ExecutorNode<'a, T>>,
     outer_row: Option<Row>,
     inner_rows: Vec<Row>,
     inner_cursor: usize,
 }
 
-impl<'txn, 'db, T: Storage> CrossProduct<'txn, 'db, T> {
+impl<'a, T> CrossProduct<'a, T> {
     pub fn new(
-        outer_source: ExecutorNode<'txn, 'db, T>,
-        inner_source: ExecutorNode<'txn, 'db, T>,
+        outer_source: ExecutorNode<'a, T>,
+        inner_source: ExecutorNode<'a, T>,
     ) -> ExecutorResult<Self> {
         Ok(Self {
             outer_source: outer_source.into(),
@@ -244,7 +244,7 @@ impl<'txn, 'db, T: Storage> CrossProduct<'txn, 'db, T> {
     }
 }
 
-impl<T: Storage> Node for CrossProduct<'_, '_, T> {
+impl<T> Node for CrossProduct<'_, T> {
     fn next_row(&mut self) -> Output {
         if self.inner_rows.is_empty() {
             return Err(NodeError::EndOfRows);
@@ -271,10 +271,7 @@ pub struct UngroupedAggregate {
 }
 
 impl UngroupedAggregate {
-    pub fn new<T: Storage>(
-        source: ExecutorNode<'_, '_, T>,
-        ops: Vec<ApplyAggregateOp>,
-    ) -> ExecutorResult<Self> {
+    pub fn new<T>(source: ExecutorNode<'_, T>, ops: Vec<ApplyAggregateOp>) -> ExecutorResult<Self> {
         let mut aggregators: Vec<_> = ops.iter().map(GroupAggregator::new).collect();
         for row in source {
             let row = row?;
@@ -303,10 +300,7 @@ pub struct HashAggregate {
 }
 
 impl HashAggregate {
-    pub fn new<T: Storage>(
-        source: ExecutorNode<'_, '_, T>,
-        ops: Vec<AggregateOp>,
-    ) -> ExecutorResult<Self> {
+    pub fn new<T>(source: ExecutorNode<'_, T>, ops: Vec<AggregateOp>) -> ExecutorResult<Self> {
         struct Group {
             aggregators: Vec<GroupAggregator>,
             non_aggregated: Vec<Value>,
@@ -441,12 +435,12 @@ impl GroupAggregator {
     }
 }
 
-pub struct Union<'txn, 'db, T: Storage> {
-    pub left: Box<ExecutorNode<'txn, 'db, T>>,
-    pub right: Box<ExecutorNode<'txn, 'db, T>>,
+pub struct Union<'a, T> {
+    pub left: Box<ExecutorNode<'a, T>>,
+    pub right: Box<ExecutorNode<'a, T>>,
 }
 
-impl<T: Storage> Node for Union<'_, '_, T> {
+impl<T> Node for Union<'_, T> {
     fn next_row(&mut self) -> Output {
         self.left.next_row().or_else(|_| self.right.next_row())
     }
