@@ -7,17 +7,14 @@ use super::{
 use crate::{
     catalog::TableFunction,
     connection::ConnectionContext,
-    parser::{self, BinaryOp, NullOrder, Order},
+    parser::{self, NullOrder, Order},
     planner,
     rows::ColumnIndex,
     storage::{Table, Transaction},
     types::NullableType,
     PlannerError, Row, Type, Value,
 };
-use std::{
-    borrow::Cow,
-    collections::{HashMap, HashSet},
-};
+use std::{borrow::Cow, collections::HashMap};
 
 pub struct Values<'a, T> {
     pub rows: Vec<Vec<planner::Expression<'a, T, ColumnId>>>,
@@ -91,25 +88,6 @@ impl<T> Node for Project<'_, T> {
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
         columns.extend(self.outputs.iter().map(|(id, _)| *id));
-    }
-}
-
-pub struct Filter<'a, T> {
-    pub source: Box<PlanNode<'a, T>>,
-    pub conjuncts: HashSet<planner::Expression<'a, T, ColumnId>>,
-}
-
-impl<T> Node for Filter<'_, T> {
-    fn fmt_explain(&self, f: &ExplainFormatter) {
-        let mut node = f.node("Filter");
-        for conjunct in &self.conjuncts {
-            node.field("filter", conjunct.clone().into_display(&f.column_map()));
-        }
-        node.child(&self.source);
-    }
-
-    fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
-        self.source.append_outputs(columns);
     }
 }
 
@@ -322,81 +300,6 @@ impl<'a, T> PlanNode<'a, T> {
             source: Box::new(self),
             outputs,
         })
-    }
-
-    fn filter(
-        self,
-        ctx: &ConnectionContext<'a, T>,
-        condition: TypedExpression<'a, T>,
-    ) -> PlannerResult<Self> {
-        /// Collects conjuncts from an expression.
-        ///
-        /// Returns false if the expression evaluates to false.
-        fn collect_conjuncts<'a, T>(
-            ctx: &ConnectionContext<'a, T>,
-            conjuncts: &mut HashSet<planner::Expression<'a, T, ColumnId>>,
-            expr: planner::Expression<'a, T, ColumnId>,
-        ) -> bool {
-            if let planner::Expression::BinaryOp {
-                op: BinaryOp::And,
-                lhs,
-                rhs,
-            } = expr
-            {
-                if !collect_conjuncts(ctx, conjuncts, *lhs) {
-                    return false;
-                }
-                return collect_conjuncts(ctx, conjuncts, *rhs);
-            }
-            if let Ok(value) = expr.eval(ctx, &Row::empty()) {
-                match value {
-                    Value::Boolean(true) => return true,
-                    Value::Null | Value::Boolean(false) => return false,
-                    _ => (),
-                }
-            }
-            conjuncts.insert(expr);
-            true
-        }
-
-        fn inner<'a, T>(
-            plan: PlanNode<'a, T>,
-            ctx: &ConnectionContext<'a, T>,
-            conjuncts: HashSet<planner::Expression<'a, T, ColumnId>>,
-        ) -> PlannerResult<PlanNode<'a, T>> {
-            if plan.produces_no_rows() {
-                return Ok(plan);
-            }
-
-            let mut normalized_conjuncts = HashSet::new();
-            for conjunct in conjuncts {
-                if !collect_conjuncts(ctx, &mut normalized_conjuncts, conjunct) {
-                    return Ok(plan.into_no_rows());
-                }
-            }
-            if normalized_conjuncts.is_empty() {
-                // All conjuncts evaluated to true
-                return Ok(plan);
-            }
-
-            // Merge nested filters
-            if let PlanNode::Filter(Filter {
-                source,
-                mut conjuncts,
-            }) = plan
-            {
-                conjuncts.extend(normalized_conjuncts);
-                return inner(*source, ctx, conjuncts);
-            }
-
-            Ok(PlanNode::Filter(Filter {
-                source: Box::new(plan),
-                conjuncts: normalized_conjuncts,
-            }))
-        }
-
-        let condition = condition.expect_type(Type::Boolean)?;
-        inner(self, ctx, [condition].into())
     }
 
     fn sort(self, order_by: Vec<OrderBy<'a, T, ColumnId>>) -> Self {
@@ -662,17 +565,6 @@ impl<'a, T: Transaction> Planner<'a, T> {
         self.plan_limit(&expr_binder, plan, modifier.limit, modifier.offset)
     }
 
-    #[allow(clippy::unused_self)]
-    pub fn plan_filter(
-        &self,
-        expr_binder: &ExpressionBinder<'_, 'a, T>,
-        source: PlanNode<'a, T>,
-        expr: parser::Expression,
-    ) -> PlannerResult<PlanNode<'a, T>> {
-        let (plan, condition) = expr_binder.bind(source, expr)?;
-        plan.filter(self.ctx, condition)
-    }
-
     fn plan_projections(
         &self,
         expr_binder: &ExpressionBinder<'_, 'a, T>,
@@ -760,7 +652,6 @@ impl<'a, T: Transaction> Planner<'a, T> {
         Ok(plan.sort(bound_order_by))
     }
 
-    #[allow(clippy::unused_self)]
     fn plan_limit(
         &self,
         expr_binder: &ExpressionBinder<'_, 'a, T>,
@@ -807,11 +698,10 @@ impl<'a, T: Transaction> Planner<'a, T> {
         let left = self.plan_table_ref(expr_binder, join.left)?;
         let right = self.plan_table_ref(expr_binder, join.right)?;
         let plan = left.cross_product(right);
-        let Some(on) = join.on else {
-            return Ok(plan);
-        };
-        let (plan, on) = expr_binder.bind(plan, on)?;
-        plan.filter(self.ctx, on)
+        match join.on {
+            Some(on) => self.plan_filter(expr_binder, plan, on),
+            None => Ok(plan),
+        }
     }
 
     fn plan_table_function(

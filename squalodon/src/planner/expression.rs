@@ -13,7 +13,11 @@ use crate::{
     types::{NullableType, Type},
     CatalogError, Row, Value,
 };
-use std::{borrow::Cow, collections::HashMap, hash::Hash};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    hash::Hash,
+};
 
 pub enum Expression<'a, T, C> {
     Constant(Value),
@@ -455,6 +459,51 @@ impl<'a, T> Expression<'a, T, ColumnId> {
             Self::Function { function, args } => {
                 let args = args.into_iter().map(|arg| arg.map_column_ref(f)).collect();
                 Expression::Function { function, args }
+            }
+        }
+    }
+
+    pub(super) fn referenced_columns(&self) -> HashSet<ColumnId> {
+        let mut free = HashSet::new();
+        self.insert_referenced_columns(&mut free);
+        free
+    }
+
+    fn insert_referenced_columns(&self, columns: &mut HashSet<ColumnId>) {
+        match self {
+            Self::Constant(_) => (),
+            Self::ColumnRef(id) => {
+                columns.insert(*id);
+            }
+            Self::Cast { expr, .. } | Self::UnaryOp { expr, .. } => {
+                expr.insert_referenced_columns(columns);
+            }
+            Self::BinaryOp { lhs, rhs, .. } => {
+                lhs.insert_referenced_columns(columns);
+                rhs.insert_referenced_columns(columns);
+            }
+            Self::Case {
+                branches,
+                else_branch,
+            } => {
+                for branch in branches {
+                    branch.condition.insert_referenced_columns(columns);
+                    branch.result.insert_referenced_columns(columns);
+                }
+                if let Some(else_branch) = else_branch {
+                    else_branch.insert_referenced_columns(columns);
+                }
+            }
+            Self::Like {
+                str_expr, pattern, ..
+            } => {
+                str_expr.insert_referenced_columns(columns);
+                pattern.insert_referenced_columns(columns);
+            }
+            Self::Function { args, .. } => {
+                for arg in args {
+                    arg.insert_referenced_columns(columns);
+                }
             }
         }
     }

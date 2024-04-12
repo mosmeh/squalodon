@@ -2,13 +2,15 @@ mod aggregate;
 mod ddl;
 mod explain;
 mod expression;
+mod filter;
 mod modification;
 mod query;
 
 pub use aggregate::{Aggregate, AggregateOp, ApplyAggregateOp};
 pub use expression::{CaseBranch, Expression};
+pub use filter::Filter;
 pub use modification::{Delete, Insert, Update};
-pub use query::{CrossProduct, Filter, Limit, OrderBy, Project, Scan, Sort, Union, Values};
+pub use query::{CrossProduct, Limit, OrderBy, Project, Scan, Sort, Union, Values};
 
 use crate::{
     connection::ConnectionContext,
