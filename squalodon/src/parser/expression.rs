@@ -46,7 +46,7 @@ impl std::fmt::Display for Expression {
                 branches,
                 else_branch,
             } => {
-                write!(f, "CASE")?;
+                f.write_str("CASE")?;
                 for branch in branches {
                     write!(f, " {branch}")?;
                 }

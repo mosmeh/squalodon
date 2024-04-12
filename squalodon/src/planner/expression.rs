@@ -1,5 +1,6 @@
 use super::{
-    aggregate::AggregatePlanner, Column, ColumnId, PlanNode, Planner, PlannerError, PlannerResult,
+    aggregate::AggregatePlanner, Column, ColumnId, ColumnMapView, PlanNode, Planner, PlannerError,
+    PlannerResult,
 };
 use crate::{
     catalog::{AggregateFunction, Aggregator, ScalarFunction},
@@ -12,7 +13,7 @@ use crate::{
     types::{NullableType, Type},
     CatalogError, Row, Value,
 };
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 
 pub enum Expression<'a, T, C> {
     Constant(Value),
@@ -87,11 +88,11 @@ impl<T, C: Clone> Clone for Expression<'_, T, C> {
     }
 }
 
-impl<T, C: std::fmt::Display> std::fmt::Display for Expression<'_, T, C> {
+impl<T> std::fmt::Display for Expression<'_, T, Cow<'_, str>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Constant(value) => write!(f, "{value:?}"),
-            Self::ColumnRef(c) => write!(f, "{c}"),
+            Self::Constant(value) => std::fmt::Debug::fmt(value, f),
+            Self::ColumnRef(c) => c.fmt(f),
             Self::Cast { expr, ty } => write!(f, "CAST({expr} AS {ty})"),
             Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
             Self::BinaryOp { op, lhs, rhs } => {
@@ -101,7 +102,7 @@ impl<T, C: std::fmt::Display> std::fmt::Display for Expression<'_, T, C> {
                 branches,
                 else_branch,
             } => {
-                write!(f, "CASE")?;
+                f.write_str("CASE")?;
                 for branch in branches {
                     write!(f, " WHEN {} THEN {}", branch.condition, branch.result)?;
                 }
@@ -125,7 +126,7 @@ impl<T, C: std::fmt::Display> std::fmt::Display for Expression<'_, T, C> {
                     if i > 0 {
                         f.write_str(", ")?;
                     }
-                    write!(f, "{arg}")?;
+                    arg.fmt(f)?;
                 }
                 f.write_str(")")
             }
@@ -192,21 +193,35 @@ impl<'a, T> Expression<'a, T, ColumnId> {
     }
 
     pub fn into_executable(self, columns: &[ColumnId]) -> Expression<'a, T, ColumnIndex> {
+        self.map_column_ref(|id| id.to_index(columns))
+    }
+
+    pub(super) fn into_display<'b>(
+        self,
+        column_map: &'b ColumnMapView,
+    ) -> Expression<'a, T, Cow<'b, str>> {
+        self.map_column_ref(|id| column_map[id].name())
+    }
+
+    fn map_column_ref<U, F>(self, f: F) -> Expression<'a, T, U>
+    where
+        F: FnOnce(ColumnId) -> U + Copy,
+    {
         match self {
             Self::Constant(value) => Expression::Constant(value),
-            Self::ColumnRef(id) => Expression::ColumnRef(id.to_index(columns)),
+            Self::ColumnRef(id) => Expression::ColumnRef(f(id)),
             Self::Cast { expr, ty } => Expression::Cast {
-                expr: Box::new(expr.into_executable(columns)),
+                expr: Box::new(expr.map_column_ref(f)),
                 ty,
             },
             Self::UnaryOp { op, expr } => Expression::UnaryOp {
                 op,
-                expr: Box::new(expr.into_executable(columns)),
+                expr: Box::new(expr.map_column_ref(f)),
             },
             Self::BinaryOp { op, lhs, rhs } => Expression::BinaryOp {
                 op,
-                lhs: Box::new(lhs.into_executable(columns)),
-                rhs: Box::new(rhs.into_executable(columns)),
+                lhs: Box::new(lhs.map_column_ref(f)),
+                rhs: Box::new(rhs.map_column_ref(f)),
             },
             Self::Case {
                 branches,
@@ -215,12 +230,12 @@ impl<'a, T> Expression<'a, T, ColumnId> {
                 let branches = branches
                     .into_iter()
                     .map(|branch| CaseBranch {
-                        condition: branch.condition.into_executable(columns),
-                        result: branch.result.into_executable(columns),
+                        condition: branch.condition.map_column_ref(f),
+                        result: branch.result.map_column_ref(f),
                     })
                     .collect();
                 let else_branch =
-                    else_branch.map(|else_branch| Box::new(else_branch.into_executable(columns)));
+                    else_branch.map(|else_branch| Box::new(else_branch.map_column_ref(f)));
                 Expression::Case {
                     branches,
                     else_branch,
@@ -231,15 +246,12 @@ impl<'a, T> Expression<'a, T, ColumnId> {
                 pattern,
                 case_insensitive,
             } => Expression::Like {
-                str_expr: Box::new(str_expr.into_executable(columns)),
-                pattern: Box::new(pattern.into_executable(columns)),
+                str_expr: Box::new(str_expr.map_column_ref(f)),
+                pattern: Box::new(pattern.map_column_ref(f)),
                 case_insensitive,
             },
             Self::Function { function, args } => {
-                let args = args
-                    .into_iter()
-                    .map(|arg| arg.into_executable(columns))
-                    .collect();
+                let args = args.into_iter().map(|arg| arg.map_column_ref(f)).collect();
                 Expression::Function { function, args }
             }
         }

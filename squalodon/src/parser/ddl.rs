@@ -37,6 +37,15 @@ pub enum ObjectKind {
     Index,
 }
 
+impl std::fmt::Display for ObjectKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Table => "TABLE",
+            Self::Index => "INDEX",
+        })
+    }
+}
+
 impl Parser<'_> {
     pub fn parse_create(&mut self) -> ParserResult<Statement> {
         self.expect(Token::Create)?;

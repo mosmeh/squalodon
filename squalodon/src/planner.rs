@@ -1,5 +1,6 @@
 mod aggregate;
 mod ddl;
+mod explain;
 mod expression;
 mod modification;
 mod query;
@@ -18,8 +19,10 @@ use crate::{
     CatalogError, StorageError, Value,
 };
 use ddl::{CreateIndex, CreateTable, DropObject};
+use explain::{Explain, ExplainFormatter};
 use expression::{ExpressionBinder, TypedExpression};
 use std::{
+    borrow::Cow,
     cell::{RefCell, RefMut},
     num::NonZeroUsize,
     rc::Rc,
@@ -117,32 +120,18 @@ impl Column {
             ty: ty.into(),
         }
     }
+
+    pub fn name(&self) -> Cow<str> {
+        self.table_name.as_ref().map_or_else(
+            || Cow::Borrowed(self.column_name.as_str()),
+            |table_name| Cow::Owned(format!("{}.{}", table_name, self.column_name)),
+        )
+    }
 }
 
 trait Node {
-    fn fmt_explain(&self, f: &mut ExplainFormatter);
+    fn fmt_explain(&self, f: &ExplainFormatter);
     fn append_outputs(&self, columns: &mut Vec<ColumnId>);
-}
-
-#[derive(Default)]
-struct ExplainFormatter {
-    rows: Vec<String>,
-    depth: isize,
-}
-
-impl ExplainFormatter {
-    fn write_str(&mut self, s: &str) {
-        let mut row = String::new();
-        for _ in 0..(self.depth - 1) {
-            row.push_str("  ");
-        }
-        row.push_str(s);
-        self.rows.push(row);
-    }
-
-    fn write_fmt(&mut self, fmt: std::fmt::Arguments) {
-        self.write_str(&fmt.to_string());
-    }
 }
 
 pub enum PlanNode<'a, T> {
@@ -172,10 +161,11 @@ impl<'a, T> PlanNode<'a, T> {
         columns
     }
 
-    fn explain(self, column_map: &mut ColumnMap) -> Self {
+    fn explain(self, planner: &Planner<'a, T>) -> Self {
         Self::Explain(Explain {
             source: Box::new(self),
-            output: column_map.insert(Column::new("plan", Type::Text)),
+            output: planner.column_map().insert(Column::new("plan", Type::Text)),
+            column_map: planner.column_map.clone(),
         })
     }
 
@@ -187,8 +177,7 @@ impl<'a, T> PlanNode<'a, T> {
 }
 
 impl<T> Node for PlanNode<'_, T> {
-    fn fmt_explain(&self, f: &mut ExplainFormatter) {
-        f.depth += 1;
+    fn fmt_explain(&self, f: &ExplainFormatter) {
         match self {
             Self::Explain(n) => n.fmt_explain(f),
             Self::CreateTable(n) => n.fmt_explain(f),
@@ -208,7 +197,6 @@ impl<T> Node for PlanNode<'_, T> {
             Self::Update(n) => n.fmt_explain(f),
             Self::Delete(n) => n.fmt_explain(f),
         }
-        f.depth -= 1;
     }
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
@@ -234,38 +222,13 @@ impl<T> Node for PlanNode<'_, T> {
     }
 }
 
-pub struct Explain<'a, T> {
-    pub source: Box<PlanNode<'a, T>>,
-    output: ColumnId,
-}
-
-impl<T> Node for Explain<'_, T> {
-    fn fmt_explain(&self, f: &mut ExplainFormatter) {
-        f.write_str("Explain");
-        self.source.fmt_explain(f);
-    }
-
-    fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
-        columns.push(self.output);
-    }
-}
-
-impl<T> Explain<'_, T> {
-    pub fn dump(&self) -> Vec<String> {
-        let mut f = ExplainFormatter::default();
-        self.source.fmt_explain(&mut f);
-        f.rows
-    }
-}
-
 pub struct Spool<'a, T> {
     pub source: Box<PlanNode<'a, T>>,
 }
 
 impl<T> Node for Spool<'_, T> {
-    fn fmt_explain(&self, f: &mut ExplainFormatter) {
-        f.write_str("Spool");
-        self.source.fmt_explain(f);
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        f.node("Spool").child(&self.source);
     }
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
@@ -275,12 +238,6 @@ impl<T> Node for Spool<'_, T> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ColumnId(usize);
-
-impl std::fmt::Display for ColumnId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "%{}", self.0)
-    }
-}
 
 impl ColumnId {
     pub fn to_index(self, columns: &[Self]) -> ColumnIndex {
@@ -292,6 +249,10 @@ impl ColumnId {
 struct ColumnMap<'a>(RefMut<'a, Vec<Column>>);
 
 impl ColumnMap<'_> {
+    fn view(&self) -> ColumnMapView<'_> {
+        ColumnMapView(&self.0)
+    }
+
     fn insert(&mut self, column: Column) -> ColumnId {
         let id = ColumnId(self.0.len());
         self.0.push(column);
@@ -307,10 +268,36 @@ impl std::ops::Index<ColumnId> for ColumnMap<'_> {
     }
 }
 
+impl std::ops::Index<&ColumnId> for ColumnMap<'_> {
+    type Output = Column;
+
+    fn index(&self, index: &ColumnId) -> &Self::Output {
+        &self.0[index.0]
+    }
+}
+
+struct ColumnMapView<'a>(&'a [Column]);
+
+impl std::ops::Index<ColumnId> for ColumnMapView<'_> {
+    type Output = Column;
+
+    fn index(&self, index: ColumnId) -> &Self::Output {
+        &self.0[index.0]
+    }
+}
+
+impl std::ops::Index<&ColumnId> for ColumnMapView<'_> {
+    type Output = Column;
+
+    fn index(&self, index: &ColumnId) -> &Self::Output {
+        &self.0[index.0]
+    }
+}
+
 struct Planner<'a, T> {
     ctx: &'a ConnectionContext<'a, T>,
     params: Vec<Value>,
-    columns: Rc<RefCell<Vec<Column>>>,
+    column_map: Rc<RefCell<Vec<Column>>>,
 }
 
 impl<'a, T> Planner<'a, T> {
@@ -318,7 +305,7 @@ impl<'a, T> Planner<'a, T> {
         Self {
             ctx,
             params: Vec::new(),
-            columns: Default::default(),
+            column_map: Default::default(),
         }
     }
 
@@ -326,12 +313,12 @@ impl<'a, T> Planner<'a, T> {
         Self {
             ctx: self.ctx,
             params,
-            columns: self.columns.clone(),
+            column_map: self.column_map.clone(),
         }
     }
 
     fn column_map(&self) -> ColumnMap<'_> {
-        ColumnMap(self.columns.borrow_mut())
+        ColumnMap(self.column_map.borrow_mut())
     }
 }
 
@@ -373,6 +360,6 @@ impl<'a, T: Transaction> Planner<'a, T> {
     }
 
     fn plan_explain(&self, statement: parser::Statement) -> PlannerResult<PlanNode<'a, T>> {
-        Ok(self.plan(statement)?.explain(&mut self.column_map()))
+        Ok(self.plan(statement)?.explain(self))
     }
 }

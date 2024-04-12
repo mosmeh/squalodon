@@ -5,7 +5,7 @@ use super::{
 use crate::{
     catalog::AggregateFunction, parser, planner, storage::Transaction, CatalogError, Type,
 };
-use std::{collections::HashMap, fmt::Write};
+use std::collections::HashMap;
 
 pub enum Aggregate<'a, T> {
     Ungrouped {
@@ -19,39 +19,33 @@ pub enum Aggregate<'a, T> {
 }
 
 impl<T> Node for Aggregate<'_, T> {
-    fn fmt_explain(&self, f: &mut ExplainFormatter) {
+    fn fmt_explain(&self, f: &ExplainFormatter) {
         match self {
             Self::Ungrouped { source, ops } => {
-                let mut s = "UngroupedAggregate".to_owned();
-                for (i, op) in ops.iter().enumerate() {
-                    s.push_str(if i == 0 { " " } else { ", " });
-                    write!(
-                        &mut s,
-                        "{}({}) -> {}",
-                        op.function.name, op.input, op.output
-                    )
-                    .unwrap();
+                let mut node = f.node("UngroupedAggregate");
+                for op in ops {
+                    node.field("aggregate", f.column_map()[op.output].name());
                 }
-                f.write_str(&s);
-                source.fmt_explain(f);
+                node.child(source);
             }
             Self::Hash { source, ops, .. } => {
-                let mut s = "HashAggregate".to_owned();
-                let iter = ops.iter().filter_map(|op| match op {
-                    AggregateOp::ApplyAggregate(ApplyAggregateOp {
-                        function,
-                        input,
-                        output,
-                        ..
-                    }) => Some((function.name, *input, *output)),
-                    _ => None,
-                });
-                for (i, (name, input, output)) in iter.enumerate() {
-                    s.push_str(if i == 0 { " " } else { ", " });
-                    write!(&mut s, "{name}({input}) -> {output}").unwrap();
+                let mut node = f.node("HashAggregate");
+                for op in ops {
+                    if let AggregateOp::ApplyAggregate(ApplyAggregateOp { output, .. }) = op {
+                        node.field("aggregate", f.column_map()[output].name());
+                    }
                 }
-                f.write_str(&s);
-                source.fmt_explain(f);
+                for op in ops {
+                    if let AggregateOp::GroupBy { target } = op {
+                        node.field("group by", f.column_map()[target].name());
+                    }
+                }
+                for op in ops {
+                    if let AggregateOp::Passthrough { target } = op {
+                        node.field("passthrough", f.column_map()[target].name());
+                    }
+                }
+                node.child(source);
             }
         }
     }

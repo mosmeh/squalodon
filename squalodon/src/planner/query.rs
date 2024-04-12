@@ -1,7 +1,8 @@
 use super::{
     aggregate::AggregateCollection,
     expression::{ExpressionBinder, TypedExpression},
-    Column, ColumnId, ColumnMap, ExplainFormatter, Node, PlanNode, Planner, PlannerResult,
+    Column, ColumnId, ColumnMap, ColumnMapView, ExplainFormatter, Node, PlanNode, Planner,
+    PlannerResult,
 };
 use crate::{
     catalog::TableFunction,
@@ -12,7 +13,7 @@ use crate::{
     types::NullableType,
     PlannerError, Type,
 };
-use std::{collections::HashMap, fmt::Write};
+use std::{borrow::Cow, collections::HashMap};
 
 pub struct Values<'a, T> {
     pub rows: Vec<Vec<planner::Expression<'a, T, ColumnId>>>,
@@ -29,8 +30,12 @@ impl<'a, T> Values<'a, T> {
 }
 
 impl<T> Node for Values<'_, T> {
-    fn fmt_explain(&self, f: &mut ExplainFormatter) {
-        f.write_str("Values");
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        let mut node = f.node::<()>("Values");
+        node.field("rows", self.rows.len());
+        for output in &self.outputs {
+            node.field("column type", f.column_map()[output].ty);
+        }
     }
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
@@ -51,16 +56,17 @@ pub enum Scan<'a, T> {
 }
 
 impl<T> Node for Scan<'_, T> {
-    fn fmt_explain(&self, f: &mut ExplainFormatter) {
+    fn fmt_explain(&self, f: &ExplainFormatter) {
         match self {
             Self::SeqScan { table, .. } => {
-                write!(f, "SeqScan on {}", table.name());
+                f.node::<()>("SeqScan").field("table", table.name());
             }
             Self::FunctionScan {
                 source, function, ..
             } => {
-                write!(f, "FunctionScan on {}", function.name);
-                source.fmt_explain(f);
+                f.node("FunctionScan")
+                    .field("function", function.name)
+                    .child(source);
             }
         }
     }
@@ -80,16 +86,12 @@ pub struct Project<'a, T> {
 }
 
 impl<T> Node for Project<'_, T> {
-    fn fmt_explain(&self, f: &mut ExplainFormatter) {
-        let mut s = "Project ".to_owned();
-        for (i, (output, expr)) in self.outputs.iter().enumerate() {
-            if i > 0 {
-                s.push_str(", ");
-            }
-            write!(s, "{expr} -> {output}").unwrap();
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        let mut node = f.node("Project");
+        for (output, _) in &self.outputs {
+            node.field("expression", f.column_map()[output].name());
         }
-        f.write_str(&s);
-        self.source.fmt_explain(f);
+        node.child(&self.source);
     }
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
@@ -103,9 +105,13 @@ pub struct Filter<'a, T> {
 }
 
 impl<T> Node for Filter<'_, T> {
-    fn fmt_explain(&self, f: &mut ExplainFormatter) {
-        write!(f, "Filter {}", self.condition);
-        self.source.fmt_explain(f);
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        let mut node = f.node("Filter");
+        node.field(
+            "filter",
+            self.condition.clone().into_display(&f.column_map()),
+        );
+        node.child(&self.source);
     }
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
@@ -119,17 +125,12 @@ pub struct Sort<'a, T> {
 }
 
 impl<T> Node for Sort<'_, T> {
-    fn fmt_explain(&self, f: &mut ExplainFormatter) {
-        let mut s = "Sort by ".to_owned();
-        for (i, order_by) in self.order_by.iter().enumerate() {
-            if i == 0 {
-                write!(s, "{order_by}").unwrap();
-            } else {
-                write!(s, ", {order_by}").unwrap();
-            }
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        let mut node = f.node("Sort");
+        for order_by in &self.order_by {
+            node.field("key", order_by.clone().into_display(&f.column_map()));
         }
-        f.write_str(&s);
-        self.source.fmt_explain(f);
+        node.child(&self.source);
     }
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
@@ -144,9 +145,15 @@ pub struct Limit<'a, T> {
 }
 
 impl<T> Node for Limit<'_, T> {
-    fn fmt_explain(&self, f: &mut ExplainFormatter) {
-        f.write_str("Limit");
-        self.source.fmt_explain(f);
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        let mut node = f.node("Limit");
+        if let Some(limit) = &self.limit {
+            node.field("limit", limit.clone().into_display(&f.column_map()));
+        }
+        if let Some(offset) = &self.offset {
+            node.field("offset", offset.clone().into_display(&f.column_map()));
+        }
+        node.child(&self.source);
     }
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
@@ -160,9 +167,19 @@ pub struct OrderBy<'a, T, C> {
     pub null_order: NullOrder,
 }
 
-impl<T, C: std::fmt::Display> std::fmt::Display for OrderBy<'_, T, C> {
+impl<T, C: Clone> Clone for OrderBy<'_, T, C> {
+    fn clone(&self) -> Self {
+        Self {
+            expr: self.expr.clone(),
+            order: self.order,
+            null_order: self.null_order,
+        }
+    }
+}
+
+impl<T> std::fmt::Display for OrderBy<'_, T, Cow<'_, str>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.expr)?;
+        self.expr.fmt(f)?;
         if self.order != Default::default() {
             write!(f, " {}", self.order)?;
         }
@@ -181,6 +198,17 @@ impl<'a, T> OrderBy<'a, T, ColumnId> {
             null_order: self.null_order,
         }
     }
+
+    pub(super) fn into_display<'b>(
+        self,
+        column_map: &'b ColumnMapView,
+    ) -> OrderBy<'a, T, Cow<'b, str>> {
+        OrderBy {
+            expr: self.expr.into_display(column_map),
+            order: self.order,
+            null_order: self.null_order,
+        }
+    }
 }
 
 pub struct CrossProduct<'a, T> {
@@ -189,10 +217,8 @@ pub struct CrossProduct<'a, T> {
 }
 
 impl<T> Node for CrossProduct<'_, T> {
-    fn fmt_explain(&self, f: &mut ExplainFormatter) {
-        f.write_str("CrossProduct");
-        self.left.fmt_explain(f);
-        self.right.fmt_explain(f);
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        f.node("CrossProduct").child(&self.left).child(&self.right);
     }
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
@@ -208,10 +234,8 @@ pub struct Union<'a, T> {
 }
 
 impl<T> Node for Union<'_, T> {
-    fn fmt_explain(&self, f: &mut ExplainFormatter) {
-        f.write_str("Union");
-        self.left.fmt_explain(f);
-        self.right.fmt_explain(f);
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        f.node("Union").child(&self.left).child(&self.right);
     }
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
@@ -264,7 +288,10 @@ impl<'a, T> PlanNode<'a, T> {
                 let TypedExpression { expr, ty } = expr;
                 let id = match expr {
                     planner::Expression::ColumnRef(id) => id,
-                    _ => column_map.insert(Column::new(expr.to_string(), ty)),
+                    _ => column_map.insert(Column::new(
+                        expr.clone().into_display(&column_map.view()).to_string(),
+                        ty,
+                    )),
                 };
                 (id, expr)
             })
@@ -327,10 +354,7 @@ impl<'a, T> PlanNode<'a, T> {
             });
         }
         for (left, right) in left_outputs.iter().zip(right_outputs.iter()) {
-            if !column_map[*left]
-                .ty
-                .is_compatible_with(column_map[*right].ty)
-            {
+            if !column_map[left].ty.is_compatible_with(column_map[right].ty) {
                 return Err(PlannerError::TypeError);
             }
         }
@@ -416,7 +440,7 @@ impl<'a, T: Transaction> Planner<'a, T> {
                 parser::Projection::Wildcard => {
                     let column_map = self.column_map();
                     for output in &outputs {
-                        let column = &column_map[*output];
+                        let column = &column_map[output];
                         projection_exprs.push(parser::Expression::ColumnRef(parser::ColumnRef {
                             table_name: column.table_name.clone(),
                             column_name: column.column_name.clone(),

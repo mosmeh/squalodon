@@ -11,8 +11,12 @@ pub struct CreateTable {
 }
 
 impl Node for CreateTable {
-    fn fmt_explain(&self, f: &mut ExplainFormatter) {
-        f.write_str("CreateTable");
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        let mut node = f.node::<()>("CreateTable");
+        node.field("name", &self.name);
+        for column in &self.columns {
+            node.field("column", &column.name);
+        }
     }
 
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
@@ -26,8 +30,14 @@ pub struct CreateIndex {
 }
 
 impl Node for CreateIndex {
-    fn fmt_explain(&self, f: &mut ExplainFormatter) {
-        f.write_str("CreateIndex");
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        let mut node = f.node::<()>("CreateIndex");
+        node.field("name", &self.name)
+            .field("table", &self.table_name);
+        for column_index in &self.column_indexes {
+            node.field("column", column_index);
+        }
+        node.field("unique", self.is_unique);
     }
 
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
@@ -36,8 +46,10 @@ impl Node for CreateIndex {
 pub struct DropObject(pub parser::DropObject);
 
 impl Node for DropObject {
-    fn fmt_explain(&self, f: &mut ExplainFormatter) {
-        f.write_str("Drop");
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        f.node::<()>("Drop")
+            .field("kind", &self.0.kind)
+            .field("name", &self.0.name);
     }
 
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}

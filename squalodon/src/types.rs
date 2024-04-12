@@ -1,3 +1,4 @@
+use crate::lexer;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -48,6 +49,15 @@ impl From<Type> for NullableType {
     }
 }
 
+impl std::fmt::Display for NullableType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Null => f.write_str("NULL"),
+            Self::NonNull(ty) => ty.fmt(f),
+        }
+    }
+}
+
 impl NullableType {
     pub fn is_compatible_with<T: Into<Self>>(self, other: T) -> bool {
         match (self, other.into()) {
@@ -84,7 +94,7 @@ impl std::fmt::Debug for Value {
             Self::Integer(i) => i.fmt(f),
             Self::Real(r) => r.fmt(f),
             Self::Boolean(b) => b.fmt(f),
-            Self::Text(s) => s.fmt(f),
+            Self::Text(s) => std::fmt::Display::fmt(&lexer::quote(s, '\''), f),
         }
     }
 }

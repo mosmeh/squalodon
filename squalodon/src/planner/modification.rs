@@ -16,9 +16,10 @@ pub struct Insert<'a, T> {
 }
 
 impl<T> Node for Insert<'_, T> {
-    fn fmt_explain(&self, f: &mut ExplainFormatter) {
-        write!(f, "Insert on {}", self.table.name());
-        self.source.fmt_explain(f);
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        f.node("Insert")
+            .field("table", self.table.name())
+            .child(&self.source);
     }
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
@@ -33,9 +34,10 @@ pub struct Update<'a, T> {
 }
 
 impl<T> Node for Update<'_, T> {
-    fn fmt_explain(&self, f: &mut ExplainFormatter) {
-        write!(f, "Update on {}", self.table.name());
-        self.source.fmt_explain(f);
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        f.node("Update")
+            .field("table", self.table.name())
+            .child(&self.source);
     }
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
@@ -50,9 +52,10 @@ pub struct Delete<'a, T> {
 }
 
 impl<T> Node for Delete<'_, T> {
-    fn fmt_explain(&self, f: &mut ExplainFormatter) {
-        write!(f, "Delete on {}", self.table.name());
-        self.source.fmt_explain(f);
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        f.node("Delete")
+            .field("table", self.table.name())
+            .child(&self.source);
     }
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
