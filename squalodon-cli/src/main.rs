@@ -95,6 +95,7 @@ impl<'conn, 'db, T: Storage> Repl<'conn, 'db, T> {
             self.run_line(&line?)?;
         }
         self.run_sql(false)?; // Finish any incomplete statement
+        self.buf.clear();
         Ok(())
     }
 
@@ -281,6 +282,8 @@ fn insert_into_table<T: Storage>(
 }
 
 fn write_table<W: std::io::Write>(out: &mut W, rows: Rows) -> std::io::Result<()> {
+    const COLUMN_SPACING: usize = 2;
+
     let columns = rows.columns();
     if columns.is_empty() {
         return Ok(());
@@ -297,24 +300,35 @@ fn write_table<W: std::io::Write>(out: &mut W, rows: Rows) -> std::io::Result<()
         }
         formatted_rows.push(formatted_row);
     }
-    for (column, width) in columns.into_iter().zip(&widths) {
-        write!(out, "{}  ", column.name())?;
-        for _ in column.name().width()..*width {
+    for (i, (column, width)) in columns.into_iter().zip(&widths).enumerate() {
+        out.write_all(column.name().as_bytes())?;
+        if i == widths.len() - 1 {
+            continue;
+        }
+        for _ in column.name().width()..*width + COLUMN_SPACING {
             out.write_all(b" ")?;
         }
     }
     out.write_all(b"\n")?;
-    for width in &widths {
+    for (i, width) in widths.iter().enumerate() {
         for _ in 0..*width {
             out.write_all(b"-")?;
         }
-        out.write_all(b"  ")?;
+        if i == widths.len() - 1 {
+            continue;
+        }
+        for _ in 0..COLUMN_SPACING {
+            out.write_all(b" ")?;
+        }
     }
     out.write_all(b"\n")?;
     for formatted_row in formatted_rows {
-        for (formatted, width) in formatted_row.into_iter().zip(&widths) {
-            write!(out, "{formatted}  ")?;
-            for _ in formatted.width()..*width {
+        for (i, (formatted, width)) in formatted_row.into_iter().zip(&widths).enumerate() {
+            out.write_all(formatted.as_bytes())?;
+            if i == widths.len() - 1 {
+                continue;
+            }
+            for _ in formatted.width()..*width + COLUMN_SPACING {
                 out.write_all(b" ")?;
             }
         }
