@@ -88,6 +88,9 @@ pub enum AggregateOp<'a> {
 
 impl<'a, T> PlanNode<'a, T> {
     pub(super) fn ungrouped_aggregate(self, ops: Vec<ApplyAggregateOp<'a>>) -> Self {
+        if self.produces_no_rows() {
+            return self;
+        }
         PlanNode::Aggregate(Aggregate::Ungrouped {
             source: Box::new(self),
             ops,
@@ -95,6 +98,9 @@ impl<'a, T> PlanNode<'a, T> {
     }
 
     pub(super) fn hash_aggregate(self, ops: Vec<AggregateOp<'a>>) -> Self {
+        if self.produces_no_rows() {
+            return self;
+        }
         PlanNode::Aggregate(Aggregate::Hash {
             source: Box::new(self),
             ops,

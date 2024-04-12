@@ -215,14 +215,11 @@ impl<'a, T: Transaction> ExecutorNode<'a, T> {
                 let source = Self::new(ctx, *source)?;
                 Self::FunctionScan(FunctionScan::new(ctx, source, function.fn_ptr))
             }
-            PlanNode::Project(planner::Project {
-                source,
-                outputs: columns,
-            }) => {
-                let outputs = source.outputs();
-                let exprs = columns
+            PlanNode::Project(planner::Project { source, outputs }) => {
+                let source_outputs = source.outputs();
+                let exprs = outputs
                     .into_iter()
-                    .map(|(_, expr)| expr.into_executable(&outputs))
+                    .map(|(_, expr)| expr.into_executable(&source_outputs))
                     .collect();
                 Self::Project(Project {
                     ctx,
@@ -230,12 +227,16 @@ impl<'a, T: Transaction> ExecutorNode<'a, T> {
                     exprs,
                 })
             }
-            PlanNode::Filter(planner::Filter { source, condition }) => {
-                let condition = condition.into_executable(&source.outputs());
+            PlanNode::Filter(planner::Filter { source, conjuncts }) => {
+                let outputs = source.outputs();
+                let conjuncts = conjuncts
+                    .into_iter()
+                    .map(|conjunct| conjunct.into_executable(&outputs))
+                    .collect();
                 Self::Filter(Filter {
                     ctx,
                     source: Self::new(ctx, *source)?.into(),
-                    condition,
+                    conjuncts,
                 })
             }
             PlanNode::Sort(planner::Sort { source, order_by }) => {

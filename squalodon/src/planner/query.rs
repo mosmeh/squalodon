@@ -6,27 +6,22 @@ use super::{
 };
 use crate::{
     catalog::TableFunction,
-    parser::{self, NullOrder, Order},
+    connection::ConnectionContext,
+    parser::{self, BinaryOp, NullOrder, Order},
     planner,
     rows::ColumnIndex,
     storage::{Table, Transaction},
     types::NullableType,
-    PlannerError, Type,
+    PlannerError, Row, Type, Value,
 };
-use std::{borrow::Cow, collections::HashMap};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
 
 pub struct Values<'a, T> {
     pub rows: Vec<Vec<planner::Expression<'a, T, ColumnId>>>,
     outputs: Vec<ColumnId>,
-}
-
-impl<'a, T> Values<'a, T> {
-    pub fn one_empty_row() -> Self {
-        Self {
-            rows: vec![Vec::new()],
-            outputs: Vec::new(),
-        }
-    }
 }
 
 impl<T> Node for Values<'_, T> {
@@ -101,16 +96,15 @@ impl<T> Node for Project<'_, T> {
 
 pub struct Filter<'a, T> {
     pub source: Box<PlanNode<'a, T>>,
-    pub condition: planner::Expression<'a, T, ColumnId>,
+    pub conjuncts: HashSet<planner::Expression<'a, T, ColumnId>>,
 }
 
 impl<T> Node for Filter<'_, T> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
         let mut node = f.node("Filter");
-        node.field(
-            "filter",
-            self.condition.clone().into_display(&f.column_map()),
-        );
+        for conjunct in &self.conjuncts {
+            node.field("filter", conjunct.clone().into_display(&f.column_map()));
+        }
         node.child(&self.source);
     }
 
@@ -249,9 +243,6 @@ impl<'a, T> PlanNode<'a, T> {
         rows: Vec<Vec<planner::Expression<'a, T, ColumnId>>>,
         column_types: Vec<NullableType>,
     ) -> Self {
-        if rows.is_empty() {
-            return Self::new_empty_values();
-        }
         let outputs = column_types
             .into_iter()
             .enumerate()
@@ -260,11 +251,31 @@ impl<'a, T> PlanNode<'a, T> {
         Self::Values(Values { rows, outputs })
     }
 
-    pub(super) fn new_empty_values() -> Self {
-        Self::Values(Values::one_empty_row())
+    pub(super) fn new_empty_row() -> Self {
+        Self::Values(Values {
+            rows: vec![Vec::new()],
+            outputs: Vec::new(),
+        })
+    }
+
+    pub(super) fn new_no_rows(outputs: Vec<ColumnId>) -> Self {
+        Self::Values(Values {
+            rows: Vec::new(),
+            outputs,
+        })
+    }
+
+    pub(super) fn into_no_rows(self) -> Self {
+        Self::Values(Values {
+            rows: Vec::new(),
+            outputs: self.outputs(),
+        })
     }
 
     fn function_scan(self, column_map: &mut ColumnMap, function: &'a TableFunction<T>) -> Self {
+        if self.produces_no_rows() {
+            return self;
+        }
         let outputs = function
             .result_columns
             .iter()
@@ -282,7 +293,10 @@ impl<'a, T> PlanNode<'a, T> {
         column_map: &mut ColumnMap,
         exprs: Vec<TypedExpression<'a, T>>,
     ) -> Self {
-        let outputs = exprs
+        if self.produces_no_rows() {
+            return self;
+        }
+        let outputs: Vec<_> = exprs
             .into_iter()
             .map(|expr| {
                 let TypedExpression { expr, ty } = expr;
@@ -296,20 +310,99 @@ impl<'a, T> PlanNode<'a, T> {
                 (id, expr)
             })
             .collect();
+        if self
+            .outputs()
+            .into_iter()
+            .eq(outputs.iter().map(|(output, _)| *output))
+        {
+            // Identity projection
+            return self;
+        }
         Self::Project(Project {
             source: Box::new(self),
             outputs,
         })
     }
 
-    fn filter(self, condition: TypedExpression<'a, T>) -> PlannerResult<Self> {
-        Ok(Self::Filter(Filter {
-            source: Box::new(self),
-            condition: condition.expect_type(Type::Boolean)?,
-        }))
+    fn filter(
+        self,
+        ctx: &ConnectionContext<'a, T>,
+        condition: TypedExpression<'a, T>,
+    ) -> PlannerResult<Self> {
+        /// Collects conjuncts from an expression.
+        ///
+        /// Returns false if the expression evaluates to false.
+        fn collect_conjuncts<'a, T>(
+            ctx: &ConnectionContext<'a, T>,
+            conjuncts: &mut HashSet<planner::Expression<'a, T, ColumnId>>,
+            expr: planner::Expression<'a, T, ColumnId>,
+        ) -> bool {
+            if let planner::Expression::BinaryOp {
+                op: BinaryOp::And,
+                lhs,
+                rhs,
+            } = expr
+            {
+                if !collect_conjuncts(ctx, conjuncts, *lhs) {
+                    return false;
+                }
+                return collect_conjuncts(ctx, conjuncts, *rhs);
+            }
+            if let Ok(value) = expr.eval(ctx, &Row::empty()) {
+                match value {
+                    Value::Boolean(true) => return true,
+                    Value::Null | Value::Boolean(false) => return false,
+                    _ => (),
+                }
+            }
+            conjuncts.insert(expr);
+            true
+        }
+
+        fn inner<'a, T>(
+            plan: PlanNode<'a, T>,
+            ctx: &ConnectionContext<'a, T>,
+            conjuncts: HashSet<planner::Expression<'a, T, ColumnId>>,
+        ) -> PlannerResult<PlanNode<'a, T>> {
+            if plan.produces_no_rows() {
+                return Ok(plan);
+            }
+
+            let mut normalized_conjuncts = HashSet::new();
+            for conjunct in conjuncts {
+                if !collect_conjuncts(ctx, &mut normalized_conjuncts, conjunct) {
+                    return Ok(plan.into_no_rows());
+                }
+            }
+            if normalized_conjuncts.is_empty() {
+                // All conjuncts evaluated to true
+                return Ok(plan);
+            }
+
+            // Merge nested filters
+            if let PlanNode::Filter(Filter {
+                source,
+                mut conjuncts,
+            }) = plan
+            {
+                conjuncts.extend(normalized_conjuncts);
+                return inner(*source, ctx, conjuncts);
+            }
+
+            Ok(PlanNode::Filter(Filter {
+                source: Box::new(plan),
+                conjuncts: normalized_conjuncts,
+            }))
+        }
+
+        let condition = condition.expect_type(Type::Boolean)?;
+        inner(self, ctx, [condition].into())
     }
 
     fn sort(self, order_by: Vec<OrderBy<'a, T, ColumnId>>) -> Self {
+        if self.produces_no_rows() {
+            return self;
+        }
         Self::Sort(Sort {
             source: Box::new(self),
             order_by,
@@ -318,18 +411,38 @@ impl<'a, T> PlanNode<'a, T> {
 
     pub(super) fn limit(
         self,
+        ctx: &ConnectionContext<'a, T>,
         limit: Option<TypedExpression<'a, T>>,
         offset: Option<TypedExpression<'a, T>>,
     ) -> PlannerResult<Self> {
-        if limit.is_none() && offset.is_none() {
-            return Ok(self);
-        }
         let limit = limit
             .map(|limit| limit.expect_type(Type::Integer))
             .transpose()?;
-        let offset = offset
+        let mut offset = offset
             .map(|offset| offset.expect_type(Type::Integer))
             .transpose()?;
+        if let Some(expr) = &limit {
+            match expr.eval(ctx, &Row::empty()) {
+                Ok(Value::Integer(limit)) if limit < 0 => {
+                    return Err(PlannerError::NegativeLimitOrOffset)
+                }
+                Ok(Value::Integer(0)) => return Ok(self.into_no_rows()),
+                _ => (),
+            }
+        }
+        if let Some(expr) = &offset {
+            match expr.eval(ctx, &Row::empty()) {
+                Ok(Value::Integer(offset)) if offset < 0 => {
+                    return Err(PlannerError::NegativeLimitOrOffset)
+                }
+                Ok(Value::Integer(0)) => offset = None,
+                _ => (),
+            }
+        }
+
+        if self.produces_no_rows() || (limit.is_none() && offset.is_none()) {
+            return Ok(self);
+        }
         Ok(Self::Limit(Limit {
             source: Box::new(self),
             limit,
@@ -338,6 +451,11 @@ impl<'a, T> PlanNode<'a, T> {
     }
 
     pub(super) fn cross_product(self, other: Self) -> Self {
+        if self.produces_no_rows() || other.produces_no_rows() {
+            let mut outputs = self.outputs();
+            outputs.append(&mut other.outputs());
+            return PlanNode::new_no_rows(outputs);
+        }
         Self::CrossProduct(CrossProduct {
             left: Box::new(self),
             right: Box::new(other),
@@ -357,6 +475,12 @@ impl<'a, T> PlanNode<'a, T> {
             if !column_map[left].ty.is_compatible_with(column_map[right].ty) {
                 return Err(PlannerError::TypeError);
             }
+        }
+        if other.produces_no_rows() {
+            return Ok(self);
+        }
+        if self.produces_no_rows() {
+            return Ok(other);
         }
         let outputs = self
             .outputs()
@@ -546,7 +670,7 @@ impl<'a, T: Transaction> Planner<'a, T> {
         expr: parser::Expression,
     ) -> PlannerResult<PlanNode<'a, T>> {
         let (plan, condition) = expr_binder.bind(source, expr)?;
-        plan.filter(condition)
+        plan.filter(self.ctx, condition)
     }
 
     fn plan_projections(
@@ -650,7 +774,7 @@ impl<'a, T: Transaction> Planner<'a, T> {
         let offset = offset
             .map(|expr| expr_binder.bind_without_source(expr))
             .transpose()?;
-        source.limit(limit, offset)
+        source.limit(self.ctx, limit, offset)
     }
 
     fn plan_table_ref(
@@ -687,7 +811,7 @@ impl<'a, T: Transaction> Planner<'a, T> {
             return Ok(plan);
         };
         let (plan, on) = expr_binder.bind(plan, on)?;
-        plan.filter(on)
+        plan.filter(self.ctx, on)
     }
 
     fn plan_table_function(
@@ -702,7 +826,7 @@ impl<'a, T: Transaction> Planner<'a, T> {
             .map(|expr| expr_binder.bind_without_source(expr))
             .collect::<PlannerResult<_>>()?;
         let mut column_map = self.column_map();
-        Ok(PlanNode::new_empty_values()
+        Ok(PlanNode::new_empty_row()
             .project(&mut column_map, exprs)
             .function_scan(&mut column_map, function))
     }
@@ -713,7 +837,7 @@ impl<'a, T: Transaction> Planner<'a, T> {
         values: parser::Values,
     ) -> PlannerResult<PlanNode<'a, T>> {
         if values.rows.is_empty() {
-            return Ok(PlanNode::new_empty_values());
+            return Ok(PlanNode::new_empty_row());
         }
 
         let mut rows = Vec::with_capacity(values.rows.len());

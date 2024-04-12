@@ -114,19 +114,30 @@ impl<T> Node for Project<'_, T> {
 pub struct Filter<'a, T> {
     pub ctx: &'a ConnectionContext<'a, T>,
     pub source: Box<ExecutorNode<'a, T>>,
-    pub condition: Expression<'a, T, ColumnIndex>,
+    pub conjuncts: Vec<Expression<'a, T, ColumnIndex>>,
 }
 
 impl<T> Node for Filter<'_, T> {
     fn next_row(&mut self) -> Output {
         loop {
             let row = self.source.next_row()?;
-            match self.condition.eval(self.ctx, &row)? {
-                Value::Boolean(true) => return Ok(row),
-                Value::Boolean(false) => continue,
-                _ => return Err(ExecutorError::TypeError.into()),
+            if self.is_match(self.ctx, &row)? {
+                return Ok(row);
             }
         }
+    }
+}
+
+impl<T> Filter<'_, T> {
+    fn is_match(&self, ctx: &ConnectionContext<'_, T>, row: &Row) -> ExecutorResult<bool> {
+        for conjunct in &self.conjuncts {
+            match conjunct.eval(ctx, row)? {
+                Value::Boolean(true) => {}
+                Value::Null | Value::Boolean(false) => return Ok(false),
+                _ => return Err(ExecutorError::TypeError),
+            }
+        }
+        Ok(true)
     }
 }
 

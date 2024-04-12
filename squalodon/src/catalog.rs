@@ -122,6 +122,22 @@ pub struct ScalarFunction<T> {
 pub type ScalarBindFnPtr = fn(&[NullableType]) -> PlannerResult<NullableType>;
 pub type ScalarEvalFnPtr<T> = fn(&ConnectionContext<'_, T>, &[Value]) -> ExecutorResult<Value>;
 
+impl<T> PartialEq for ScalarFunction<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.bind == other.bind && self.eval == other.eval
+    }
+}
+
+impl<T> Eq for ScalarFunction<T> {}
+
+impl<T> std::hash::Hash for ScalarFunction<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.bind.hash(state);
+        self.eval.hash(state);
+    }
+}
+
 pub struct AggregateFunction {
     pub name: &'static str,
     pub bind: AggregateBindFnPtr,

@@ -51,6 +51,9 @@ pub enum PlannerError {
     #[error("Invalid argument")]
     InvalidArgument,
 
+    #[error("LIMIT/OFFSET cannot be negative")]
+    NegativeLimitOrOffset,
+
     #[error("Aggregate function is not allowed in this context")]
     AggregateNotAllowed,
 
@@ -159,6 +162,14 @@ impl<'a, T> PlanNode<'a, T> {
         let mut columns = Vec::new();
         self.append_outputs(&mut columns);
         columns
+    }
+
+    fn produces_no_rows(&self) -> bool {
+        if let Self::Values(Values { rows, .. }) = self {
+            rows.is_empty()
+        } else {
+            false
+        }
     }
 
     fn explain(self, planner: &Planner<'a, T>) -> Self {

@@ -13,7 +13,7 @@ use crate::{
     types::{NullableType, Type},
     CatalogError, Row, Value,
 };
-use std::{borrow::Cow, collections::HashMap};
+use std::{borrow::Cow, collections::HashMap, hash::Hash};
 
 pub enum Expression<'a, T, C> {
     Constant(Value),
@@ -88,6 +88,129 @@ impl<T, C: Clone> Clone for Expression<'_, T, C> {
     }
 }
 
+impl<T, C: PartialEq> PartialEq for Expression<'_, T, C> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Constant(a), Self::Constant(b)) => a == b,
+            (Self::ColumnRef(a), Self::ColumnRef(b)) => a == b,
+            (
+                Self::Cast {
+                    expr: expr_a,
+                    ty: ty_a,
+                },
+                Self::Cast {
+                    expr: expr_b,
+                    ty: ty_b,
+                },
+            ) => expr_a == expr_b && ty_a == ty_b,
+            (
+                Self::UnaryOp {
+                    op: op_a,
+                    expr: expr_a,
+                },
+                Self::UnaryOp {
+                    op: op_b,
+                    expr: expr_b,
+                },
+            ) => op_a == op_b && expr_a == expr_b,
+            (
+                Self::BinaryOp {
+                    op: op_a,
+                    lhs: lhs_a,
+                    rhs: rhs_a,
+                },
+                Self::BinaryOp {
+                    op: op_b,
+                    lhs: lhs_b,
+                    rhs: rhs_b,
+                },
+            ) => op_a == op_b && lhs_a == lhs_b && rhs_a == rhs_b,
+            (
+                Self::Case {
+                    branches: branches_a,
+                    else_branch: else_branch_a,
+                },
+                Self::Case {
+                    branches: branches_b,
+                    else_branch: else_branch_b,
+                },
+            ) => branches_a == branches_b && else_branch_a == else_branch_b,
+            (
+                Self::Like {
+                    str_expr: str_expr_a,
+                    pattern: pattern_a,
+                    case_insensitive: case_insensitive_a,
+                },
+                Self::Like {
+                    str_expr: str_expr_b,
+                    pattern: pattern_b,
+                    case_insensitive: case_insensitive_b,
+                },
+            ) => {
+                str_expr_a == str_expr_b
+                    && pattern_a == pattern_b
+                    && case_insensitive_a == case_insensitive_b
+            }
+            (
+                Self::Function {
+                    function: function_a,
+                    args: args_a,
+                },
+                Self::Function {
+                    function: function_b,
+                    args: args_b,
+                },
+            ) => function_a == function_b && args_a == args_b,
+            _ => false,
+        }
+    }
+}
+
+impl<T, C: Eq> Eq for Expression<'_, T, C> {}
+
+impl<T, C: Hash> Hash for Expression<'_, T, C> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Self::Constant(value) => value.hash(state),
+            Self::ColumnRef(index) => index.hash(state),
+            Self::Cast { expr, ty } => {
+                expr.hash(state);
+                ty.hash(state);
+            }
+            Self::UnaryOp { op, expr } => {
+                op.hash(state);
+                expr.hash(state);
+            }
+            Self::BinaryOp { op, lhs, rhs } => {
+                op.hash(state);
+                lhs.hash(state);
+                rhs.hash(state);
+            }
+            Self::Case {
+                branches,
+                else_branch,
+            } => {
+                branches.hash(state);
+                else_branch.hash(state);
+            }
+            Self::Like {
+                str_expr,
+                pattern,
+                case_insensitive,
+            } => {
+                str_expr.hash(state);
+                pattern.hash(state);
+                case_insensitive.hash(state);
+            }
+            Self::Function { function, args } => {
+                function.hash(state);
+                args.hash(state);
+            }
+        }
+    }
+}
+
 impl<T> std::fmt::Display for Expression<'_, T, Cow<'_, str>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -136,6 +259,11 @@ impl<T> std::fmt::Display for Expression<'_, T, Cow<'_, str>> {
 
 impl<'a, T> Expression<'a, T, ColumnId> {
     pub fn cast(self, ty: Type) -> Self {
+        if let Self::Constant(value) = &self {
+            if let Some(value) = value.cast(ty) {
+                return Self::Constant(value);
+            }
+        }
         Self::Cast {
             expr: Box::new(self),
             ty,
@@ -143,27 +271,106 @@ impl<'a, T> Expression<'a, T, ColumnId> {
     }
 
     fn unary_op(self, ctx: &ConnectionContext<T>, op: UnaryOp) -> Self {
-        if let Self::Constant(_) = &self {
-            if let Ok(value) = op.eval(ctx, &Row::empty(), &self) {
-                return Self::Constant(value);
-            }
+        if let Ok(value) = op.eval(ctx, &Row::empty(), &self) {
+            return Self::Constant(value);
         }
-        Self::UnaryOp {
-            op,
-            expr: Box::new(self),
+        match (op, self) {
+            (UnaryOp::Plus, expr) => expr,
+            (
+                UnaryOp::Minus,
+                Self::UnaryOp {
+                    op: UnaryOp::Minus,
+                    expr,
+                },
+            )
+            | (
+                UnaryOp::Not,
+                Self::UnaryOp {
+                    op: UnaryOp::Not,
+                    expr,
+                },
+            ) => *expr,
+            (
+                UnaryOp::Not,
+                Self::BinaryOp {
+                    op: BinaryOp::Eq,
+                    lhs,
+                    rhs,
+                },
+            ) => lhs.binary_op(ctx, BinaryOp::Ne, *rhs),
+            (
+                UnaryOp::Not,
+                Self::BinaryOp {
+                    op: BinaryOp::Ne,
+                    lhs,
+                    rhs,
+                },
+            ) => lhs.binary_op(ctx, BinaryOp::Eq, *rhs),
+            (
+                UnaryOp::Not,
+                Self::BinaryOp {
+                    op: BinaryOp::Gt,
+                    lhs,
+                    rhs,
+                },
+            ) => lhs.binary_op(ctx, BinaryOp::Le, *rhs),
+            (
+                UnaryOp::Not,
+                Self::BinaryOp {
+                    op: BinaryOp::Ge,
+                    lhs,
+                    rhs,
+                },
+            ) => lhs.binary_op(ctx, BinaryOp::Lt, *rhs),
+            (
+                UnaryOp::Not,
+                Self::BinaryOp {
+                    op: BinaryOp::Lt,
+                    lhs,
+                    rhs,
+                },
+            ) => lhs.binary_op(ctx, BinaryOp::Ge, *rhs),
+            (
+                UnaryOp::Not,
+                Self::BinaryOp {
+                    op: BinaryOp::Le,
+                    lhs,
+                    rhs,
+                },
+            ) => lhs.binary_op(ctx, BinaryOp::Gt, *rhs),
+            (op, expr) => Self::UnaryOp {
+                op,
+                expr: Box::new(expr),
+            },
         }
     }
 
-    fn binary_op(self, ctx: &ConnectionContext<T>, op: BinaryOp, other: Self) -> Self {
-        if let BinaryOp::Add | BinaryOp::Mul | BinaryOp::Eq | BinaryOp::And | BinaryOp::Or = op {
-            // If the operation is commutative, make sure the constant is on
-            // the right hand side.
-            match (&self, &other) {
-                (Self::Constant(_), Self::Constant(_)) => (),
-                (Self::Constant(_), _) => return self.binary_op(ctx, op, other),
-                _ => (),
-            }
+    pub fn binary_op(self, ctx: &ConnectionContext<T>, op: BinaryOp, other: Self) -> Self {
+        if let Ok(value) = op.eval(ctx, &Row::empty(), &self, &other) {
+            return Self::Constant(value);
         }
+
+        // Make sure the constant is on the right hand side.
+        match (&self, &other) {
+            (Self::Constant(_), Self::Constant(_)) => (), // To avoid swapping constants forever
+            (Self::Constant(_), _) => match op {
+                BinaryOp::Add
+                | BinaryOp::Mul
+                | BinaryOp::Eq
+                | BinaryOp::Ne
+                | BinaryOp::And
+                | BinaryOp::Or => {
+                    return other.binary_op(ctx, op, self);
+                }
+                BinaryOp::Gt => return other.binary_op(ctx, BinaryOp::Lt, self),
+                BinaryOp::Ge => return other.binary_op(ctx, BinaryOp::Le, self),
+                BinaryOp::Lt => return other.binary_op(ctx, BinaryOp::Gt, self),
+                BinaryOp::Le => return other.binary_op(ctx, BinaryOp::Ge, self),
+                _ => (),
+            },
+            _ => (),
+        }
+
         match (op, &self, &other) {
             (BinaryOp::Add | BinaryOp::Sub, _, Self::Constant(Value::Integer(0)))
             | (BinaryOp::Mul, _, Self::Constant(Value::Integer(1)))
@@ -177,11 +384,6 @@ impl<'a, T> Expression<'a, T, ColumnId> {
             }
             (BinaryOp::Or, _, Self::Constant(Value::Boolean(true))) => {
                 return Self::Constant(Value::Boolean(true))
-            }
-            (op, Self::Constant(_), Self::Constant(_)) => {
-                if let Ok(value) = op.eval(ctx, &Row::empty(), &self, &other) {
-                    return Self::Constant(value);
-                }
             }
             _ => (),
         }
@@ -269,6 +471,21 @@ impl<T, C: Clone> Clone for CaseBranch<'_, T, C> {
             condition: self.condition.clone(),
             result: self.result.clone(),
         }
+    }
+}
+
+impl<T, C: PartialEq> PartialEq for CaseBranch<'_, T, C> {
+    fn eq(&self, other: &Self) -> bool {
+        self.condition == other.condition && self.result == other.result
+    }
+}
+
+impl<T, C: Eq> Eq for CaseBranch<'_, T, C> {}
+
+impl<T, C: Hash> Hash for CaseBranch<'_, T, C> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.condition.hash(state);
+        self.result.hash(state);
     }
 }
 
@@ -697,7 +914,8 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
                 let subquery = self.planner.plan_query(*query)?;
 
                 // Equivalent to `SELECT exists(SELECT * FROM subquery LIMIT 1)`
-                let subquery = subquery.limit(Some(Value::from(1).into()), None)?;
+                let subquery =
+                    subquery.limit(self.planner.ctx, Some(Value::from(1).into()), None)?;
                 let [input] = subquery
                     .outputs()
                     .try_into()
@@ -734,7 +952,7 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
         &self,
         expr: parser::Expression,
     ) -> PlannerResult<TypedExpression<'b, T>> {
-        self.bind(PlanNode::new_empty_values(), expr)
+        self.bind(PlanNode::new_empty_row(), expr)
             .map(|(_, expr)| expr)
     }
 }
