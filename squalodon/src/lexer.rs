@@ -111,6 +111,7 @@ keywords! {
     Create
     Cross
     Deallocate
+    Default
     Delete
     Desc
     Describe

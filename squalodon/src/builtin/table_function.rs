@@ -33,12 +33,18 @@ pub fn load<T: Transaction>() -> impl Iterator<Item = TableFunction<T>> {
                         }
                     }
                     for (column, constraint) in table.columns().iter().zip(constraints) {
+                        let default_value = column
+                            .default_value
+                            .as_ref()
+                            .map_or_else(String::new, ToString::to_string)
+                            .into();
                         rows.push(Row(vec![
                             table.name().into(),
                             column.name.clone().into(),
                             column.ty.to_string().into(),
                             constraint.is_nullable.into(),
                             constraint.is_primary_key.into(),
+                            default_value,
                         ]));
                     }
                 }
@@ -50,6 +56,7 @@ pub fn load<T: Transaction>() -> impl Iterator<Item = TableFunction<T>> {
                 Column::new("type", Type::Text),
                 Column::new("is_nullable", Type::Boolean),
                 Column::new("is_primary_key", Type::Boolean),
+                Column::new("default_value", Type::Text),
             ],
         },
         TableFunction {

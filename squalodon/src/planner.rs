@@ -354,7 +354,7 @@ impl<'a, T: Transaction> Planner<'a, T> {
             parser::Statement::Describe(name) => {
                 self.ctx.catalog().table(name.clone())?; // Check if the table exists
                 self.rewrite_to(
-                    "SELECT column_name, type, is_nullable, is_primary_key
+                    "SELECT column_name, type, is_nullable, is_primary_key, default_value
                     FROM squalodon_columns()
                     WHERE table_name = $1",
                     Value::from(name),

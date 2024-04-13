@@ -2,6 +2,7 @@ use crate::{
     builtin,
     connection::ConnectionContext,
     executor::ExecutorResult,
+    parser::Expression,
     planner::{self, PlannerResult},
     rows::ColumnIndex,
     storage::{self, Storage, Transaction},
@@ -82,6 +83,7 @@ pub struct Table {
 pub struct Column {
     pub name: String,
     pub ty: Type,
+    pub default_value: Option<Expression>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]

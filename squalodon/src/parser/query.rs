@@ -1,7 +1,8 @@
 use super::{unexpected, Expression, Parser, ParserResult};
 use crate::{lexer::Token, ParserError};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Query {
     pub body: QueryBody,
     pub modifier: QueryModifier,
@@ -29,7 +30,7 @@ impl std::fmt::Display for Query {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum QueryBody {
     Select(Select),
     Union {
@@ -54,7 +55,7 @@ impl std::fmt::Display for QueryBody {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct QueryModifier {
     pub order_by: Vec<OrderBy>,
     pub limit: Option<Expression>,
@@ -67,7 +68,7 @@ impl QueryModifier {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Select {
     pub distinct: Option<Distinct>,
     pub projections: Vec<Projection>,
@@ -111,7 +112,7 @@ impl std::fmt::Display for Select {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Distinct {
     pub on: Option<Vec<Expression>>,
 }
@@ -133,7 +134,7 @@ impl std::fmt::Display for Distinct {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Projection {
     Wildcard,
     Expression {
@@ -157,7 +158,7 @@ impl std::fmt::Display for Projection {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TableRef {
     BaseTable { name: String },
     Join(Box<Join>),
@@ -187,7 +188,7 @@ impl std::fmt::Display for TableRef {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Join {
     pub left: TableRef,
     pub right: TableRef,
@@ -204,7 +205,7 @@ impl std::fmt::Display for Join {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Values {
     pub rows: Vec<Vec<Expression>>,
 }
@@ -229,7 +230,7 @@ impl std::fmt::Display for Values {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OrderBy {
     pub expr: Expression,
     pub order: Order,
@@ -249,7 +250,7 @@ impl std::fmt::Display for OrderBy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Order {
     Asc,
     Desc,
@@ -270,7 +271,7 @@ impl std::fmt::Display for Order {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NullOrder {
     NullsFirst,
     NullsLast,

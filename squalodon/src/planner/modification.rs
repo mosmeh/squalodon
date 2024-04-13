@@ -92,46 +92,64 @@ impl<'a, T> PlanNode<'a, T> {
 impl<'a, T: Transaction> Planner<'a, T> {
     pub fn plan_insert(&self, insert: parser::Insert) -> PlannerResult<PlanNode<'a, T>> {
         let table = self.ctx.catalog().table(insert.table_name)?;
-        let plan = self.plan_query(insert.query)?;
+        let mut plan = self.plan_query(insert.query)?;
         let outputs = plan.outputs();
-        if table.columns().len() != outputs.len() {
+
+        if outputs.len() > table.columns().len() {
             return Err(PlannerError::ColumnCountMismatch {
                 expected: table.columns().len(),
                 actual: outputs.len(),
             });
         }
-        let column_mapping: Vec<_> = if let Some(column_names) = insert.column_names {
-            if table.columns().len() != column_names.len() {
-                return Err(PlannerError::ColumnCountMismatch {
-                    expected: table.columns().len(),
-                    actual: column_names.len(),
-                });
-            }
+
+        let column_mapping = if let Some(column_names) = insert.column_names {
             let mut mapping = vec![None; table.columns().len()];
-            let iter = column_names.into_iter().zip(outputs);
-            for (column_name, source_column_id) in iter {
-                let (dest_index, dest_column) = table
+            for (column_name, source_column_id) in column_names.into_iter().zip(outputs) {
+                let dest_index = table
                     .columns()
                     .iter()
-                    .enumerate()
-                    .find(|(_, column)| column.name == column_name)
+                    .position(|column| column.name == column_name)
                     .ok_or_else(|| PlannerError::UnknownColumn(column_name.clone()))?;
                 match &mut mapping[dest_index] {
                     Some(_) => return Err(PlannerError::DuplicateColumn(column_name)),
-                    i @ None => *i = Some((source_column_id, dest_column)),
+                    i @ None => *i = Some(source_column_id),
                 }
             }
-            mapping.into_iter().map(Option::unwrap).collect()
+            mapping
         } else {
-            outputs.into_iter().zip(table.columns()).collect()
+            outputs
+                .into_iter()
+                .map(Some)
+                .chain(std::iter::repeat(None))
+                .take(table.columns().len())
+                .collect()
         };
+
+        let num_provided_columns = column_mapping
+            .iter()
+            .zip(table.columns())
+            .filter(|(mapping, column)| mapping.is_some() || column.default_value.is_some())
+            .count();
+        if num_provided_columns != table.columns().len() {
+            return Err(PlannerError::ColumnCountMismatch {
+                expected: table.columns().len(),
+                actual: num_provided_columns,
+            });
+        }
+
         let mut exprs = Vec::with_capacity(table.columns().len());
         let mut column_map = self.column_map();
-        for (source_column_id, dest_column) in column_mapping {
-            let mut expr = planner::Expression::ColumnRef(source_column_id);
-            let source_column = &column_map[source_column_id];
-            if !source_column.ty.is_compatible_with(dest_column.ty) {
-                if !source_column.ty.can_cast_to(dest_column.ty) {
+        for (source_column_id, dest_column) in column_mapping.into_iter().zip(table.columns()) {
+            let TypedExpression { mut expr, ty } = if let Some(id) = source_column_id {
+                planner::Expression::ColumnRef(id).into_typed(column_map[id].ty)
+            } else {
+                let default_value = dest_column.default_value.clone().unwrap();
+                let (new_plan, expr) = ExpressionBinder::new(self).bind(plan, default_value)?;
+                plan = new_plan;
+                expr
+            };
+            if !ty.is_compatible_with(dest_column.ty) {
+                if !ty.can_cast_to(dest_column.ty) {
                     return Err(PlannerError::TypeError);
                 }
                 expr = expr.cast(dest_column.ty);

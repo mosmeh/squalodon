@@ -91,6 +91,7 @@ impl Parser<'_> {
                 Token::Identifier(_) => {
                     let name = self.expect_identifier()?;
                     let ty = self.parse_type()?;
+                    let mut default_value = None;
                     loop {
                         match self.lexer.peek()? {
                             Token::Primary => {
@@ -111,10 +112,18 @@ impl Parser<'_> {
                                 self.lexer.consume()?;
                                 constraints.push(Constraint::Unique(vec![name.clone()]));
                             }
+                            Token::Default => {
+                                self.lexer.consume()?;
+                                default_value = Some(self.parse_expr()?);
+                            }
                             _ => break,
                         }
                     }
-                    columns.push(Column { name, ty });
+                    columns.push(Column {
+                        name,
+                        ty,
+                        default_value,
+                    });
                 }
                 token => return Err(unexpected(token)),
             }

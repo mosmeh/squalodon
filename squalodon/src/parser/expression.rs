@@ -1,8 +1,9 @@
 use super::{unexpected, Parser, ParserResult, Query};
 use crate::{lexer::Token, types::Value, Type};
+use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Expression {
     Constant(Value),
     ColumnRef(ColumnRef),
@@ -72,7 +73,7 @@ impl std::fmt::Display for Expression {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ColumnRef {
     pub table_name: Option<String>,
     pub column_name: String,
@@ -87,7 +88,7 @@ impl std::fmt::Display for ColumnRef {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UnaryOp {
     Plus,
     Minus,
@@ -123,7 +124,7 @@ impl UnaryOp {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BinaryOp {
     Add,
     Sub,
@@ -212,7 +213,7 @@ impl InfixOp {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CaseBranch {
     pub condition: Expression,
     pub result: Expression,
@@ -224,7 +225,7 @@ impl std::fmt::Display for CaseBranch {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FunctionCall {
     pub name: String,
     pub args: FunctionArgs,
@@ -242,7 +243,7 @@ impl std::fmt::Display for FunctionCall {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FunctionArgs {
     Wildcard,
     Expressions(Vec<Expression>),
