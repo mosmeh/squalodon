@@ -3,14 +3,14 @@ mod ddl;
 mod explain;
 mod expression;
 mod filter;
-mod modification;
+mod mutation;
 mod query;
 mod sort;
 
 pub use aggregate::{Aggregate, AggregateOp, ApplyAggregateOp};
 pub use expression::{CaseBranch, Expression};
 pub use filter::Filter;
-pub use modification::{Delete, Insert, Update};
+pub use mutation::{Delete, Insert, Update};
 pub use query::{CrossProduct, Limit, Project, Scan, Union, Values};
 pub use sort::{OrderBy, Sort, TopN};
 

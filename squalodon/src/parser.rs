@@ -1,11 +1,11 @@
 mod ddl;
 mod expression;
-mod modification;
+mod mutation;
 mod query;
 
 pub use ddl::{Constraint, CreateIndex, CreateTable, DropObject, ObjectKind};
 pub use expression::{BinaryOp, ColumnRef, Expression, FunctionArgs, FunctionCall, UnaryOp};
-pub use modification::{Delete, Insert, Update};
+pub use mutation::{Delete, Insert, Update};
 pub use query::{
     Distinct, Join, NullOrder, Order, OrderBy, Projection, Query, QueryBody, QueryModifier, Select,
     TableRef, Values,
@@ -50,7 +50,7 @@ pub enum Statement {
 }
 
 impl Statement {
-    pub fn is_modification(&self) -> bool {
+    pub fn is_mutation(&self) -> bool {
         matches!(self, Self::Insert(_) | Self::Update(_) | Self::Delete(_))
     }
 }

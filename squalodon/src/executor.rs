@@ -1,5 +1,5 @@
 mod expression;
-mod modification;
+mod mutation;
 mod query;
 
 use crate::{
@@ -9,7 +9,7 @@ use crate::{
     storage::{self, Transaction},
     CatalogError, Row, StorageError, Value,
 };
-use modification::{Delete, Insert, Update};
+use mutation::{Delete, Insert, Update};
 use query::{
     AggregateOp, ApplyAggregateOp, CrossProduct, Filter, FunctionScan, HashAggregate, Limit,
     Project, SeqScan, Sort, TopN, UngroupedAggregate, Union, Values,

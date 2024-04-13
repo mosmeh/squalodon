@@ -230,7 +230,7 @@ pub struct PreparedStatement<'conn, 'db, T: Storage> {
 
 impl<T: Storage> PreparedStatement<'_, '_, T> {
     pub fn execute<P: Params>(&self, params: P) -> Result<usize> {
-        let is_modification = self.statement.is_modification();
+        let is_mutation = self.statement.is_mutation();
         let params = params
             .into_values()
             .into_iter()
@@ -239,7 +239,7 @@ impl<T: Storage> PreparedStatement<'_, '_, T> {
         let mut rows = self
             .conn
             .execute_statement(self.statement.clone(), params)?;
-        let num_affected_rows = if is_modification {
+        let num_affected_rows = if is_mutation {
             rows.next().map_or(0, |row| row.get(0).unwrap())
         } else {
             0
@@ -248,7 +248,7 @@ impl<T: Storage> PreparedStatement<'_, '_, T> {
     }
 
     pub fn query<P: Params>(&self, params: P) -> Result<Rows> {
-        let is_modification = self.statement.is_modification();
+        let is_mutation = self.statement.is_mutation();
         let params = params
             .into_values()
             .into_iter()
@@ -257,7 +257,7 @@ impl<T: Storage> PreparedStatement<'_, '_, T> {
         let rows = self
             .conn
             .execute_statement(self.statement.clone(), params)?;
-        Ok(if is_modification { Rows::empty() } else { rows })
+        Ok(if is_mutation { Rows::empty() } else { rows })
     }
 }
 
