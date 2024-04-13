@@ -1,6 +1,6 @@
 use super::{
-    expression::{ExpressionBinder, TypedExpression},
-    Column, ColumnId, ExplainFormatter, Node, PlanNode, Planner, PlannerError, PlannerResult,
+    expression::ExpressionBinder, Column, ColumnId, ExplainFormatter, Node, PlanNode, Planner,
+    PlannerError, PlannerResult,
 };
 use crate::{
     catalog::AggregateFunction, parser, planner, storage::Transaction, CatalogError, Type,
@@ -197,10 +197,8 @@ impl<'a, 'b, T: Transaction> AggregateCollection<'a, 'b, T> {
                                 // `count(*)` is a special case equivalent to `count(1)`.
                                 (
                                     source,
-                                    TypedExpression {
-                                        expr: planner::Expression::Constant(1.into()),
-                                        ty: Type::Integer.into(),
-                                    },
+                                    planner::Expression::Constant(1.into())
+                                        .into_typed(Type::Integer),
                                 )
                             }
                             parser::FunctionArgs::Expressions(args) if args.len() == 1 => {
@@ -293,10 +291,11 @@ impl<'a, T: Transaction> AggregatePlanner<'_, 'a, T> {
         {
             let column_map = self.collected.planner.column_map();
             for aggregate in self.collected.aggregates.values() {
-                exprs.push(TypedExpression {
-                    expr: aggregate.arg.clone(),
-                    ty: column_map[aggregate.output].ty,
-                });
+                let expr = aggregate
+                    .arg
+                    .clone()
+                    .into_typed(column_map[aggregate.output].ty);
+                exprs.push(expr);
             }
         }
 

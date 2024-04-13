@@ -398,6 +398,13 @@ impl<'a, T> Expression<'a, T, ColumnId> {
         }
     }
 
+    pub fn into_typed(self, ty: impl Into<NullableType>) -> TypedExpression<'a, T> {
+        TypedExpression {
+            expr: self,
+            ty: ty.into(),
+        }
+    }
+
     pub fn into_executable(self, columns: &[ColumnId]) -> Expression<'a, T, ColumnIndex> {
         self.map_column_ref(|id| id.to_index(columns))
     }
@@ -615,10 +622,8 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
             .aggregates
             .and_then(|aggregates| aggregates.resolve_group_by(&expr))
         {
-            let expr = TypedExpression {
-                expr: planner::Expression::ColumnRef(column_id),
-                ty: self.planner.column_map()[column_id].ty,
-            };
+            let expr = planner::Expression::ColumnRef(column_id)
+                .into_typed(self.planner.column_map()[column_id].ty);
             return Ok((source, expr));
         }
 
@@ -658,15 +663,15 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
                         column_ref.column_name.clone(),
                     ));
                 }
-                let expr = planner::Expression::ColumnRef(id);
-                let ty = column.ty;
-                Ok((source, TypedExpression { expr, ty }))
+                Ok((
+                    source,
+                    planner::Expression::ColumnRef(id).into_typed(column.ty),
+                ))
             }
             parser::Expression::Cast { expr, ty } => {
                 let (plan, TypedExpression { expr, .. }) = self.bind(source, *expr)?;
                 let expr = expr.cast(ty);
-                let ty = ty.into();
-                Ok((plan, TypedExpression { expr, ty }))
+                Ok((plan, expr.into_typed(ty)))
             }
             parser::Expression::UnaryOp { op, expr } => {
                 let (plan, TypedExpression { expr, ty }) = self.bind(source, *expr)?;
@@ -680,8 +685,8 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
                     }
                     _ => return Err(PlannerError::TypeError),
                 };
-                let expr = expr.unary_op(self.planner.ctx, op);
-                Ok((plan, TypedExpression { expr, ty }))
+                let expr = expr.unary_op(self.planner.ctx, op).into_typed(ty);
+                Ok((plan, expr))
             }
             parser::Expression::BinaryOp { op, lhs, rhs } => {
                 let (plan, lhs) = self.bind(source, *lhs)?;
@@ -733,8 +738,11 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
                         _ => return Err(PlannerError::TypeError),
                     },
                 };
-                let expr = lhs.expr.binary_op(self.planner.ctx, op, rhs.expr);
-                Ok((plan, TypedExpression { expr, ty }))
+                let expr = lhs
+                    .expr
+                    .binary_op(self.planner.ctx, op, rhs.expr)
+                    .into_typed(ty);
+                Ok((plan, expr))
             }
             parser::Expression::Case {
                 branches,
@@ -783,13 +791,11 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
                 };
                 Ok((
                     plan,
-                    TypedExpression {
-                        expr: planner::Expression::Case {
-                            branches: branch_exprs,
-                            else_branch,
-                        },
-                        ty: result_type,
-                    },
+                    planner::Expression::Case {
+                        branches: branch_exprs,
+                        else_branch,
+                    }
+                    .into_typed(result_type),
                 ))
             }
             parser::Expression::Like {
@@ -825,13 +831,7 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
                     pattern: pattern.into(),
                     case_insensitive,
                 };
-                Ok((
-                    plan,
-                    TypedExpression {
-                        expr,
-                        ty: Type::Boolean.into(),
-                    },
-                ))
+                Ok((plan, expr.into_typed(Type::Boolean)))
             }
             parser::Expression::Function(function_call) => {
                 match self
@@ -848,10 +848,7 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
                             .resolve_aggregate_function(&function_call)
                             .ok_or_else(|| PlannerError::UnknownColumn("(aggregate)".to_owned()))?;
                         let ty = self.planner.column_map()[id].ty;
-                        let expr = TypedExpression {
-                            expr: planner::Expression::ColumnRef(id),
-                            ty,
-                        };
+                        let expr = planner::Expression::ColumnRef(id).into_typed(ty);
                         return Ok((source, expr));
                     }
                     Err(CatalogError::UnknownEntry(_, _)) => (),
@@ -884,7 +881,7 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
                     function,
                     args: arg_exprs,
                 };
-                Ok((plan, TypedExpression { expr, ty }))
+                Ok((plan, expr.into_typed(ty)))
             }
             parser::Expression::ScalarSubquery(query) => {
                 /// An aggregator that asserts that the subquery returns
@@ -932,10 +929,7 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
                 }]);
 
                 let plan = source.cross_product(subquery);
-                let expr = TypedExpression {
-                    expr: planner::Expression::ColumnRef(output),
-                    ty: subquery_type,
-                };
+                let expr = planner::Expression::ColumnRef(output).into_typed(subquery_type);
                 Ok((plan, expr))
             }
             parser::Expression::Exists(query) => {
@@ -963,8 +957,12 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
                 let subquery = self.planner.plan_query(*query)?;
 
                 // Equivalent to `SELECT exists(SELECT * FROM subquery LIMIT 1)`
-                let subquery =
-                    subquery.limit(self.planner.ctx, Some(Value::from(1).into()), None)?;
+                let subquery = subquery.limit(
+                    self.planner.ctx,
+                    &mut self.planner.column_map(),
+                    Some(Value::from(1).into()),
+                    None,
+                )?;
                 let [input] = subquery
                     .outputs()
                     .try_into()
@@ -981,10 +979,7 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
                 }]);
 
                 let plan = source.cross_product(subquery);
-                let expr = TypedExpression {
-                    expr: planner::Expression::ColumnRef(output),
-                    ty: Type::Boolean.into(),
-                };
+                let expr = planner::Expression::ColumnRef(output).into_typed(Type::Boolean);
                 Ok((plan, expr))
             }
             parser::Expression::Parameter(i) => {

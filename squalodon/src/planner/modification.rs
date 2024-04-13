@@ -136,10 +136,7 @@ impl<'a, T: Transaction> Planner<'a, T> {
                 }
                 expr = expr.cast(dest_column.ty);
             }
-            exprs.push(TypedExpression {
-                expr,
-                ty: dest_column.ty.into(),
-            });
+            exprs.push(expr.into_typed(dest_column.ty));
         }
         let plan = plan.project(&mut column_map, exprs);
 
@@ -184,20 +181,16 @@ impl<'a, T: Transaction> Planner<'a, T> {
                 }
                 bound_expr = bound_expr.cast(column.ty);
             }
-            *expr = Some(TypedExpression {
-                expr: bound_expr,
-                ty: column.ty.into(),
-            });
+            *expr = Some(bound_expr.into_typed(column.ty));
         }
 
         // The input of the Update node should consist of the old and new values
         // of columns concatenated together.
         let outputs = plan.outputs();
         let mut column_map = self.column_map();
-        let old = outputs.into_iter().map(|id| TypedExpression {
-            expr: planner::Expression::ColumnRef(id),
-            ty: column_map[id].ty,
-        });
+        let old = outputs
+            .into_iter()
+            .map(|id| planner::Expression::ColumnRef(id).into_typed(column_map[id].ty));
         let new = exprs
             .into_iter()
             .zip(old.clone())

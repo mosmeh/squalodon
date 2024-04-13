@@ -7,7 +7,7 @@ use crate::{
     storage::{StorageResult, Table, Transaction},
     ExecutorError, Row, Value,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 pub struct Values<'a> {
     rows: Box<dyn Iterator<Item = ExecutorResult<Row>> + 'a>,
@@ -222,15 +222,102 @@ impl<T> Node for Limit<'_, T> {
                 self.cursor += 1;
                 continue;
             }
-            match self.limit {
+            return match self.limit {
                 Some(limit) if self.cursor < self.offset + limit => {
                     self.cursor += 1;
-                    return Ok(row);
+                    Ok(row)
                 }
-                Some(_) => return Err(NodeError::EndOfRows),
-                None => return Ok(row),
+                Some(_) => Err(NodeError::EndOfRows),
+                None => Ok(row),
+            };
+        }
+    }
+}
+
+pub struct TopN {
+    rows: Box<dyn Iterator<Item = Row>>,
+}
+
+impl TopN {
+    pub fn new<T>(
+        ctx: &ConnectionContext<'_, T>,
+        source: ExecutorNode<'_, T>,
+        limit: Expression<T, ColumnIndex>,
+        offset: Option<Expression<T, ColumnIndex>>,
+        order_by: Vec<OrderBy<T, ColumnIndex>>,
+    ) -> ExecutorResult<Self> {
+        fn eval<T>(
+            ctx: &ConnectionContext<'_, T>,
+            expr: Option<Expression<T, ColumnIndex>>,
+        ) -> ExecutorResult<usize> {
+            let Some(expr) = expr else {
+                return Ok(0);
+            };
+            let Value::Integer(i) = expr.eval(ctx, &Row::empty())? else {
+                return Err(ExecutorError::TypeError);
+            };
+            i.try_into().map_err(|_| ExecutorError::OutOfRange)
+        }
+
+        let limit = eval(ctx, Some(limit))?;
+        let offset = eval(ctx, offset)?;
+        let mut heap = BinaryHeap::with_capacity(limit + offset);
+        for row in source {
+            let row = row?;
+            let mut sort_key = Vec::new();
+            for order_by in &order_by {
+                let value = order_by.expr.eval(ctx, &row)?;
+                MemcomparableSerde::new()
+                    .order(order_by.order)
+                    .null_order(order_by.null_order)
+                    .serialize_into(&value, &mut sort_key);
+            }
+            heap.push(TopNRow { row, sort_key });
+            if heap.len() > limit + offset {
+                // BinaryHeap is a max heap, so this pops the last element in
+                // the sorted order.
+                heap.pop().unwrap();
             }
         }
+        let rows = heap
+            .into_sorted_vec()
+            .into_iter()
+            .skip(offset)
+            .map(|TopNRow { row, .. }| row);
+        Ok(Self {
+            rows: Box::new(rows),
+        })
+    }
+}
+
+impl Node for TopN {
+    fn next_row(&mut self) -> Output {
+        self.rows.next().into_output()
+    }
+}
+
+struct TopNRow {
+    row: Row,
+    sort_key: Vec<u8>,
+}
+
+impl PartialEq for TopNRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.sort_key == other.sort_key
+    }
+}
+
+impl Eq for TopNRow {}
+
+impl PartialOrd for TopNRow {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TopNRow {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.sort_key.cmp(&other.sort_key)
     }
 }
 

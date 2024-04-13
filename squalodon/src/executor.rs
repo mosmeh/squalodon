@@ -12,7 +12,7 @@ use crate::{
 use modification::{Delete, Insert, Update};
 use query::{
     AggregateOp, ApplyAggregateOp, CrossProduct, Filter, FunctionScan, HashAggregate, Limit,
-    Project, SeqScan, Sort, UngroupedAggregate, Union, Values,
+    Project, SeqScan, Sort, TopN, UngroupedAggregate, Union, Values,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -131,6 +131,7 @@ enum ExecutorNode<'a, T> {
     Filter(Filter<'a, T>),
     Sort(Sort),
     Limit(Limit<'a, T>),
+    TopN(TopN),
     CrossProduct(CrossProduct<'a, T>),
     UngroupedAggregate(UngroupedAggregate),
     HashAggregate(HashAggregate),
@@ -257,6 +258,27 @@ impl<'a, T: Transaction> ExecutorNode<'a, T> {
                 let offset = offset.map(|expr| expr.into_executable(&outputs));
                 Self::Limit(Limit::new(ctx, Self::new(ctx, *source)?, limit, offset)?)
             }
+            PlanNode::TopN(planner::TopN {
+                source,
+                limit,
+                offset,
+                order_by,
+            }) => {
+                let outputs = source.outputs();
+                let limit = limit.into_executable(&outputs);
+                let offset = offset.map(|expr| expr.into_executable(&outputs));
+                let order_by = order_by
+                    .into_iter()
+                    .map(|order_by| order_by.into_executable(&outputs))
+                    .collect();
+                Self::TopN(TopN::new(
+                    ctx,
+                    Self::new(ctx, *source)?,
+                    limit,
+                    offset,
+                    order_by,
+                )?)
+            }
             PlanNode::CrossProduct(planner::CrossProduct { left, right }) => Self::CrossProduct(
                 CrossProduct::new(Self::new(ctx, *left)?, Self::new(ctx, *right)?)?,
             ),
@@ -307,6 +329,7 @@ impl<T> Node for ExecutorNode<'_, T> {
             Self::Filter(e) => e.next_row(),
             Self::Sort(e) => e.next_row(),
             Self::Limit(e) => e.next_row(),
+            Self::TopN(e) => e.next_row(),
             Self::CrossProduct(e) => e.next_row(),
             Self::UngroupedAggregate(e) => e.next_row(),
             Self::HashAggregate(e) => e.next_row(),

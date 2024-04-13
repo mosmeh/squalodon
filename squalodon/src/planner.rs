@@ -5,12 +5,14 @@ mod expression;
 mod filter;
 mod modification;
 mod query;
+mod sort;
 
 pub use aggregate::{Aggregate, AggregateOp, ApplyAggregateOp};
 pub use expression::{CaseBranch, Expression};
 pub use filter::Filter;
 pub use modification::{Delete, Insert, Update};
-pub use query::{CrossProduct, Limit, OrderBy, Project, Scan, Sort, Union, Values};
+pub use query::{CrossProduct, Limit, Project, Scan, Union, Values};
+pub use sort::{OrderBy, Sort, TopN};
 
 use crate::{
     connection::ConnectionContext,
@@ -150,6 +152,7 @@ pub enum PlanNode<'a, T> {
     Filter(Filter<'a, T>),
     Sort(Sort<'a, T>),
     Limit(Limit<'a, T>),
+    TopN(TopN<'a, T>),
     CrossProduct(CrossProduct<'a, T>),
     Aggregate(Aggregate<'a, T>),
     Union(Union<'a, T>),
@@ -202,6 +205,7 @@ impl<T> Node for PlanNode<'_, T> {
             Self::Filter(n) => n.fmt_explain(f),
             Self::Sort(n) => n.fmt_explain(f),
             Self::Limit(n) => n.fmt_explain(f),
+            Self::TopN(n) => n.fmt_explain(f),
             Self::CrossProduct(n) => n.fmt_explain(f),
             Self::Aggregate(n) => n.fmt_explain(f),
             Self::Union(n) => n.fmt_explain(f),
@@ -224,6 +228,7 @@ impl<T> Node for PlanNode<'_, T> {
             Self::Filter(n) => n.append_outputs(columns),
             Self::Sort(n) => n.append_outputs(columns),
             Self::Limit(n) => n.append_outputs(columns),
+            Self::TopN(n) => n.append_outputs(columns),
             Self::CrossProduct(n) => n.append_outputs(columns),
             Self::Aggregate(n) => n.append_outputs(columns),
             Self::Union(n) => n.append_outputs(columns),

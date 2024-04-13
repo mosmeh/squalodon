@@ -1,20 +1,18 @@
 use super::{
     aggregate::AggregateCollection,
     expression::{ExpressionBinder, TypedExpression},
-    Column, ColumnId, ColumnMap, ColumnMapView, ExplainFormatter, Node, PlanNode, Planner,
-    PlannerResult,
+    sort::TopN,
+    Column, ColumnId, ColumnMap, ExplainFormatter, Node, PlanNode, Planner, PlannerResult, Sort,
 };
 use crate::{
     catalog::TableFunction,
     connection::ConnectionContext,
-    parser::{self, NullOrder, Order},
-    planner,
-    rows::ColumnIndex,
+    parser, planner,
     storage::{Table, Transaction},
     types::NullableType,
     PlannerError, Row, Type, Value,
 };
-use std::{borrow::Cow, collections::HashMap};
+use std::collections::HashMap;
 
 pub struct Values<'a, T> {
     pub rows: Vec<Vec<planner::Expression<'a, T, ColumnId>>>,
@@ -91,25 +89,6 @@ impl<T> Node for Project<'_, T> {
     }
 }
 
-pub struct Sort<'a, T> {
-    pub source: Box<PlanNode<'a, T>>,
-    pub order_by: Vec<OrderBy<'a, T, ColumnId>>,
-}
-
-impl<T> Node for Sort<'_, T> {
-    fn fmt_explain(&self, f: &ExplainFormatter) {
-        let mut node = f.node("Sort");
-        for order_by in &self.order_by {
-            node.field("key", order_by.clone().into_display(&f.column_map()));
-        }
-        node.child(&self.source);
-    }
-
-    fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
-        self.source.append_outputs(columns);
-    }
-}
-
 pub struct Limit<'a, T> {
     pub source: Box<PlanNode<'a, T>>,
     pub limit: Option<planner::Expression<'a, T, ColumnId>>,
@@ -130,56 +109,6 @@ impl<T> Node for Limit<'_, T> {
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
         self.source.append_outputs(columns);
-    }
-}
-
-pub struct OrderBy<'a, T, C> {
-    pub expr: planner::Expression<'a, T, C>,
-    pub order: Order,
-    pub null_order: NullOrder,
-}
-
-impl<T, C: Clone> Clone for OrderBy<'_, T, C> {
-    fn clone(&self) -> Self {
-        Self {
-            expr: self.expr.clone(),
-            order: self.order,
-            null_order: self.null_order,
-        }
-    }
-}
-
-impl<T> std::fmt::Display for OrderBy<'_, T, Cow<'_, str>> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.expr.fmt(f)?;
-        if self.order != Default::default() {
-            write!(f, " {}", self.order)?;
-        }
-        if self.null_order != Default::default() {
-            write!(f, " {}", self.null_order)?;
-        }
-        Ok(())
-    }
-}
-
-impl<'a, T> OrderBy<'a, T, ColumnId> {
-    pub fn into_executable(self, columns: &[ColumnId]) -> OrderBy<'a, T, ColumnIndex> {
-        OrderBy {
-            expr: self.expr.into_executable(columns),
-            order: self.order,
-            null_order: self.null_order,
-        }
-    }
-
-    pub(super) fn into_display<'b>(
-        self,
-        column_map: &'b ColumnMapView,
-    ) -> OrderBy<'a, T, Cow<'b, str>> {
-        OrderBy {
-            expr: self.expr.into_display(column_map),
-            order: self.order,
-            null_order: self.null_order,
-        }
     }
 }
 
@@ -302,23 +231,14 @@ impl<'a, T> PlanNode<'a, T> {
         })
     }
 
-    fn sort(self, order_by: Vec<OrderBy<'a, T, ColumnId>>) -> Self {
-        if self.produces_no_rows() {
-            return self;
-        }
-        Self::Sort(Sort {
-            source: Box::new(self),
-            order_by,
-        })
-    }
-
     pub(super) fn limit(
         self,
         ctx: &ConnectionContext<'a, T>,
+        column_map: &mut ColumnMap,
         limit: Option<TypedExpression<'a, T>>,
         offset: Option<TypedExpression<'a, T>>,
     ) -> PlannerResult<Self> {
-        let limit = limit
+        let mut limit = limit
             .map(|limit| limit.expect_type(Type::Integer))
             .transpose()?;
         let mut offset = offset
@@ -330,6 +250,7 @@ impl<'a, T> PlanNode<'a, T> {
                     return Err(PlannerError::NegativeLimitOrOffset)
                 }
                 Ok(Value::Integer(0)) => return Ok(self.into_no_rows()),
+                Ok(Value::Null) => limit = None,
                 _ => (),
             }
         }
@@ -338,7 +259,7 @@ impl<'a, T> PlanNode<'a, T> {
                 Ok(Value::Integer(offset)) if offset < 0 => {
                     return Err(PlannerError::NegativeLimitOrOffset)
                 }
-                Ok(Value::Integer(0)) => offset = None,
+                Ok(Value::Null | Value::Integer(0)) => offset = None,
                 _ => (),
             }
         }
@@ -346,6 +267,36 @@ impl<'a, T> PlanNode<'a, T> {
         if self.produces_no_rows() || (limit.is_none() && offset.is_none()) {
             return Ok(self);
         }
+
+        // Push down
+        if let PlanNode::Project(Project { source, outputs }) = self {
+            let limit = limit.map(|limit| limit.into_typed(Type::Integer));
+            let offset = offset.map(|offset| offset.into_typed(Type::Integer));
+            let exprs = outputs
+                .into_iter()
+                .map(|(id, expr)| expr.into_typed(column_map[id].ty))
+                .collect();
+            return Ok(source
+                .limit(ctx, column_map, limit, offset)?
+                .project(column_map, exprs));
+        }
+
+        // Turn Sort + Limit into TopN
+        let limit = match limit {
+            Some(limit) => {
+                if let Self::Sort(Sort { source, order_by }) = self {
+                    return Ok(Self::TopN(TopN {
+                        source,
+                        limit,
+                        offset,
+                        order_by,
+                    }));
+                }
+                Some(limit)
+            }
+            None => None,
+        };
+
         Ok(Self::Limit(Limit {
             source: Box::new(self),
             limit,
@@ -608,10 +559,7 @@ impl<'a, T: Transaction> Planner<'a, T> {
                 let exprs = outputs
                     .into_iter()
                     .take(num_projected_columns)
-                    .map(|id| TypedExpression {
-                        expr: planner::Expression::ColumnRef(id),
-                        ty: column_map[id].ty,
-                    })
+                    .map(|id| planner::Expression::ColumnRef(id).into_typed(column_map[id].ty))
                     .collect();
                 Ok(plan.project(&mut column_map, exprs))
             }
@@ -628,30 +576,6 @@ impl<'a, T: Transaction> Planner<'a, T> {
         }
     }
 
-    #[allow(clippy::unused_self)]
-    fn plan_order_by(
-        &self,
-        expr_binder: &ExpressionBinder<'_, 'a, T>,
-        source: PlanNode<'a, T>,
-        order_by: Vec<parser::OrderBy>,
-    ) -> PlannerResult<PlanNode<'a, T>> {
-        if order_by.is_empty() {
-            return Ok(source);
-        }
-        let mut plan = source;
-        let mut bound_order_by = Vec::with_capacity(order_by.len());
-        for item in order_by {
-            let (new_plan, TypedExpression { expr, .. }) = expr_binder.bind(plan, item.expr)?;
-            plan = new_plan;
-            bound_order_by.push(planner::OrderBy {
-                expr,
-                order: item.order,
-                null_order: item.null_order,
-            });
-        }
-        Ok(plan.sort(bound_order_by))
-    }
-
     fn plan_limit(
         &self,
         expr_binder: &ExpressionBinder<'_, 'a, T>,
@@ -665,7 +589,7 @@ impl<'a, T: Transaction> Planner<'a, T> {
         let offset = offset
             .map(|expr| expr_binder.bind_without_source(expr))
             .transpose()?;
-        source.limit(self.ctx, limit, offset)
+        source.limit(self.ctx, &mut self.column_map(), limit, offset)
     }
 
     fn plan_table_ref(
