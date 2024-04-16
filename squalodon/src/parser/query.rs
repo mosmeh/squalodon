@@ -192,15 +192,39 @@ impl std::fmt::Display for TableRef {
 pub struct Join {
     pub left: TableRef,
     pub right: TableRef,
-    pub on: Option<Expression>,
+    pub condition: JoinCondition,
 }
 
 impl std::fmt::Display for Join {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.left.fmt(f)?;
-        match &self.on {
-            Some(on) => write!(f, " JOIN {} ON {on}", self.right),
-            None => write!(f, " CROSS JOIN {}", self.right),
+        write!(f, " JOIN {} {}", self.right, self.condition)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum JoinCondition {
+    On(Expression),
+    Using(Vec<String>),
+}
+
+impl std::fmt::Display for JoinCondition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::On(expr) => {
+                f.write_str("ON ")?;
+                expr.fmt(f)
+            }
+            Self::Using(columns) => {
+                f.write_str("USING (")?;
+                for (i, column) in columns.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    f.write_str(column)?;
+                }
+                f.write_str(")")
+            }
         }
     }
 }
@@ -467,7 +491,7 @@ impl Parser<'_> {
             table_ref = TableRef::Join(Box::new(Join {
                 left: table_ref,
                 right: self.parse_table_ref()?,
-                on: None,
+                condition: JoinCondition::On(Expression::Constant(true.into())),
             }));
         }
         Ok(table_ref)
@@ -483,7 +507,7 @@ impl Parser<'_> {
                     table_ref = TableRef::Join(Box::new(Join {
                         left: table_ref,
                         right: self.parse_table_or_subquery()?,
-                        on: None,
+                        condition: JoinCondition::On(Expression::Constant(true.into())),
                     }));
                 }
                 Token::Inner => {
@@ -494,12 +518,19 @@ impl Parser<'_> {
                 Token::Join => {
                     self.lexer.consume()?;
                     let right = self.parse_table_or_subquery()?;
-                    self.expect(Token::On)?;
-                    let on = self.parse_expr()?;
+                    let condition = if self.lexer.consume_if_eq(Token::Using)? {
+                        self.expect(Token::LeftParen)?;
+                        let columns = self.parse_comma_separated(Self::expect_identifier)?;
+                        self.expect(Token::RightParen)?;
+                        JoinCondition::Using(columns)
+                    } else {
+                        self.expect(Token::On)?;
+                        JoinCondition::On(self.parse_expr()?)
+                    };
                     table_ref = TableRef::Join(Box::new(Join {
                         left: table_ref,
                         right,
-                        on: Some(on),
+                        condition,
                     }));
                 }
                 _ => return Ok(table_ref),

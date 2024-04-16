@@ -162,6 +162,7 @@ keywords! {
     Union
     Unique
     Update
+    Using
     Values
     When
     Where

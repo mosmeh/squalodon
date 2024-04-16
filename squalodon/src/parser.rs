@@ -7,8 +7,8 @@ pub use ddl::{Constraint, CreateIndex, CreateTable, DropObject, ObjectKind};
 pub use expression::{BinaryOp, ColumnRef, Expression, FunctionArgs, FunctionCall, UnaryOp};
 pub use mutation::{Delete, Insert, Update};
 pub use query::{
-    Distinct, Join, NullOrder, Order, OrderBy, Projection, Query, QueryBody, QueryModifier, Select,
-    TableRef, Values,
+    Distinct, Join, JoinCondition, NullOrder, Order, OrderBy, Projection, Query, QueryBody,
+    QueryModifier, Select, TableRef, Values,
 };
 
 use crate::{

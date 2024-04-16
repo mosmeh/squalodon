@@ -1,4 +1,4 @@
-use super::{Column, ColumnId, ColumnMapView, Node, PlanNode};
+use super::{column::ColumnMapView, Column, ColumnId, Node, PlanNode};
 use std::{cell::RefCell, rc::Rc};
 
 pub struct Explain<'a, T> {
@@ -53,7 +53,7 @@ impl ExplainFormatter {
     }
 
     pub fn column_map(&self) -> ColumnMapView {
-        ColumnMapView(&self.column_map)
+        ColumnMapView::from(self.column_map.as_slice())
     }
 }
 

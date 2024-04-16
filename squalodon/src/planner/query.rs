@@ -444,10 +444,9 @@ impl<'a, T: Transaction> Planner<'a, T> {
                     // Aliases with the same name shadow previous aliases.
                     aliases.insert(alias.clone(), expr);
 
-                    projection_exprs.push(parser::Expression::ColumnRef(parser::ColumnRef {
-                        table_name: None,
-                        column_name: alias,
-                    }));
+                    projection_exprs.push(parser::Expression::ColumnRef(
+                        parser::ColumnRef::unqualified(alias),
+                    ));
                 }
             }
         }
@@ -621,11 +620,26 @@ impl<'a, T: Transaction> Planner<'a, T> {
     ) -> PlannerResult<PlanNode<'a, T>> {
         let left = self.plan_table_ref(expr_binder, join.left)?;
         let right = self.plan_table_ref(expr_binder, join.right)?;
-        let plan = left.cross_product(right);
-        match join.on {
-            Some(on) => self.plan_filter(expr_binder, plan, on),
-            None => Ok(plan),
-        }
+
+        let (plan, condition) = match join.condition {
+            parser::JoinCondition::On(condition) => {
+                let plan = left.cross_product(right);
+                expr_binder.bind(plan, condition)?
+            }
+            parser::JoinCondition::Using(column_names) => {
+                let column_map = self.column_map();
+                let mut condition = TypedExpression::from(Value::from(true));
+                for column_name in column_names {
+                    let left_column_ref = left.resolve_column(&column_map, &column_name)?;
+                    let right_column_ref = right.resolve_column(&column_map, &column_name)?;
+                    condition =
+                        condition.and(self.ctx, left_column_ref.eq(self.ctx, right_column_ref)?)?;
+                }
+                let plan = left.cross_product(right);
+                (plan, condition)
+            }
+        };
+        plan.filter(self.ctx, condition)
     }
 
     fn plan_table_function(

@@ -1,6 +1,6 @@
 use super::{
-    aggregate::AggregatePlanner, Column, ColumnId, ColumnMapView, PlanNode, Planner, PlannerError,
-    PlannerResult,
+    aggregate::AggregatePlanner, column::ColumnMapView, Column, ColumnId, PlanNode, Planner,
+    PlannerError, PlannerResult,
 };
 use crate::{
     catalog::{AggregateFunction, Aggregator, ScalarFunction},
@@ -349,7 +349,7 @@ impl<'a, T> Expression<'a, T, ColumnId> {
         }
     }
 
-    pub fn binary_op(self, ctx: &ConnectionContext<T>, op: BinaryOp, other: Self) -> Self {
+    fn binary_op(self, ctx: &ConnectionContext<T>, op: BinaryOp, other: Self) -> Self {
         if let Ok(value) = op.eval(ctx, &Row::empty(), &self, &other) {
             return Self::Constant(value);
         }
@@ -580,6 +580,78 @@ impl<'a, T> TypedExpression<'a, T> {
             Err(PlannerError::TypeError)
         }
     }
+
+    fn unary_op(self, ctx: &ConnectionContext<T>, op: UnaryOp) -> PlannerResult<Self> {
+        let ty = match (op, self.ty) {
+            (_, NullableType::Null) => return Ok(Value::Null.into()),
+            (UnaryOp::Not, _) => NullableType::NonNull(Type::Boolean),
+            (UnaryOp::Plus | UnaryOp::Minus, NullableType::NonNull(ty)) if ty.is_numeric() => {
+                NullableType::NonNull(ty)
+            }
+            _ => return Err(PlannerError::TypeError),
+        };
+        Ok(self.expr.unary_op(ctx, op).into_typed(ty))
+    }
+
+    fn binary_op(
+        self,
+        ctx: &ConnectionContext<T>,
+        op: BinaryOp,
+        other: Self,
+    ) -> PlannerResult<Self> {
+        let ty = match op {
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
+                match (self.ty, other.ty) {
+                    (NullableType::Null, _) | (_, NullableType::Null) => {
+                        return Ok(Value::Null.into())
+                    }
+                    (
+                        NullableType::NonNull(Type::Integer),
+                        NullableType::NonNull(Type::Integer),
+                    ) => NullableType::NonNull(Type::Integer),
+                    (NullableType::NonNull(ty), NullableType::NonNull(Type::Real))
+                    | (NullableType::NonNull(Type::Real), NullableType::NonNull(ty))
+                        if ty.is_numeric() =>
+                    {
+                        NullableType::NonNull(Type::Real)
+                    }
+                    _ => return Err(PlannerError::TypeError),
+                }
+            }
+            BinaryOp::Eq
+            | BinaryOp::Ne
+            | BinaryOp::Lt
+            | BinaryOp::Le
+            | BinaryOp::Gt
+            | BinaryOp::Ge
+            | BinaryOp::And
+            | BinaryOp::Or => match (self.ty, other.ty) {
+                (NullableType::Null, _) | (_, NullableType::Null) => NullableType::Null,
+                (NullableType::NonNull(lhs_ty), NullableType::NonNull(rhs_ty))
+                    if lhs_ty == rhs_ty =>
+                {
+                    NullableType::NonNull(Type::Boolean)
+                }
+                _ => return Err(PlannerError::TypeError),
+            },
+            BinaryOp::Concat => match (self.ty, other.ty) {
+                (NullableType::Null, _) | (_, NullableType::Null) => return Ok(Value::Null.into()),
+                (NullableType::NonNull(Type::Text), NullableType::NonNull(Type::Text)) => {
+                    NullableType::NonNull(Type::Text)
+                }
+                _ => return Err(PlannerError::TypeError),
+            },
+        };
+        Ok(self.expr.binary_op(ctx, op, other.expr).into_typed(ty))
+    }
+
+    pub fn eq(self, ctx: &ConnectionContext<T>, other: Self) -> PlannerResult<Self> {
+        self.binary_op(ctx, BinaryOp::Eq, other)
+    }
+
+    pub fn and(self, ctx: &ConnectionContext<T>, other: Self) -> PlannerResult<Self> {
+        self.binary_op(ctx, BinaryOp::And, other)
+    }
 }
 
 pub struct ExpressionBinder<'a, 'b, T> {
@@ -638,35 +710,8 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
                         return Ok((source, expr.clone()));
                     }
                 }
-                let column_map = self.planner.column_map();
-                let mut candidates = source.outputs().into_iter().filter_map(|id| {
-                    let column = &column_map[id];
-                    if column.column_name != column_ref.column_name {
-                        return None;
-                    }
-                    match (&column.table_name, &column_ref.table_name) {
-                        (Some(a), Some(b)) if a == b => Some((id, column)),
-                        (_, None) => {
-                            // If the column reference does not specify
-                            // a table name, it ambiguously matches any column
-                            // with the same name.
-                            Some((id, column))
-                        }
-                        (_, Some(_)) => None,
-                    }
-                });
-                let (id, column) = candidates
-                    .next()
-                    .ok_or_else(|| PlannerError::UnknownColumn(column_ref.column_name.clone()))?;
-                if candidates.next().is_some() {
-                    return Err(PlannerError::AmbiguousColumn(
-                        column_ref.column_name.clone(),
-                    ));
-                }
-                Ok((
-                    source,
-                    planner::Expression::ColumnRef(id).into_typed(column.ty),
-                ))
+                let expr = source.resolve_column(&self.planner.column_map(), &column_ref)?;
+                Ok((source, expr))
             }
             parser::Expression::Cast { expr, ty } => {
                 let (plan, TypedExpression { expr, .. }) = self.bind(source, *expr)?;
@@ -674,75 +719,13 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
                 Ok((plan, expr.into_typed(ty)))
             }
             parser::Expression::UnaryOp { op, expr } => {
-                let (plan, TypedExpression { expr, ty }) = self.bind(source, *expr)?;
-                let ty = match (op, ty) {
-                    (_, NullableType::Null) => return Ok((plan, Value::Null.into())),
-                    (UnaryOp::Not, _) => NullableType::NonNull(Type::Boolean),
-                    (UnaryOp::Plus | UnaryOp::Minus, NullableType::NonNull(ty))
-                        if ty.is_numeric() =>
-                    {
-                        NullableType::NonNull(ty)
-                    }
-                    _ => return Err(PlannerError::TypeError),
-                };
-                let expr = expr.unary_op(self.planner.ctx, op).into_typed(ty);
-                Ok((plan, expr))
+                let (plan, expr) = self.bind(source, *expr)?;
+                Ok((plan, expr.unary_op(self.planner.ctx, op)?))
             }
             parser::Expression::BinaryOp { op, lhs, rhs } => {
                 let (plan, lhs) = self.bind(source, *lhs)?;
                 let (plan, rhs) = self.bind(plan, *rhs)?;
-                let ty = match op {
-                    BinaryOp::Add
-                    | BinaryOp::Sub
-                    | BinaryOp::Mul
-                    | BinaryOp::Div
-                    | BinaryOp::Mod => match (lhs.ty, rhs.ty) {
-                        (NullableType::Null, _) | (_, NullableType::Null) => {
-                            return Ok((plan, Value::Null.into()))
-                        }
-                        (
-                            NullableType::NonNull(Type::Integer),
-                            NullableType::NonNull(Type::Integer),
-                        ) => NullableType::NonNull(Type::Integer),
-                        (NullableType::NonNull(ty), NullableType::NonNull(Type::Real))
-                        | (NullableType::NonNull(Type::Real), NullableType::NonNull(ty))
-                            if ty.is_numeric() =>
-                        {
-                            NullableType::NonNull(Type::Real)
-                        }
-                        _ => return Err(PlannerError::TypeError),
-                    },
-                    BinaryOp::Eq
-                    | BinaryOp::Ne
-                    | BinaryOp::Lt
-                    | BinaryOp::Le
-                    | BinaryOp::Gt
-                    | BinaryOp::Ge
-                    | BinaryOp::And
-                    | BinaryOp::Or => match (lhs.ty, rhs.ty) {
-                        (NullableType::Null, _) | (_, NullableType::Null) => NullableType::Null,
-                        (NullableType::NonNull(lhs_ty), NullableType::NonNull(rhs_ty))
-                            if lhs_ty == rhs_ty =>
-                        {
-                            NullableType::NonNull(Type::Boolean)
-                        }
-                        _ => return Err(PlannerError::TypeError),
-                    },
-                    BinaryOp::Concat => match (lhs.ty, rhs.ty) {
-                        (NullableType::Null, _) | (_, NullableType::Null) => {
-                            return Ok((plan, Value::Null.into()))
-                        }
-                        (NullableType::NonNull(Type::Text), NullableType::NonNull(Type::Text)) => {
-                            NullableType::NonNull(Type::Text)
-                        }
-                        _ => return Err(PlannerError::TypeError),
-                    },
-                };
-                let expr = lhs
-                    .expr
-                    .binary_op(self.planner.ctx, op, rhs.expr)
-                    .into_typed(ty);
-                Ok((plan, expr))
+                Ok((plan, lhs.binary_op(self.planner.ctx, op, rhs)?))
             }
             parser::Expression::Case {
                 branches,

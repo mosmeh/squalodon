@@ -88,6 +88,22 @@ impl std::fmt::Display for ColumnRef {
     }
 }
 
+impl ColumnRef {
+    pub fn qualified(table_name: String, column_name: String) -> Self {
+        Self {
+            table_name: Some(table_name),
+            column_name,
+        }
+    }
+
+    pub fn unqualified(column_name: String) -> Self {
+        Self {
+            table_name: None,
+            column_name,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UnaryOp {
     Plus,
@@ -379,16 +395,10 @@ impl Parser<'_> {
                 }
                 Token::Dot => {
                     self.lexer.consume()?;
-                    let column = self.expect_identifier()?;
-                    Expression::ColumnRef(ColumnRef {
-                        table_name: Some(ident),
-                        column_name: column,
-                    })
+                    let column_name = self.expect_identifier()?;
+                    Expression::ColumnRef(ColumnRef::qualified(ident, column_name))
                 }
-                _ => Expression::ColumnRef(ColumnRef {
-                    table_name: None,
-                    column_name: ident,
-                }),
+                _ => Expression::ColumnRef(ColumnRef::unqualified(ident)),
             },
             Token::Cast => {
                 self.expect(Token::LeftParen)?;

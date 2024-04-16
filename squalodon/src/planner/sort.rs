@@ -1,7 +1,8 @@
 use super::{
+    column::ColumnMapView,
     explain::ExplainFormatter,
     expression::{ExpressionBinder, TypedExpression},
-    ColumnId, ColumnMapView, Node, PlanNode, Planner, PlannerResult,
+    ColumnId, Node, PlanNode, Planner, PlannerResult,
 };
 use crate::{
     parser::{self, NullOrder, Order},

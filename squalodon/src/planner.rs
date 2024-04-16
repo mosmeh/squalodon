@@ -1,4 +1,5 @@
 mod aggregate;
+mod column;
 mod ddl;
 mod explain;
 mod expression;
@@ -8,6 +9,7 @@ mod query;
 mod sort;
 
 pub use aggregate::{Aggregate, AggregateOp, ApplyAggregateOp};
+pub use column::{Column, ColumnId};
 pub use expression::{CaseBranch, Expression};
 pub use filter::Filter;
 pub use mutation::{Delete, Insert, Update};
@@ -17,20 +19,15 @@ pub use sort::{OrderBy, Sort, TopN};
 use crate::{
     connection::ConnectionContext,
     parser,
-    rows::ColumnIndex,
     storage::Transaction,
-    types::{NullableType, Params, Type},
+    types::{Params, Type},
     CatalogError, StorageError, Value,
 };
+use column::{ColumnMap, ColumnRef};
 use ddl::{CreateIndex, CreateTable, DropObject};
 use explain::{Explain, ExplainFormatter};
 use expression::{ExpressionBinder, TypedExpression};
-use std::{
-    borrow::Cow,
-    cell::{RefCell, RefMut},
-    num::NonZeroUsize,
-    rc::Rc,
-};
+use std::{cell::RefCell, num::NonZeroUsize, rc::Rc};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlannerError {
@@ -112,30 +109,6 @@ pub struct Plan<'a, T> {
     pub schema: Vec<Column>,
 }
 
-#[derive(Debug, Clone)]
-pub struct Column {
-    pub table_name: Option<String>,
-    pub column_name: String,
-    pub ty: NullableType,
-}
-
-impl Column {
-    pub fn new(name: impl Into<String>, ty: impl Into<NullableType>) -> Self {
-        Self {
-            table_name: None,
-            column_name: name.into(),
-            ty: ty.into(),
-        }
-    }
-
-    pub fn name(&self) -> Cow<str> {
-        self.table_name.as_ref().map_or_else(
-            || Cow::Borrowed(self.column_name.as_str()),
-            |table_name| Cow::Owned(format!("{}.{}", table_name, self.column_name)),
-        )
-    }
-}
-
 trait Node {
     fn fmt_explain(&self, f: &ExplainFormatter);
     fn append_outputs(&self, columns: &mut Vec<ColumnId>);
@@ -167,6 +140,38 @@ impl<'a, T> PlanNode<'a, T> {
         let mut columns = Vec::new();
         self.append_outputs(&mut columns);
         columns
+    }
+
+    fn resolve_column(
+        &self,
+        column_map: &ColumnMap<'_>,
+        column_ref: impl ColumnRef,
+    ) -> PlannerResult<TypedExpression<'a, T>> {
+        let mut candidates = self.outputs().into_iter().filter_map(|id| {
+            let column = &column_map[id];
+            if column.column_name != column_ref.column_name() {
+                return None;
+            }
+            match (&column.table_name, column_ref.table_name()) {
+                (Some(a), Some(b)) if a == b => Some((id, column)),
+                (_, None) => {
+                    // If the column reference does not specify
+                    // a table name, it ambiguously matches any column
+                    // with the same name.
+                    Some((id, column))
+                }
+                (_, Some(_)) => None,
+            }
+        });
+        let (id, column) = candidates
+            .next()
+            .ok_or_else(|| PlannerError::UnknownColumn(column_ref.column_name().to_owned()))?;
+        if candidates.next().is_some() {
+            return Err(PlannerError::AmbiguousColumn(
+                column_ref.column_name().to_owned(),
+            ));
+        }
+        Ok(Expression::ColumnRef(id).into_typed(column.ty))
     }
 
     fn produces_no_rows(&self) -> bool {
@@ -254,64 +259,6 @@ impl<T> Node for Spool<'_, T> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ColumnId(usize);
-
-impl ColumnId {
-    pub fn to_index(self, columns: &[Self]) -> ColumnIndex {
-        let index = columns.iter().position(|id| id.0 == self.0).unwrap();
-        ColumnIndex(index)
-    }
-}
-
-struct ColumnMap<'a>(RefMut<'a, Vec<Column>>);
-
-impl ColumnMap<'_> {
-    fn view(&self) -> ColumnMapView<'_> {
-        ColumnMapView(&self.0)
-    }
-
-    fn insert(&mut self, column: Column) -> ColumnId {
-        let id = ColumnId(self.0.len());
-        self.0.push(column);
-        id
-    }
-}
-
-impl std::ops::Index<ColumnId> for ColumnMap<'_> {
-    type Output = Column;
-
-    fn index(&self, index: ColumnId) -> &Self::Output {
-        &self.0[index.0]
-    }
-}
-
-impl std::ops::Index<&ColumnId> for ColumnMap<'_> {
-    type Output = Column;
-
-    fn index(&self, index: &ColumnId) -> &Self::Output {
-        &self.0[index.0]
-    }
-}
-
-struct ColumnMapView<'a>(&'a [Column]);
-
-impl std::ops::Index<ColumnId> for ColumnMapView<'_> {
-    type Output = Column;
-
-    fn index(&self, index: ColumnId) -> &Self::Output {
-        &self.0[index.0]
-    }
-}
-
-impl std::ops::Index<&ColumnId> for ColumnMapView<'_> {
-    type Output = Column;
-
-    fn index(&self, index: &ColumnId) -> &Self::Output {
-        &self.0[index.0]
-    }
-}
-
 struct Planner<'a, T> {
     ctx: &'a ConnectionContext<'a, T>,
     params: Vec<Value>,
@@ -336,7 +283,7 @@ impl<'a, T> Planner<'a, T> {
     }
 
     fn column_map(&self) -> ColumnMap<'_> {
-        ColumnMap(self.column_map.borrow_mut())
+        ColumnMap::from(self.column_map.as_ref())
     }
 }
 
