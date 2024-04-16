@@ -149,7 +149,7 @@ impl<'a, T: Transaction> Planner<'a, T> {
         &self,
         create_index: parser::CreateIndex,
     ) -> PlannerResult<PlanNode<'a, T>> {
-        let table = self.ctx.catalog().table(create_index.table_name)?;
+        let table = self.ctx.catalog().table(&create_index.table_name)?;
         let column_indexes =
             column_indexes_from_names(table.columns(), &create_index.column_names)?;
         let create_index = CreateIndex {

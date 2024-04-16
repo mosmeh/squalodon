@@ -10,7 +10,7 @@ pub enum Type {
 }
 
 impl Type {
-    pub fn is_numeric(self) -> bool {
+    pub(crate) fn is_numeric(self) -> bool {
         matches!(self, Self::Integer | Self::Real)
     }
 }
@@ -112,7 +112,7 @@ impl std::fmt::Display for Value {
 }
 
 impl Value {
-    pub fn ty(&self) -> NullableType {
+    pub(crate) fn ty(&self) -> NullableType {
         match self {
             Self::Null => NullableType::Null,
             Self::Integer(_) => Type::Integer.into(),
@@ -122,7 +122,7 @@ impl Value {
         }
     }
 
-    pub fn cast(&self, ty: Type) -> Option<Self> {
+    pub(crate) fn cast(&self, ty: Type) -> Option<Self> {
         match (self, ty) {
             (Self::Null, _) => Some(Self::Null),
             (Self::Integer(_), Type::Integer)

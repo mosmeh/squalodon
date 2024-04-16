@@ -12,7 +12,7 @@ mod rows;
 mod types;
 
 pub use catalog::CatalogError;
-pub use connection::{Connection, PreparedStatement, TransactionError};
+pub use connection::{Connection, Inserter, PreparedStatement, TransactionError};
 pub use executor::ExecutorError;
 pub use parser::ParserError;
 pub use planner::PlannerError;
@@ -43,9 +43,6 @@ pub enum Error {
     #[error("Transaction error: {0}")]
     Transaction(#[from] TransactionError),
 
-    #[error("Invalid encoding")]
-    InvalidEncoding,
-
     #[error("The query contains no statement")]
     NoStatement,
 
@@ -55,13 +52,11 @@ pub enum Error {
     #[error("Column index out of range")]
     ColumnIndexOutOfRange,
 
+    #[error("Wrong number of parameters: expected {expected}, got {actual}")]
+    ParameterCountMismatch { expected: usize, actual: usize },
+
     #[error("Unknown prepared statement {0:?}")]
     UnknownPreparedStatement(String),
-
-    #[error(
-        "Wrong number of parameters for prepared statement: expected {expected}, got {actual}"
-    )]
-    ParameterCountMismatch { expected: usize, actual: usize },
 
     #[error(transparent)]
     TryFromValue(#[from] TryFromValueError),

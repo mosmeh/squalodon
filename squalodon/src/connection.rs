@@ -1,12 +1,12 @@
 use crate::{
-    catalog::CatalogRef,
+    catalog::{self, Catalog, CatalogRef},
     executor::Executor,
     parser::{Deallocate, Expression, Parser, Statement, TransactionControl},
     planner::{self, Plan},
-    rows::{Column, Rows},
+    rows::{self, Rows},
     storage::{Storage, Transaction},
     types::{NullableType, Params},
-    Database, Error, Result, Row, Type,
+    Database, Error, ExecutorError, Result, Row, Type,
 };
 use fastrand::Rng;
 use std::{cell::RefCell, collections::HashMap};
@@ -54,6 +54,29 @@ impl<'a, T: Storage> Connection<'a, T> {
         })
     }
 
+    /// Creates a new inserter for the table.
+    ///
+    /// The inserter works in a new transaction separate from the connection's
+    /// current transaction. The transaction is committed when the inserter is
+    /// dropped.
+    ///
+    /// When any insert fails, the transaction is rolled back and the inserter
+    /// is marked as failed. Further inserts return errors immediately.
+    pub fn inserter(&self, table: &str) -> Result<Inserter<'_, T::Transaction<'a>>> {
+        let table_name = table.to_owned();
+        let txn = self.db.storage.transaction();
+        let catalog = self.db.catalog.with(&txn);
+        let table = catalog.table(&table_name)?;
+        let columns = table.columns().to_vec();
+        Ok(Inserter {
+            txn: Some(txn),
+            catalog: &self.db.catalog,
+            table_name,
+            columns,
+            rows: Vec::new(),
+        })
+    }
+
     fn execute_statement(&self, statement: Statement, params: Vec<Expression>) -> Result<Rows> {
         match statement {
             Statement::Prepare(prepare) => {
@@ -72,24 +95,18 @@ impl<'a, T: Storage> Connection<'a, T> {
                     .clone();
                 return self.execute_statement(prepared_statement, execute.params);
             }
-            Statement::Deallocate(deallocate) => match deallocate {
-                Deallocate::All => {
-                    self.prepared_statements.borrow_mut().clear();
-                    return Ok(Rows::empty());
+            Statement::Deallocate(deallocate) => {
+                let mut prepared_statements = self.prepared_statements.borrow_mut();
+                match deallocate {
+                    Deallocate::All => prepared_statements.clear(),
+                    Deallocate::Name(name) => {
+                        if prepared_statements.remove(&name).is_none() {
+                            return Err(Error::UnknownPreparedStatement(name));
+                        }
+                    }
                 }
-                Deallocate::Name(name) => {
-                    return if self
-                        .prepared_statements
-                        .borrow_mut()
-                        .remove(&name)
-                        .is_some()
-                    {
-                        Ok(Rows::empty())
-                    } else {
-                        Err(Error::UnknownPreparedStatement(name))
-                    };
-                }
-            },
+                return Ok(Rows::empty());
+            }
             Statement::Transaction(txn_control) => {
                 self.handle_transaction_control(txn_control)?;
                 return Ok(Rows::empty());
@@ -174,7 +191,7 @@ fn execute_plan<T: Transaction>(ctx: &ConnectionContext<'_, T>, plan: Plan<'_, T
     let columns: Vec<_> = schema
         .into_iter()
         .map(|column| {
-            Column {
+            rows::Column {
                 name: column.column_name,
                 ty: match column.ty {
                     NullableType::NonNull(ty) => ty,
@@ -240,7 +257,7 @@ impl<T: Storage> PreparedStatement<'_, '_, T> {
             .conn
             .execute_statement(self.statement.clone(), params)?;
         let num_affected_rows = if is_mutation {
-            rows.next().map_or(0, |row| row.get(0).unwrap())
+            rows.next().unwrap().get(0).unwrap()
         } else {
             0
         };
@@ -258,6 +275,83 @@ impl<T: Storage> PreparedStatement<'_, '_, T> {
             .conn
             .execute_statement(self.statement.clone(), params)?;
         Ok(if is_mutation { Rows::empty() } else { rows })
+    }
+}
+
+pub struct Inserter<'a, T: Transaction> {
+    txn: Option<T>,
+    catalog: &'a Catalog<T>,
+    table_name: String,
+    columns: Vec<catalog::Column>,
+    rows: Vec<Row>,
+}
+
+impl<T: Transaction> Inserter<'_, T> {
+    pub fn insert<P: Params>(&mut self, params: P) -> Result<()> {
+        self.try_operation(|inserter| inserter.insert_inner(params))
+    }
+
+    fn insert_inner<P: Params>(&mut self, params: P) -> Result<()> {
+        let values = params.into_values();
+        if values.len() != self.columns.len() {
+            return Err(Error::ParameterCountMismatch {
+                expected: self.columns.len(),
+                actual: values.len(),
+            });
+        }
+        let mut row = Vec::new();
+        for (value, column) in values.into_iter().zip(&self.columns) {
+            let value = value
+                .cast(column.ty)
+                .ok_or(Error::Executor(ExecutorError::TypeError))?;
+            row.push(value);
+        }
+        self.rows.push(Row(row));
+
+        // Arbitrary threshold
+        if self.rows.len() >= 16384 {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    pub fn flush(&mut self) -> Result<()> {
+        self.try_operation(Self::flush_inner)
+    }
+
+    fn flush_inner(&mut self) -> Result<()> {
+        if self.rows.is_empty() {
+            return Ok(());
+        }
+        let txn = self.txn.as_ref().unwrap();
+        let table = self.catalog.with(txn).table(&self.table_name)?;
+        for row in std::mem::take(&mut self.rows) {
+            table.insert(&row)?;
+        }
+        Ok(())
+    }
+
+    fn try_operation(&mut self, op: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> {
+        if self.txn.is_none() {
+            return Err(Error::Transaction(TransactionError::TransactionAborted));
+        }
+        match op(self) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.txn.take();
+                self.rows.clear();
+                Err(e)
+            }
+        }
+    }
+}
+
+impl<T: Transaction> Drop for Inserter<'_, T> {
+    fn drop(&mut self) {
+        let _ = self.flush();
+        if let Some(txn) = self.txn.take() {
+            txn.commit();
+        }
     }
 }
 

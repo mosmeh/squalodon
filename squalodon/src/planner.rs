@@ -352,7 +352,7 @@ impl<'a, T: Transaction> Planner<'a, T> {
                 self.rewrite_to("SELECT * FROM squalodon_tables() ORDER BY name", [])
             }
             parser::Statement::Describe(name) => {
-                self.ctx.catalog().table(name.clone())?; // Check if the table exists
+                self.ctx.catalog().table(&name)?; // Check if the table exists
                 self.rewrite_to(
                     "SELECT column_name, type, is_nullable, is_primary_key, default_value
                     FROM squalodon_columns()

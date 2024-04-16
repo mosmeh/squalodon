@@ -150,17 +150,13 @@ impl<'conn, 'db, T: Storage> Repl<'conn, 'db, T> {
                 if let Some(escape) = escape {
                     builder.escape(Some(escape.try_into()?));
                 }
-                let reader = builder.has_headers(skip_header).from_path(filename)?;
-                self.conn.execute("BEGIN", [])?;
-                match insert_into_table(self.conn, reader, &table) {
-                    Ok(()) => {
-                        self.conn.execute("COMMIT", [])?;
-                    }
-                    Err(e) => {
-                        self.conn.execute("ROLLBACK", [])?;
-                        return Err(e);
-                    }
+                let mut reader = builder.has_headers(skip_header).from_path(filename)?;
+                let mut inserter = self.conn.inserter(&table)?;
+                for record in reader.records() {
+                    let params: Vec<_> = record?.into_iter().map(Into::into).collect();
+                    inserter.insert(params)?;
                 }
+                inserter.flush()?;
             }
             Metacommand::Read { filename } => self.process_file(filename)?,
         }
@@ -244,41 +240,6 @@ enum Metacommand {
     /// Read input from FILENAME
     #[clap(name = ".read")]
     Read { filename: PathBuf },
-}
-
-/// Insert rows read from a CSV reader into a table.
-///
-/// Returns the number of rows inserted.
-fn insert_into_table<T: Storage>(
-    conn: &Connection<T>,
-    mut reader: csv::Reader<std::fs::File>,
-    table: &str,
-) -> Result<()> {
-    use std::fmt::Write;
-
-    let mut statement = None;
-    for record in reader.records() {
-        let record = record?;
-        let statement = match &statement {
-            Some(statement) => statement,
-            None => {
-                let mut sql = "INSERT INTO ".to_owned();
-                sql.push_str(&squalodon::lexer::quote(table, '"'));
-                sql.push_str(" VALUES (");
-                for i in 0..record.len() {
-                    if i > 0 {
-                        sql.push(',');
-                    }
-                    write!(&mut sql, "${}", i + 1)?;
-                }
-                sql.push(')');
-                statement.insert(conn.prepare(&sql)?)
-            }
-        };
-        let params: Vec<_> = record.into_iter().map(Into::into).collect();
-        statement.execute(params)?;
-    }
-    Ok(())
 }
 
 fn write_table<W: std::io::Write>(out: &mut W, rows: Rows) -> std::io::Result<()> {

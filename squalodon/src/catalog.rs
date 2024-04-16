@@ -230,11 +230,14 @@ pub struct CatalogRef<'a, T> {
 }
 
 impl<'a, T: Transaction> CatalogRef<'a, T> {
-    pub fn table(&self, name: String) -> CatalogResult<storage::Table<'a, T>> {
+    pub fn table(&self, name: &str) -> CatalogResult<storage::Table<'a, T>> {
         let mut key = ObjectId::TABLE_CATALOG.serialize().to_vec();
         key.extend_from_slice(name.as_bytes());
         self.txn.get(&key).map_or(
-            Err(CatalogError::UnknownEntry(CatalogEntryKind::Table, name)),
+            Err(CatalogError::UnknownEntry(
+                CatalogEntryKind::Table,
+                name.to_owned(),
+            )),
             |value| self.read_table(&key, &value),
         )
     }

@@ -71,7 +71,7 @@ pub(crate) struct Table<'a, T> {
     txn: &'a T,
     name: String,
     def: catalog::Table,
-    indexes: Vec<Index<'a, T>>,
+    indexes: Vec<Index>,
 }
 
 impl<T> Clone for Table<'_, T> {
@@ -95,7 +95,10 @@ impl<'a, T> Table<'a, T> {
         let indexes = indexes
             .into_iter()
             .zip(def.index_names.iter())
-            .map(|(def, name)| Index::new(txn, name.clone(), def))
+            .map(|(def, name)| Index {
+                name: name.clone(),
+                def,
+            })
             .collect();
         Self {
             txn,
@@ -117,7 +120,7 @@ impl<'a, T> Table<'a, T> {
         &self.def.constraints
     }
 
-    pub fn indexes(&self) -> &[Index<'a, T>] {
+    pub fn indexes(&self) -> &[Index] {
         &self.indexes
     }
 }
@@ -239,27 +242,13 @@ impl<'a, T: Transaction> Table<'a, T> {
     }
 }
 
-pub(crate) struct Index<'a, T> {
-    txn: &'a T,
+#[derive(Clone)]
+pub(crate) struct Index {
     name: String,
     def: catalog::Index,
 }
 
-impl<T> Clone for Index<'_, T> {
-    fn clone(&self) -> Self {
-        Self {
-            txn: self.txn,
-            name: self.name.clone(),
-            def: self.def.clone(),
-        }
-    }
-}
-
-impl<'a, T> Index<'a, T> {
-    pub fn new(txn: &'a T, name: String, def: catalog::Index) -> Self {
-        Self { txn, name, def }
-    }
-
+impl Index {
     pub fn name(&self) -> &str {
         &self.name
     }
