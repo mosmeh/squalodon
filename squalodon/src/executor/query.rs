@@ -409,9 +409,7 @@ impl HashAggregate {
         let mut non_aggregated = Vec::new();
         for op in &ops {
             match op {
-                AggregateOp::ApplyAggregate(aggregation) => {
-                    aggregated.push(aggregation);
-                }
+                AggregateOp::ApplyAggregate(op) => aggregated.push(op),
                 AggregateOp::GroupBy { target: index } => group_by.push(*index),
                 AggregateOp::Passthrough { target: index } => non_aggregated.push(*index),
             }
@@ -430,13 +428,13 @@ impl HashAggregate {
                     .iter()
                     .map(|op| GroupAggregator::new(op))
                     .collect(),
-                non_aggregated: Vec::with_capacity(non_aggregated.len()),
+                non_aggregated: non_aggregated
+                    .iter()
+                    .map(|index| row[*index].clone())
+                    .collect(),
             });
             for (aggregator, op) in group.aggregators.iter_mut().zip(&aggregated) {
                 aggregator.update(&row[op.input])?;
-            }
-            for index in &non_aggregated {
-                group.non_aggregated.push(row[index].clone());
             }
         }
         let rows = groups.into_iter().map(move |(key, group)| {
@@ -448,7 +446,7 @@ impl HashAggregate {
                 .map(|op| {
                     match op {
                         AggregateOp::ApplyAggregate(_) => aggregator_iter.next(),
-                        AggregateOp::GroupBy { .. } => group_by_iter.next(),
+                        AggregateOp::GroupBy { .. } => group_by_iter.next().transpose().unwrap(),
                         AggregateOp::Passthrough { .. } => non_aggregated_iter.next(),
                     }
                     .unwrap()

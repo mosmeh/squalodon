@@ -106,7 +106,10 @@ impl MemcomparableSerde {
     /// Deserialize a sequence of values from the buffer.
     ///
     /// Invalid or incomplete trailing bytes are ignored.
-    pub fn deserialize_seq_from<'a>(&'a self, buf: &'a [u8]) -> impl Iterator<Item = Value> + '_ {
+    pub fn deserialize_seq_from<'a>(
+        &'a self,
+        buf: &'a [u8],
+    ) -> impl Iterator<Item = Result<Value, DeserializeError>> + '_ {
         let mut buf = buf;
         std::iter::from_fn(move || {
             if buf.is_empty() {
@@ -114,10 +117,10 @@ impl MemcomparableSerde {
             }
             if let Some((value, len)) = self.deserialize_from(buf) {
                 buf = &buf[len..];
-                Some(value)
+                Some(Ok(value))
             } else {
                 buf = &[];
-                None
+                Some(Err(DeserializeError))
             }
         })
     }
@@ -125,18 +128,18 @@ impl MemcomparableSerde {
     /// Deserialize a value at the beginning of the buffer.
     ///
     /// When successful, returns the value and the number of bytes consumed.
-    pub fn deserialize_from(&self, buf: &[u8]) -> Option<(Value, usize)> {
+    fn deserialize_from(&self, buf: &[u8]) -> Option<(Value, usize)> {
         let (&tag, buf) = buf.split_first()?;
         let buf = match self.order {
             Order::Desc if !buf.is_empty() => Cow::Owned(buf.iter().map(|i| !i).collect()),
             Order::Asc | Order::Desc => Cow::Borrowed(buf),
         };
         match (tag, buf.as_ref()) {
-            (NULL_FIRST_TAG, []) => match self.null_order {
+            (NULL_FIRST_TAG, _) => match self.null_order {
                 NullOrder::NullsFirst => Some((Value::Null, TAG_SIZE)),
                 NullOrder::NullsLast => None,
             },
-            (NULL_LAST_TAG, []) => match self.null_order {
+            (NULL_LAST_TAG, _) => match self.null_order {
                 NullOrder::NullsFirst => None,
                 NullOrder::NullsLast => Some((Value::Null, TAG_SIZE)),
             },
@@ -155,14 +158,17 @@ impl MemcomparableSerde {
                 }
                 Some((Value::Real(f64::from_bits(v)), TAG_SIZE + serialized.len()))
             }
-            (BOOLEAN_TAG, [0]) => Some((Value::Boolean(false), TAG_SIZE + 1)),
-            (BOOLEAN_TAG, [1]) => Some((Value::Boolean(true), TAG_SIZE + 1)),
-            (TEXT_TAG, [0]) => Some((Value::Text(String::new()), TAG_SIZE + 1)),
+            (BOOLEAN_TAG, [0, ..]) => Some((Value::Boolean(false), TAG_SIZE + 1)),
+            (BOOLEAN_TAG, [1, ..]) => Some((Value::Boolean(true), TAG_SIZE + 1)),
+            (TEXT_TAG, [0, ..]) => Some((Value::Text(String::new()), TAG_SIZE + 1)),
             (TEXT_TAG, [1, serialized @ ..]) => {
-                let mut s = Vec::with_capacity(serialized.len() / UNIT_SIZE);
+                let mut s = Vec::new();
                 let mut serialized = serialized;
                 let mut consumed_len = TAG_SIZE + 1;
                 loop {
+                    if serialized.len() < UNIT_SIZE {
+                        return None;
+                    }
                     let (unit, rest) = serialized.split_at(UNIT_SIZE);
                     consumed_len += UNIT_SIZE;
                     match unit[CHUNK_SIZE] {
@@ -184,3 +190,7 @@ impl MemcomparableSerde {
         }
     }
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("Deserialization failed")]
+pub struct DeserializeError;
