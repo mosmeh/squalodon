@@ -5,9 +5,11 @@ use super::{
     Column, ColumnId, ColumnMap, ExplainFormatter, Node, PlanNode, Planner, PlannerResult, Sort,
 };
 use crate::{
-    catalog::TableFunction,
+    catalog::{AggregateFunction, Aggregator, TableFunction},
     connection::ConnectionContext,
-    parser, planner,
+    executor::ExecutorResult,
+    parser,
+    planner::{self, ApplyAggregateOp},
     storage::{Table, Transaction},
     types::NullableType,
     PlannerError, Row, Type, Value,
@@ -534,6 +536,27 @@ impl<'a, T: Transaction> Planner<'a, T> {
 
         match distinct {
             Some(parser::Distinct { on: Some(on) }) => {
+                /// An aggregator that returns the first row it sees.
+                #[derive(Default)]
+                struct First {
+                    value: Option<Value>,
+                }
+
+                impl Aggregator for First {
+                    fn update(&mut self, value: &Value) -> ExecutorResult<()> {
+                        if self.value.is_none() {
+                            self.value = Some(value.clone());
+                        }
+                        Ok(())
+                    }
+
+                    fn finish(&self) -> Value {
+                        self.value.clone().unwrap_or(Value::Null)
+                    }
+                }
+
+                static FIRST: AggregateFunction = AggregateFunction::new_internal::<First>();
+
                 for expr in on {
                     let (new_plan, expr) = expr_binder.bind(plan, expr)?;
                     plan = new_plan;
@@ -544,10 +567,14 @@ impl<'a, T: Transaction> Planner<'a, T> {
                 let plan = plan.project(&mut column_map, exprs);
                 let outputs = plan.outputs();
 
-                let projected = outputs
-                    .iter()
-                    .take(num_projected_columns)
-                    .map(|target| planner::AggregateOp::Passthrough { target: *target });
+                let projected = outputs.iter().take(num_projected_columns).map(|target| {
+                    planner::AggregateOp::ApplyAggregate(ApplyAggregateOp {
+                        function: &FIRST,
+                        is_distinct: false,
+                        input: *target,
+                        output: *target,
+                    })
+                });
                 let on = outputs
                     .iter()
                     .skip(num_projected_columns)

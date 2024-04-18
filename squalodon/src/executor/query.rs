@@ -399,19 +399,12 @@ pub struct HashAggregate {
 
 impl HashAggregate {
     pub fn new<T>(source: ExecutorNode<'_, T>, ops: Vec<AggregateOp>) -> ExecutorResult<Self> {
-        struct Group {
-            aggregators: Vec<GroupAggregator>,
-            non_aggregated: Vec<Value>,
-        }
-
-        let mut group_by = Vec::new();
         let mut aggregated = Vec::new();
-        let mut non_aggregated = Vec::new();
+        let mut group_by = Vec::new();
         for op in &ops {
             match op {
                 AggregateOp::ApplyAggregate(op) => aggregated.push(op),
-                AggregateOp::GroupBy { target: index } => group_by.push(*index),
-                AggregateOp::Passthrough { target: index } => non_aggregated.push(*index),
+                AggregateOp::GroupBy { target } => group_by.push(*target),
             }
         }
 
@@ -423,31 +416,25 @@ impl HashAggregate {
             for column_index in &group_by {
                 serde.serialize_into(&row[column_index], &mut key);
             }
-            let group = groups.entry(key).or_insert_with(|| Group {
-                aggregators: aggregated
+            let aggregators = groups.entry(key).or_insert_with(|| {
+                aggregated
                     .iter()
                     .map(|op| GroupAggregator::new(op))
-                    .collect(),
-                non_aggregated: non_aggregated
-                    .iter()
-                    .map(|index| row[*index].clone())
-                    .collect(),
+                    .collect::<Vec<_>>()
             });
-            for (aggregator, op) in group.aggregators.iter_mut().zip(&aggregated) {
+            for (aggregator, op) in aggregators.iter_mut().zip(&aggregated) {
                 aggregator.update(&row[op.input])?;
             }
         }
-        let rows = groups.into_iter().map(move |(key, group)| {
+        let rows = groups.into_iter().map(move |(key, aggregators)| {
             let mut group_by_iter = serde.deserialize_seq_from(&key);
-            let mut aggregator_iter = group.aggregators.into_iter().map(GroupAggregator::finish);
-            let mut non_aggregated_iter = group.non_aggregated.into_iter();
+            let mut aggregator_iter = aggregators.into_iter().map(GroupAggregator::finish);
             let columns = ops
                 .iter()
                 .map(|op| {
                     match op {
                         AggregateOp::ApplyAggregate(_) => aggregator_iter.next(),
                         AggregateOp::GroupBy { .. } => group_by_iter.next().transpose().unwrap(),
-                        AggregateOp::Passthrough { .. } => non_aggregated_iter.next(),
                     }
                     .unwrap()
                 })
@@ -485,7 +472,6 @@ impl ApplyAggregateOp {
 pub enum AggregateOp {
     ApplyAggregate(ApplyAggregateOp),
     GroupBy { target: ColumnIndex },
-    Passthrough { target: ColumnIndex },
 }
 
 impl AggregateOp {
@@ -495,9 +481,6 @@ impl AggregateOp {
                 Self::ApplyAggregate(ApplyAggregateOp::from_plan(op, inputs))
             }
             planner::AggregateOp::GroupBy { target, .. } => Self::GroupBy {
-                target: target.to_index(inputs),
-            },
-            planner::AggregateOp::Passthrough { target, .. } => Self::Passthrough {
                 target: target.to_index(inputs),
             },
         }

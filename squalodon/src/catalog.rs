@@ -146,6 +146,17 @@ pub struct AggregateFunction {
     pub init: AggregateInitFnPtr,
 }
 
+impl AggregateFunction {
+    /// Creates an aggregate function that is not exposed to the user.
+    pub const fn new_internal<T: Aggregator + Default + 'static>() -> Self {
+        Self {
+            name: "(internal)",
+            bind: |_| unreachable!(),
+            init: || Box::<T>::default(),
+        }
+    }
+}
+
 pub type AggregateBindFnPtr = fn(NullableType) -> PlannerResult<NullableType>;
 pub type AggregateInitFnPtr = fn() -> Box<dyn Aggregator>;
 

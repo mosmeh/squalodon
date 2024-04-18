@@ -890,7 +890,7 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
                 }
 
                 static ASSERT_SINGLE_ROW: AggregateFunction =
-                    internal_aggregate_function::<AssertSingleRow>();
+                    AggregateFunction::new_internal::<AssertSingleRow>();
 
                 let column_name = query.to_string();
                 let subquery = self.planner.plan_query(*query)?;
@@ -934,7 +934,7 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
                     }
                 }
 
-                static EXISTS: AggregateFunction = internal_aggregate_function::<Exists>();
+                static EXISTS: AggregateFunction = AggregateFunction::new_internal::<Exists>();
 
                 let column_name = format!("EXISTS ({query})");
                 let subquery = self.planner.plan_query(*query)?;
@@ -981,13 +981,5 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
     ) -> PlannerResult<TypedExpression<'b, T>> {
         self.bind(PlanNode::new_empty_row(), expr)
             .map(|(_, expr)| expr)
-    }
-}
-
-const fn internal_aggregate_function<T: Aggregator + Default + 'static>() -> AggregateFunction {
-    AggregateFunction {
-        name: "(internal)",
-        bind: |_| unreachable!(),
-        init: || Box::<T>::default(),
     }
 }

@@ -40,11 +40,6 @@ impl<T> Node for Aggregate<'_, T> {
                         node.field("group by", f.column_map()[target].name());
                     }
                 }
-                for op in ops {
-                    if let AggregateOp::Passthrough { target } = op {
-                        node.field("passthrough", f.column_map()[target].name());
-                    }
-                }
                 node.child(source);
             }
         }
@@ -63,7 +58,7 @@ impl<T> Node for Aggregate<'_, T> {
                         AggregateOp::ApplyAggregate(ApplyAggregateOp { output, .. }) => {
                             columns.push(*output);
                         }
-                        AggregateOp::GroupBy { target } | AggregateOp::Passthrough { target } => {
+                        AggregateOp::GroupBy { target } => {
                             columns.push(*target);
                         }
                     }
@@ -83,7 +78,6 @@ pub struct ApplyAggregateOp<'a> {
 pub enum AggregateOp<'a> {
     ApplyAggregate(ApplyAggregateOp<'a>),
     GroupBy { target: ColumnId },
-    Passthrough { target: ColumnId },
 }
 
 impl<'a, T> PlanNode<'a, T> {
