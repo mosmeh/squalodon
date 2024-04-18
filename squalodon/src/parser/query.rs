@@ -557,13 +557,9 @@ impl Parser<'_> {
             }
             Token::LeftParen => {
                 self.lexer.consume()?;
-                let inner = match self.lexer.peek()? {
-                    Token::Identifier(_) | Token::LeftParen => self.parse_table_or_subquery()?,
-                    Token::Select | Token::Values => TableRef::Subquery(self.parse_query()?.into()),
-                    token => return Err(unexpected(token)),
-                };
+                let query = self.parse_query()?;
                 self.expect(Token::RightParen)?;
-                Ok(inner)
+                Ok(TableRef::Subquery(query.into()))
             }
             token => Err(unexpected(token)),
         }
