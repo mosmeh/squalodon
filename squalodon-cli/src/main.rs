@@ -171,7 +171,6 @@ impl<'conn, 'db, T: Storage> Repl<'conn, 'db, T> {
             match segment {
                 Ok(segment) => {
                     match segment.kind() {
-                        SegmentKind::Comment => (),
                         SegmentKind::Operator if segment.slice() == ";" => {
                             // This semicolon finishes a statement.
                             statements.push(std::mem::take(&mut current_statement));
@@ -191,12 +190,9 @@ impl<'conn, 'db, T: Storage> Repl<'conn, 'db, T> {
         }
         statements.push(current_statement);
         for statement in statements {
-            let statement = statement.trim();
-            if statement.is_empty() {
-                continue;
-            }
-            match self.conn.query(statement, []) {
+            match self.conn.query(&statement, []) {
                 Ok(rows) => write_table(&mut std::io::stdout().lock(), rows)?,
+                Err(squalodon::Error::NoStatement) => (),
                 Err(e) if repl => {
                     eprintln!("{e}");
                     return Ok(true);

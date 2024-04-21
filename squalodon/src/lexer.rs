@@ -88,7 +88,7 @@ macro_rules! keywords {
                     Self::String(s) => std::fmt::Display::fmt(&quote(s, '\''), f),
                     Self::Identifier(i) => std::fmt::Display::fmt(i, f),
                     Self::Parameter(p) => write!(f, "${}", p),
-                    Self::Comment(c) => write!(f, "--{}", c),
+                    Self::Comment(c) => write!(f, "/*{}*/", c),
                     Self::Whitespace(c) => c.fmt(f),
                     Self::Eof => f.write_str("EOF"),
                 }
@@ -372,6 +372,16 @@ impl<'a> Inner<'a> {
             } else if self.consume_if_eq('.') {
                 Token::Dot
             } else if self.consume_if_eq('/') {
+                if self.consume_if_eq('*') {
+                    let mut s = String::new();
+                    while let Some(ch) = self.consume() {
+                        if ch == '*' && self.consume_if_eq('/') {
+                            return Ok(Token::Comment(s));
+                        }
+                        s.push(ch);
+                    }
+                    return Err(LexerError::UnexpectedEof);
+                }
                 Token::Slash
             } else if self.consume_if_eq(';') {
                 Token::Semicolon
