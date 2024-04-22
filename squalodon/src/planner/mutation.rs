@@ -3,11 +3,7 @@ use super::{
     Column, ColumnId, ColumnMap, ExplainFormatter, Node, PlanNode, Planner, PlannerError,
     PlannerResult,
 };
-use crate::{
-    parser, planner,
-    storage::{Table, Transaction},
-    Type,
-};
+use crate::{catalog::Table, parser, planner, storage::Transaction, Type};
 
 pub struct Insert<'a, T> {
     pub source: Box<PlanNode<'a, T>>,

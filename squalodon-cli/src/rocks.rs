@@ -23,35 +23,27 @@ pub struct Transaction<'a>(Option<rocksdb::Transaction<'a, TransactionDB>>);
 
 impl squalodon::storage::Transaction for Transaction<'_> {
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.0.as_ref().unwrap().get(key).unwrap()
+        self.inner().get(key).unwrap()
     }
 
-    fn scan<const N: usize>(
-        &self,
-        start: [u8; N],
-        end: [u8; N],
-    ) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> {
-        self.0
-            .as_ref()
-            .unwrap()
+    fn scan(&self, start: Vec<u8>, end: Vec<u8>) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> {
+        self.inner()
             .iterator(IteratorMode::From(&start, Direction::Forward))
             .map(std::result::Result::unwrap)
             .take_while(move |(k, _)| k.as_ref() < &end)
             .map(|(k, v)| (k.to_vec(), v.to_vec()))
     }
 
-    fn insert(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
-        let inner = self.0.as_ref().unwrap();
-        if inner.get(&key).unwrap().is_some() {
-            return false;
-        }
+    fn insert(&self, key: &[u8], value: &[u8]) -> bool {
+        let inner = self.inner();
+        let was_present = inner.get(key).unwrap().is_some();
         inner.put(key, value).unwrap();
-        true
+        !was_present
     }
 
-    fn remove(&self, key: Vec<u8>) -> Option<Vec<u8>> {
-        let inner = self.0.as_ref().unwrap();
-        inner.get(&key).unwrap().map(|value| {
+    fn remove(&self, key: &[u8]) -> Option<Vec<u8>> {
+        let inner = self.inner();
+        inner.get(key).unwrap().map(|value| {
             inner.delete(key).unwrap();
             value
         })
@@ -67,5 +59,11 @@ impl Drop for Transaction<'_> {
         if let Some(inner) = self.0.take() {
             inner.rollback().unwrap();
         }
+    }
+}
+
+impl Transaction<'_> {
+    fn inner(&self) -> &rocksdb::Transaction<'_, TransactionDB> {
+        self.0.as_ref().unwrap()
     }
 }

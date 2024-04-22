@@ -70,9 +70,11 @@ pub struct Database<'a, T: Storage + 'a> {
 }
 
 impl<'a, T: Storage> Database<'a, T> {
-    pub fn new(storage: T) -> Result<Self> {
-        let catalog = Catalog::load(&storage)?;
-        Ok(Self { storage, catalog })
+    pub fn new(storage: T) -> Self {
+        Self {
+            storage,
+            catalog: Catalog::new(),
+        }
     }
 
     pub fn connect(&'a self) -> Connection<'a, T> {

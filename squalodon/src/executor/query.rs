@@ -1,10 +1,10 @@
 use super::{ConnectionContext, ExecutorNode, ExecutorResult, IntoOutput, Node, NodeError, Output};
 use crate::{
-    catalog::{AggregateInitFnPtr, Aggregator, TableFnPtr},
+    catalog::{AggregateInitFnPtr, Aggregator, Table, TableFnPtr},
     memcomparable::MemcomparableSerde,
     planner::{self, ColumnId, Expression, OrderBy},
     rows::ColumnIndex,
-    storage::{StorageResult, Table, Transaction},
+    storage::{StorageResult, Transaction},
     ExecutorError, Row, Value,
 };
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -49,7 +49,9 @@ pub struct SeqScan<'a> {
 
 impl<'a> SeqScan<'a> {
     pub fn new<T: Transaction>(table: Table<'a, T>) -> Self {
-        Self { iter: table.scan() }
+        Self {
+            iter: Box::new(table.scan()),
+        }
     }
 }
 

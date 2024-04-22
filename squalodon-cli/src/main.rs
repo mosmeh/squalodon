@@ -48,7 +48,7 @@ fn main() -> Result<()> {
 }
 
 fn run<T: Storage>(args: Args, storage: T) -> Result<()> {
-    let db = Database::new(storage)?;
+    let db = Database::new(storage);
     let conn = db.connect();
     let mut repl = Repl::new(&conn)?;
     if let Some(init) = args.init {

@@ -1,8 +1,5 @@
 use super::{ExecutorNode, ExecutorResult, IntoOutput, Node, Output};
-use crate::{
-    storage::{Table, Transaction},
-    Row,
-};
+use crate::{catalog::Table, storage::Transaction, Row};
 
 pub struct Insert {
     row: Option<Row>,

@@ -5,12 +5,12 @@ use crate::{
     parser::Expression,
     planner::{self, PlannerResult},
     rows::ColumnIndex,
-    storage::{self, Storage, Transaction},
+    storage::{Transaction, TransactionExt},
     types::{NullableType, Type},
     Row, Value,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::atomic::AtomicU64};
+use std::collections::HashMap;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CatalogError {
@@ -29,8 +29,9 @@ pub enum CatalogError {
 
 pub type CatalogResult<T> = std::result::Result<T, CatalogError>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum CatalogEntryKind {
+    Metadata,
     Table,
     Index,
     ScalarFunction,
@@ -41,6 +42,7 @@ pub enum CatalogEntryKind {
 impl std::fmt::Display for CatalogEntryKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::Metadata => "metadata",
             Self::Table => "table",
             Self::Index => "index",
             Self::ScalarFunction => "scalar function",
@@ -50,33 +52,91 @@ impl std::fmt::Display for CatalogEntryKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ObjectId(pub u64);
-
-impl ObjectId {
-    pub const TABLE_CATALOG: Self = Self(0);
-    pub const INDEX_CATALOG: Self = Self(1);
-    pub const MAX_SYSTEM: Self = Self::INDEX_CATALOG;
-
-    const SERIALIZED_LEN: usize = std::mem::size_of::<u64>();
-
-    pub fn serialize(self) -> [u8; Self::SERIALIZED_LEN] {
-        let mut buf = [0; Self::SERIALIZED_LEN];
-        self.serialize_into(&mut buf);
-        buf
+impl CatalogEntryKind {
+    fn key(self, name: &str) -> Vec<u8> {
+        let mut key = ObjectId::CATALOG.serialize();
+        key.extend_from_slice(&(self as u64).to_be_bytes());
+        key.extend_from_slice(name.as_bytes());
+        key
     }
 
-    pub fn serialize_into(self, buf: &mut [u8; Self::SERIALIZED_LEN]) {
-        buf.copy_from_slice(&self.0.to_be_bytes());
+    fn prefix(self) -> Vec<u8> {
+        self.key("")
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ObjectId(u64);
+
+impl ObjectId {
+    const CATALOG: Self = Self(0);
+
+    pub fn serialize(self) -> Vec<u8> {
+        self.0.to_be_bytes().to_vec()
+    }
+}
+
+pub struct Table<'a, T> {
+    txn: &'a T,
+    def: TableDef,
+    indexes: Vec<Index>,
+}
+
+impl<T> Clone for Table<'_, T> {
+    fn clone(&self) -> Self {
+        Self {
+            txn: self.txn,
+            def: self.def.clone(),
+            indexes: self.indexes.clone(),
+        }
+    }
+}
+
+impl<'a, T> Table<'a, T> {
+    fn new(txn: &'a T, def: TableDef, indexes: Vec<IndexDef>) -> Self {
+        let indexes = indexes
+            .into_iter()
+            .zip(def.index_names.iter())
+            .map(|(def, name)| Index {
+                name: name.clone(),
+                def,
+            })
+            .collect();
+        Self { txn, def, indexes }
+    }
+
+    pub fn id(&self) -> ObjectId {
+        self.def.id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.def.name
+    }
+
+    pub fn columns(&self) -> &[Column] {
+        &self.def.columns
+    }
+
+    pub fn constraints(&self) -> &[Constraint] {
+        &self.def.constraints
+    }
+
+    pub fn indexes(&self) -> &[Index] {
+        &self.indexes
+    }
+
+    pub fn transaction(&self) -> &'a T {
+        self.txn
     }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct Table {
-    pub id: ObjectId,
-    pub columns: Vec<Column>,
-    pub constraints: Vec<Constraint>,
-    pub index_names: Vec<String>,
+struct TableDef {
+    id: ObjectId,
+    name: String,
+    columns: Vec<Column>,
+    constraints: Vec<Constraint>,
+    index_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,11 +152,32 @@ pub enum Constraint {
     NotNull(ColumnIndex),
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct Index {
-    pub id: ObjectId,
-    pub column_indexes: Vec<ColumnIndex>,
-    pub is_unique: bool,
+    name: String,
+    def: IndexDef,
+}
+
+impl Index {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn column_indexes(&self) -> &[ColumnIndex] {
+        &self.def.column_indexes
+    }
+
+    pub fn is_unique(&self) -> bool {
+        self.def.is_unique
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct IndexDef {
+    id: ObjectId,
+    table_name: String,
+    column_indexes: Vec<ColumnIndex>,
+    is_unique: bool,
 }
 
 pub enum Function<'a, T> {
@@ -172,12 +253,11 @@ pub struct TableFunction<T> {
 }
 
 pub type TableFnPtr<T> = for<'a> fn(
-    &'a ConnectionContext<'a, T>,
+    &'a ConnectionContext<'_, T>,
     &Row,
 ) -> ExecutorResult<Box<dyn Iterator<Item = Row> + 'a>>;
 
 pub struct Catalog<T> {
-    next_object_id: AtomicU64,
     scalar_functions: HashMap<&'static str, ScalarFunction<T>>,
     aggregate_functions: HashMap<&'static str, AggregateFunction>,
     table_functions: HashMap<&'static str, TableFunction<T>>,
@@ -187,41 +267,11 @@ impl<T> Catalog<T> {
     pub fn with<'a>(&'a self, txn: &'a T) -> CatalogRef<'a, T> {
         CatalogRef { catalog: self, txn }
     }
-
-    fn generate_object_id(&self) -> ObjectId {
-        ObjectId(
-            self.next_object_id
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        )
-    }
 }
 
 impl<T: Transaction> Catalog<T> {
-    pub fn load<S: Storage>(storage: &S) -> CatalogResult<Self> {
-        let mut max_object_id = ObjectId::MAX_SYSTEM.0;
-
-        let txn = storage.transaction();
-
-        let start = ObjectId::TABLE_CATALOG.serialize();
-        let mut end = start;
-        end[end.len() - 1] += 1;
-        for (_, value) in txn.scan(start, end) {
-            let table: Table = bincode::deserialize(&value)?;
-            max_object_id = max_object_id.max(table.id.0);
-        }
-
-        let start = ObjectId::INDEX_CATALOG.serialize();
-        let mut end = start;
-        end[end.len() - 1] += 1;
-        for (_, value) in txn.scan(start, end) {
-            let index: Index = bincode::deserialize(&value)?;
-            max_object_id = max_object_id.max(index.id.0);
-        }
-
-        txn.commit();
-
-        Ok(Self {
-            next_object_id: (max_object_id + 1).into(),
+    pub fn new() -> Self {
+        Self {
             scalar_functions: builtin::scalar_function::load()
                 .map(|f| (f.name, f))
                 .collect(),
@@ -231,7 +281,7 @@ impl<T: Transaction> Catalog<T> {
             table_functions: builtin::table_function::load()
                 .map(|f| (f.name, f))
                 .collect(),
-        })
+        }
     }
 }
 
@@ -241,47 +291,36 @@ pub struct CatalogRef<'a, T> {
 }
 
 impl<'a, T: Transaction> CatalogRef<'a, T> {
-    pub fn table(&self, name: &str) -> CatalogResult<storage::Table<'a, T>> {
-        let mut key = ObjectId::TABLE_CATALOG.serialize().to_vec();
-        key.extend_from_slice(name.as_bytes());
+    pub fn table(&self, name: &str) -> CatalogResult<Table<'a, T>> {
+        let key = CatalogEntryKind::Table.key(name);
         self.txn.get(&key).map_or(
             Err(CatalogError::UnknownEntry(
                 CatalogEntryKind::Table,
                 name.to_owned(),
             )),
-            |value| self.read_table(&key, &value),
+            |value| self.read_table(&value),
         )
     }
 
-    pub fn tables(&self) -> Box<dyn Iterator<Item = CatalogResult<storage::Table<'a, T>>> + '_> {
-        let start = ObjectId::TABLE_CATALOG.serialize();
-        let mut end = start;
-        end[end.len() - 1] += 1;
-        let iter = self
-            .txn
-            .scan(start, end)
-            .map(|(k, v)| self.read_table(&k, &v));
-        Box::new(iter)
+    pub fn tables(&self) -> impl Iterator<Item = CatalogResult<Table<'a, T>>> + '_ {
+        let prefix = CatalogEntryKind::Table.prefix();
+        self.txn
+            .prefix_scan(prefix)
+            .map(|(_, v)| self.read_table(&v))
     }
 
-    fn read_table(&self, key: &[u8], value: &[u8]) -> CatalogResult<storage::Table<'a, T>> {
-        if key.len() < ObjectId::SERIALIZED_LEN {
-            return Err(CatalogError::InvalidEncoding);
-        }
-        let name = String::from_utf8(key[ObjectId::SERIALIZED_LEN..].to_vec())
-            .map_err(|_| CatalogError::InvalidEncoding)?;
-        let table: Table = bincode::deserialize(value)?;
+    fn read_table(&self, bytes: &[u8]) -> CatalogResult<Table<'a, T>> {
+        let table: TableDef = bincode::deserialize(bytes)?;
         let mut indexes = Vec::with_capacity(table.index_names.len());
         for index_name in &table.index_names {
-            let mut key = ObjectId::INDEX_CATALOG.serialize().to_vec();
-            key.extend_from_slice(index_name.as_bytes());
+            let key = CatalogEntryKind::Index.key(index_name);
             let value = self.txn.get(&key).ok_or_else(|| {
                 CatalogError::UnknownEntry(CatalogEntryKind::Index, index_name.to_owned())
             })?;
-            let index: Index = bincode::deserialize(&value)?;
+            let index: IndexDef = bincode::deserialize(&value)?;
             indexes.push(index);
         }
-        Ok(storage::Table::new(self.txn, name, table, indexes))
+        Ok(Table::new(self.txn, table, indexes))
     }
 
     pub fn create_table(
@@ -290,19 +329,17 @@ impl<'a, T: Transaction> CatalogRef<'a, T> {
         columns: &[Column],
         constraints: &[Constraint],
     ) -> CatalogResult<ObjectId> {
-        let id = self.catalog.generate_object_id();
-
-        let mut key = ObjectId::TABLE_CATALOG.serialize().to_vec();
-        key.extend_from_slice(name.as_bytes());
-
-        let table = Table {
+        let id = self.generate_object_id()?;
+        let table = TableDef {
             id,
+            name: name.to_owned(),
             columns: columns.to_owned(),
             constraints: constraints.to_owned(),
             index_names: Vec::new(),
         };
-        let inserted = self.txn.insert(key, bincode::serialize(&table)?);
-        if inserted {
+        let key = CatalogEntryKind::Table.key(name);
+        let new = self.txn.insert(&key, &bincode::serialize(&table)?);
+        if new {
             Ok(id)
         } else {
             Err(CatalogError::DuplicateEntry(
@@ -313,18 +350,15 @@ impl<'a, T: Transaction> CatalogRef<'a, T> {
     }
 
     pub fn drop_table(&self, name: &str) -> CatalogResult<()> {
-        let mut key = ObjectId::TABLE_CATALOG.serialize().to_vec();
-        key.extend_from_slice(name.as_bytes());
+        let key = CatalogEntryKind::Table.key(name);
         let bytes = self
             .txn
-            .remove(key)
+            .remove(&key)
             .ok_or_else(|| CatalogError::UnknownEntry(CatalogEntryKind::Table, name.to_owned()))?;
-        let table: Table = bincode::deserialize(&bytes)?;
-        let start = table.id.serialize();
-        let mut end = start;
-        end[end.len() - 1] += 1;
-        for (key, _) in self.txn.scan(start, end) {
-            self.txn.remove(key).unwrap();
+        let table: TableDef = bincode::deserialize(&bytes)?;
+        let prefix = table.id.serialize();
+        for (key, _) in self.txn.prefix_scan(prefix) {
+            self.txn.remove(&key).unwrap();
         }
         for index_name in table.index_names {
             self.drop_index(&index_name)?;
@@ -341,9 +375,8 @@ impl<'a, T: Transaction> CatalogRef<'a, T> {
     ) -> CatalogResult<ObjectId> {
         assert!(!column_indexes.is_empty());
 
-        let mut table_key = ObjectId::TABLE_CATALOG.serialize().to_vec();
-        table_key.extend_from_slice(table_name.as_bytes());
-        let mut table: Table = match self.txn.get(&table_key) {
+        let table_key = CatalogEntryKind::Table.key(&table_name);
+        let mut table: TableDef = match self.txn.get(&table_key) {
             Some(v) => bincode::deserialize(&v)?,
             None => {
                 return Err(CatalogError::UnknownEntry(
@@ -354,47 +387,60 @@ impl<'a, T: Transaction> CatalogRef<'a, T> {
         };
         assert!(column_indexes.iter().all(|i| i.0 < table.columns.len()));
 
-        let id = self.catalog.generate_object_id();
-
-        let mut index_key = ObjectId::INDEX_CATALOG.serialize().to_vec();
-        index_key.extend_from_slice(name.as_bytes());
-
-        let index = Index {
+        let id = self.generate_object_id()?;
+        let index = IndexDef {
             id,
+            table_name,
             column_indexes: column_indexes.to_owned(),
             is_unique,
         };
-        let inserted = self.txn.insert(index_key, bincode::serialize(&index)?);
-        if !inserted {
-            return Err(CatalogError::DuplicateEntry(
-                CatalogEntryKind::Index,
-                name.clone(),
-            ));
+        let index_key = CatalogEntryKind::Index.key(&name);
+        let new = self.txn.insert(&index_key, &bincode::serialize(&index)?);
+        if !new {
+            return Err(CatalogError::DuplicateEntry(CatalogEntryKind::Index, name));
         }
         table.index_names.push(name);
 
-        self.txn.remove(table_key.clone()).unwrap();
-        let inserted = self.txn.insert(table_key, bincode::serialize(&table)?);
-        assert!(inserted);
+        let _ = self.txn.insert(&table_key, &bincode::serialize(&table)?);
 
         Ok(id)
     }
 
     pub fn drop_index(&self, name: &str) -> CatalogResult<()> {
-        let mut key = ObjectId::INDEX_CATALOG.serialize().to_vec();
-        key.extend_from_slice(name.as_bytes());
+        let index_key = CatalogEntryKind::Index.key(name);
         let bytes = self
             .txn
-            .remove(key)
+            .remove(&index_key)
             .ok_or_else(|| CatalogError::UnknownEntry(CatalogEntryKind::Index, name.to_owned()))?;
-        let index: Index = bincode::deserialize(&bytes)?;
-        let start = index.id.serialize();
-        let mut end = start;
-        end[end.len() - 1] += 1;
-        for (key, _) in self.txn.scan(start, end) {
-            self.txn.remove(key).unwrap();
+        let index: IndexDef = bincode::deserialize(&bytes)?;
+        let prefix = index.id.serialize();
+        for (key, _) in self.txn.prefix_scan(prefix) {
+            self.txn.remove(&key).unwrap();
         }
+
+        let table_key = CatalogEntryKind::Table.key(&index.table_name);
+        let mut table: TableDef = bincode::deserialize(&self.txn.get(&table_key).unwrap())?;
+        table.index_names.retain(|n| n != name);
+        let _ = self.txn.insert(&table_key, &bincode::serialize(&table)?);
+
         Ok(())
+    }
+
+    fn generate_object_id(&self) -> CatalogResult<ObjectId> {
+        let key = CatalogEntryKind::Metadata.key("next_id");
+        let mut next_id = match self.txn.get(&key) {
+            Some(bytes) => u64::from_be_bytes(
+                bytes
+                    .try_into()
+                    .map_err(|_| CatalogError::InvalidEncoding)?,
+            ),
+            None => 1,
+        };
+        assert!(next_id > ObjectId::CATALOG.0);
+        let id = ObjectId(next_id);
+        next_id += 1;
+        let _ = self.txn.insert(&key, &next_id.to_be_bytes());
+        Ok(id)
     }
 }
 

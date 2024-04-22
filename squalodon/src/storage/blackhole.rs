@@ -32,19 +32,15 @@ impl super::Transaction for Transaction<'_> {
         None
     }
 
-    fn scan<const N: usize>(
-        &self,
-        _start: [u8; N],
-        _end: [u8; N],
-    ) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> {
+    fn scan(&self, _start: Vec<u8>, _end: Vec<u8>) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> {
         std::iter::empty()
     }
 
-    fn insert(&self, _key: Vec<u8>, _value: Vec<u8>) -> bool {
+    fn insert(&self, _key: &[u8], _value: &[u8]) -> bool {
         true
     }
 
-    fn remove(&self, _key: Vec<u8>) -> Option<Vec<u8>> {
+    fn remove(&self, _key: &[u8]) -> Option<Vec<u8>> {
         None
     }
 

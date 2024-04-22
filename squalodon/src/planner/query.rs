@@ -5,12 +5,12 @@ use super::{
     Column, ColumnId, ColumnMap, ExplainFormatter, Node, PlanNode, Planner, PlannerResult, Sort,
 };
 use crate::{
-    catalog::{AggregateFunction, Aggregator, TableFunction},
+    catalog::{AggregateFunction, Aggregator, Table, TableFunction},
     connection::ConnectionContext,
     executor::ExecutorResult,
     parser,
     planner::{self, ApplyAggregateOp},
-    storage::{Table, Transaction},
+    storage::Transaction,
     types::NullableType,
     PlannerError, Row, Type, Value,
 };
