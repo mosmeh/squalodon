@@ -939,17 +939,14 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
                 let column_name = format!("EXISTS ({query})");
                 let subquery = self.planner.plan_query(*query)?;
 
-                // Equivalent to `SELECT exists(SELECT * FROM subquery LIMIT 1)`
+                // Equivalent to `SELECT exists(SELECT first_column FROM subquery LIMIT 1)`
                 let subquery = subquery.limit(
                     self.planner.ctx,
                     &mut self.planner.column_map(),
                     Some(Value::from(1).into()),
                     None,
                 )?;
-                let [input] = subquery
-                    .outputs()
-                    .try_into()
-                    .map_err(|_| PlannerError::MultipleColumnsFromSubquery)?;
+                let input = *subquery.outputs().first().unwrap();
                 let output = self
                     .planner
                     .column_map()
