@@ -1,5 +1,5 @@
 use super::{ColumnId, ExplainFormatter, Node, PlanNode, Planner, PlannerError, PlannerResult};
-use crate::{catalog, parser, rows::ColumnIndex, storage::Transaction};
+use crate::{catalog, parser, rows::ColumnIndex};
 use std::collections::HashSet;
 
 pub struct CreateTable {
@@ -12,7 +12,7 @@ pub struct CreateTable {
 
 impl Node for CreateTable {
     fn fmt_explain(&self, f: &ExplainFormatter) {
-        let mut node = f.node::<()>("CreateTable");
+        let mut node = f.node("CreateTable");
         node.field("name", &self.name);
         for column in &self.columns {
             node.field("column", &column.name);
@@ -31,7 +31,7 @@ pub struct CreateIndex {
 
 impl Node for CreateIndex {
     fn fmt_explain(&self, f: &ExplainFormatter) {
-        let mut node = f.node::<()>("CreateIndex");
+        let mut node = f.node("CreateIndex");
         node.field("name", &self.name)
             .field("table", &self.table_name);
         for column_index in &self.column_indexes {
@@ -47,7 +47,7 @@ pub struct DropObject(pub parser::DropObject);
 
 impl Node for DropObject {
     fn fmt_explain(&self, f: &ExplainFormatter) {
-        f.node::<()>("Drop")
+        f.node("Drop")
             .field("kind", &self.0.kind)
             .field("name", &self.0.name);
     }
@@ -55,7 +55,7 @@ impl Node for DropObject {
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
 }
 
-impl<T> PlanNode<'_, T> {
+impl PlanNode<'_> {
     fn new_create_table(create_table: CreateTable) -> Self {
         Self::CreateTable(create_table)
     }
@@ -69,12 +69,12 @@ impl<T> PlanNode<'_, T> {
     }
 }
 
-impl<'a, T> Planner<'a, T> {
+impl<'a> Planner<'a> {
     #[allow(clippy::unused_self)]
     pub fn plan_create_table(
         &self,
         create_table: parser::CreateTable,
-    ) -> PlannerResult<PlanNode<'a, T>> {
+    ) -> PlannerResult<PlanNode<'a>> {
         let mut column_names = HashSet::new();
         for column in &create_table.columns {
             if !column_names.insert(column.name.as_str()) {
@@ -139,16 +139,16 @@ impl<'a, T> Planner<'a, T> {
     }
 
     #[allow(clippy::unused_self)]
-    pub fn plan_drop(&self, drop_object: parser::DropObject) -> PlanNode<'a, T> {
+    pub fn plan_drop(&self, drop_object: parser::DropObject) -> PlanNode<'a> {
         PlanNode::new_drop(drop_object)
     }
 }
 
-impl<'a, T: Transaction> Planner<'a, T> {
+impl<'a> Planner<'a> {
     pub fn plan_create_index(
         &self,
         create_index: parser::CreateIndex,
-    ) -> PlannerResult<PlanNode<'a, T>> {
+    ) -> PlannerResult<PlanNode<'a>> {
         let table = self.ctx.catalog().table(&create_index.table_name)?;
         let column_indexes =
             column_indexes_from_names(table.columns(), &create_index.column_names)?;

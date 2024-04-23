@@ -9,7 +9,7 @@ pub struct Query {
 }
 
 impl std::fmt::Display for Query {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         self.body.fmt(f)?;
         if !self.modifier.order_by.is_empty() {
             f.write_str(" ORDER BY ")?;
@@ -41,7 +41,7 @@ pub enum QueryBody {
 }
 
 impl std::fmt::Display for QueryBody {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Select(select) => select.fmt(f),
             Self::Union { all, left, right } => {
@@ -79,7 +79,7 @@ pub struct Select {
 }
 
 impl std::fmt::Display for Select {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str("SELECT ")?;
         if let Some(distinct) = &self.distinct {
             distinct.fmt(f)?;
@@ -118,7 +118,7 @@ pub struct Distinct {
 }
 
 impl std::fmt::Display for Distinct {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str("DISTINCT")?;
         if let Some(on) = &self.on {
             f.write_str(" ON (")?;
@@ -144,7 +144,7 @@ pub enum Projection {
 }
 
 impl std::fmt::Display for Projection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Wildcard => f.write_str("*"),
             Self::Expression { expr, alias } => {
@@ -168,7 +168,7 @@ pub enum TableRef {
 }
 
 impl std::fmt::Display for TableRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::BaseTable { name } => f.write_str(name),
             Self::Join(join) => join.fmt(f),
@@ -196,7 +196,7 @@ pub struct Join {
 }
 
 impl std::fmt::Display for Join {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         self.left.fmt(f)?;
         write!(f, " JOIN {} {}", self.right, self.condition)
     }
@@ -209,7 +209,7 @@ pub enum JoinCondition {
 }
 
 impl std::fmt::Display for JoinCondition {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::On(expr) => {
                 f.write_str("ON ")?;
@@ -235,7 +235,7 @@ pub struct Values {
 }
 
 impl std::fmt::Display for Values {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str("VALUES ")?;
         for (i, row) in self.rows.iter().enumerate() {
             if i > 0 {
@@ -262,7 +262,7 @@ pub struct OrderBy {
 }
 
 impl std::fmt::Display for OrderBy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         self.expr.fmt(f)?;
         if self.order != Order::default() {
             write!(f, " {}", self.order)?;
@@ -287,7 +287,7 @@ impl Default for Order {
 }
 
 impl std::fmt::Display for Order {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(match self {
             Self::Asc => "ASC",
             Self::Desc => "DESC",
@@ -308,7 +308,7 @@ impl Default for NullOrder {
 }
 
 impl std::fmt::Display for NullOrder {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(match self {
             Self::NullsFirst => "NULLS FIRST",
             Self::NullsLast => "NULLS LAST",

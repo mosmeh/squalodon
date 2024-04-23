@@ -2,11 +2,10 @@ use crate::{
     catalog::{Constraint, Function, TableFunction},
     lexer,
     planner::Column,
-    storage::Transaction,
     Row, Type,
 };
 
-pub fn load<T: Transaction>() -> impl Iterator<Item = TableFunction<T>> {
+pub fn load() -> impl Iterator<Item = TableFunction> {
     [
         TableFunction {
             name: "squalodon_columns",

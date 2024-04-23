@@ -40,7 +40,11 @@ pub trait Transaction {
 
     /// Returns an iterator over the key-value pairs
     /// in the key range `[start, end)`.
-    fn scan(&self, start: Vec<u8>, end: Vec<u8>) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)>;
+    fn scan(
+        &self,
+        start: Vec<u8>,
+        end: Vec<u8>,
+    ) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + '_>;
 
     /// Inserts a key-value pair.
     ///
@@ -61,11 +65,11 @@ pub trait Transaction {
 }
 
 pub(crate) trait TransactionExt {
-    fn prefix_scan(&self, prefix: Vec<u8>) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)>;
+    fn prefix_scan(&self, prefix: Vec<u8>) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_;
 }
 
-impl<T: Transaction> TransactionExt for T {
-    fn prefix_scan(&self, prefix: Vec<u8>) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> {
+impl<T: ?Sized + Transaction> TransactionExt for T {
+    fn prefix_scan(&self, prefix: Vec<u8>) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_ {
         let mut end = prefix.clone();
         if let Some(last) = end.last_mut() {
             *last += 1;
@@ -74,7 +78,7 @@ impl<T: Transaction> TransactionExt for T {
     }
 }
 
-impl<'a, T: Transaction> Table<'a, T> {
+impl<'a> Table<'a> {
     pub fn scan(&self) -> impl Iterator<Item = StorageResult<Row>> + 'a {
         let prefix = self.id().serialize();
         self.transaction()

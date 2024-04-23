@@ -8,16 +8,15 @@ use crate::{
     parser::{self, NullOrder, Order},
     planner,
     rows::ColumnIndex,
-    storage::Transaction,
 };
 use std::borrow::Cow;
 
-pub struct Sort<'a, T> {
-    pub source: Box<PlanNode<'a, T>>,
-    pub order_by: Vec<OrderBy<'a, T, ColumnId>>,
+pub struct Sort<'a> {
+    pub source: Box<PlanNode<'a>>,
+    pub order_by: Vec<OrderBy<'a, ColumnId>>,
 }
 
-impl<T> Node for Sort<'_, T> {
+impl Node for Sort<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
         let mut node = f.node("Sort");
         for order_by in &self.order_by {
@@ -31,14 +30,14 @@ impl<T> Node for Sort<'_, T> {
     }
 }
 
-pub struct TopN<'a, T> {
-    pub source: Box<PlanNode<'a, T>>,
-    pub limit: planner::Expression<'a, T, ColumnId>,
-    pub offset: Option<planner::Expression<'a, T, ColumnId>>,
-    pub order_by: Vec<OrderBy<'a, T, ColumnId>>,
+pub struct TopN<'a> {
+    pub source: Box<PlanNode<'a>>,
+    pub limit: planner::Expression<'a, ColumnId>,
+    pub offset: Option<planner::Expression<'a, ColumnId>>,
+    pub order_by: Vec<OrderBy<'a, ColumnId>>,
 }
 
-impl<T> Node for TopN<'_, T> {
+impl Node for TopN<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
         let mut node = f.node("TopN");
         node.field("limit", self.limit.clone().into_display(&f.column_map()));
@@ -56,23 +55,14 @@ impl<T> Node for TopN<'_, T> {
     }
 }
 
-pub struct OrderBy<'a, T, C> {
-    pub expr: planner::Expression<'a, T, C>,
+#[derive(Clone)]
+pub struct OrderBy<'a, C> {
+    pub expr: planner::Expression<'a, C>,
     pub order: Order,
     pub null_order: NullOrder,
 }
 
-impl<T, C: Clone> Clone for OrderBy<'_, T, C> {
-    fn clone(&self) -> Self {
-        Self {
-            expr: self.expr.clone(),
-            order: self.order,
-            null_order: self.null_order,
-        }
-    }
-}
-
-impl<T> std::fmt::Display for OrderBy<'_, T, Cow<'_, str>> {
+impl std::fmt::Display for OrderBy<'_, Cow<'_, str>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.expr.fmt(f)?;
         if self.order != Default::default() {
@@ -85,8 +75,8 @@ impl<T> std::fmt::Display for OrderBy<'_, T, Cow<'_, str>> {
     }
 }
 
-impl<'a, T> OrderBy<'a, T, ColumnId> {
-    pub fn into_executable(self, columns: &[ColumnId]) -> OrderBy<'a, T, ColumnIndex> {
+impl<'a> OrderBy<'a, ColumnId> {
+    pub fn into_executable(self, columns: &[ColumnId]) -> OrderBy<'a, ColumnIndex> {
         OrderBy {
             expr: self.expr.into_executable(columns),
             order: self.order,
@@ -97,7 +87,7 @@ impl<'a, T> OrderBy<'a, T, ColumnId> {
     pub(super) fn into_display<'b>(
         self,
         column_map: &'b ColumnMapView,
-    ) -> OrderBy<'a, T, Cow<'b, str>> {
+    ) -> OrderBy<'a, Cow<'b, str>> {
         OrderBy {
             expr: self.expr.into_display(column_map),
             order: self.order,
@@ -106,8 +96,8 @@ impl<'a, T> OrderBy<'a, T, ColumnId> {
     }
 }
 
-impl<'a, T> PlanNode<'a, T> {
-    fn sort(self, order_by: Vec<OrderBy<'a, T, ColumnId>>) -> Self {
+impl<'a> PlanNode<'a> {
+    fn sort(self, order_by: Vec<OrderBy<'a, ColumnId>>) -> Self {
         if self.produces_no_rows() {
             return self;
         }
@@ -118,14 +108,14 @@ impl<'a, T> PlanNode<'a, T> {
     }
 }
 
-impl<'a, T: Transaction> Planner<'a, T> {
+impl<'a> Planner<'a> {
     #[allow(clippy::unused_self)]
     pub fn plan_order_by(
         &self,
-        expr_binder: &ExpressionBinder<'_, 'a, T>,
-        source: PlanNode<'a, T>,
+        expr_binder: &ExpressionBinder<'_, 'a>,
+        source: PlanNode<'a>,
         order_by: Vec<parser::OrderBy>,
-    ) -> PlannerResult<PlanNode<'a, T>> {
+    ) -> PlannerResult<PlanNode<'a>> {
         if order_by.is_empty() {
             return Ok(source);
         }

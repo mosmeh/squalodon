@@ -64,20 +64,22 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub struct Database<'a, T: Storage + 'a> {
+pub struct Database<T> {
     storage: T,
-    catalog: Catalog<T::Transaction<'a>>,
+    catalog: Catalog,
 }
 
-impl<'a, T: Storage> Database<'a, T> {
+impl<T> Database<T> {
     pub fn new(storage: T) -> Self {
         Self {
             storage,
             catalog: Catalog::new(),
         }
     }
+}
 
-    pub fn connect(&'a self) -> Connection<'a, T> {
+impl<T: Storage> Database<T> {
+    pub fn connect(&self) -> Connection<T> {
         Connection::new(self)
     }
 }

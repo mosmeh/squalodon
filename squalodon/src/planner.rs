@@ -19,7 +19,6 @@ pub use sort::{OrderBy, Sort, TopN};
 use crate::{
     connection::ConnectionContext,
     parser,
-    storage::Transaction,
     types::{Params, Type},
     CatalogError, StorageError, Value,
 };
@@ -79,20 +78,20 @@ pub enum PlannerError {
 
 pub type PlannerResult<T> = std::result::Result<T, PlannerError>;
 
-pub fn plan_expr<'a, T: Transaction>(
-    ctx: &'a ConnectionContext<'a, T>,
+pub fn plan_expr<'a>(
+    ctx: &'a ConnectionContext<'a>,
     expr: parser::Expression,
-) -> PlannerResult<Expression<'a, T, ColumnId>> {
+) -> PlannerResult<Expression<'a, ColumnId>> {
     let planner = Planner::new(ctx);
     let TypedExpression { expr, .. } = ExpressionBinder::new(&planner).bind_without_source(expr)?;
     Ok(expr)
 }
 
-pub fn plan<'a, T: Transaction>(
-    ctx: &'a ConnectionContext<'a, T>,
+pub fn plan<'a>(
+    ctx: &'a ConnectionContext<'a>,
     statement: parser::Statement,
     params: Vec<Value>,
-) -> PlannerResult<Plan<'a, T>> {
+) -> PlannerResult<Plan<'a>> {
     let planner = Planner::new(ctx).with_params(params);
     let plan = planner.plan(statement)?;
     let column_map = planner.column_map();
@@ -104,8 +103,8 @@ pub fn plan<'a, T: Transaction>(
     Ok(Plan { node: plan, schema })
 }
 
-pub struct Plan<'a, T> {
-    pub node: PlanNode<'a, T>,
+pub struct Plan<'a> {
+    pub node: PlanNode<'a>,
     pub schema: Vec<Column>,
 }
 
@@ -114,28 +113,28 @@ trait Node {
     fn append_outputs(&self, columns: &mut Vec<ColumnId>);
 }
 
-pub enum PlanNode<'a, T> {
-    Explain(Explain<'a, T>),
+pub enum PlanNode<'a> {
+    Explain(Explain<'a>),
     CreateTable(CreateTable),
     CreateIndex(CreateIndex),
     Drop(DropObject),
-    Values(Values<'a, T>),
-    Scan(Scan<'a, T>),
-    Project(Project<'a, T>),
-    Filter(Filter<'a, T>),
-    Sort(Sort<'a, T>),
-    Limit(Limit<'a, T>),
-    TopN(TopN<'a, T>),
-    CrossProduct(CrossProduct<'a, T>),
-    Aggregate(Aggregate<'a, T>),
-    Union(Union<'a, T>),
-    Spool(Spool<'a, T>),
-    Insert(Insert<'a, T>),
-    Update(Update<'a, T>),
-    Delete(Delete<'a, T>),
+    Values(Values<'a>),
+    Scan(Scan<'a>),
+    Project(Project<'a>),
+    Filter(Filter<'a>),
+    Sort(Sort<'a>),
+    Limit(Limit<'a>),
+    TopN(TopN<'a>),
+    CrossProduct(CrossProduct<'a>),
+    Aggregate(Aggregate<'a>),
+    Union(Union<'a>),
+    Spool(Spool<'a>),
+    Insert(Insert<'a>),
+    Update(Update<'a>),
+    Delete(Delete<'a>),
 }
 
-impl<'a, T> PlanNode<'a, T> {
+impl<'a> PlanNode<'a> {
     pub fn outputs(&self) -> Vec<ColumnId> {
         let mut columns = Vec::new();
         self.append_outputs(&mut columns);
@@ -144,9 +143,9 @@ impl<'a, T> PlanNode<'a, T> {
 
     fn resolve_column(
         &self,
-        column_map: &ColumnMap<'_>,
+        column_map: &ColumnMap,
         column_ref: impl ColumnRef,
-    ) -> PlannerResult<TypedExpression<'a, T>> {
+    ) -> PlannerResult<TypedExpression<'a>> {
         let mut candidates = self.outputs().into_iter().filter_map(|id| {
             let column = &column_map[id];
             if column.column_name != column_ref.column_name() {
@@ -182,7 +181,7 @@ impl<'a, T> PlanNode<'a, T> {
         }
     }
 
-    fn explain(self, planner: &Planner<'a, T>) -> Self {
+    fn explain(self, planner: &Planner<'a>) -> Self {
         Self::Explain(Explain {
             source: Box::new(self),
             output: planner.column_map().insert(Column::new("plan", Type::Text)),
@@ -197,7 +196,7 @@ impl<'a, T> PlanNode<'a, T> {
     }
 }
 
-impl<T> Node for PlanNode<'_, T> {
+impl Node for PlanNode<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
         match self {
             Self::Explain(n) => n.fmt_explain(f),
@@ -245,11 +244,11 @@ impl<T> Node for PlanNode<'_, T> {
     }
 }
 
-pub struct Spool<'a, T> {
-    pub source: Box<PlanNode<'a, T>>,
+pub struct Spool<'a> {
+    pub source: Box<PlanNode<'a>>,
 }
 
-impl<T> Node for Spool<'_, T> {
+impl Node for Spool<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
         f.node("Spool").child(&self.source);
     }
@@ -259,14 +258,14 @@ impl<T> Node for Spool<'_, T> {
     }
 }
 
-struct Planner<'a, T> {
-    ctx: &'a ConnectionContext<'a, T>,
+struct Planner<'a> {
+    ctx: &'a ConnectionContext<'a>,
     params: Vec<Value>,
     column_map: Rc<RefCell<Vec<Column>>>,
 }
 
-impl<'a, T> Planner<'a, T> {
-    fn new(ctx: &'a ConnectionContext<'a, T>) -> Self {
+impl<'a> Planner<'a> {
+    fn new(ctx: &'a ConnectionContext<'a>) -> Self {
         Self {
             ctx,
             params: Vec::new(),
@@ -282,13 +281,13 @@ impl<'a, T> Planner<'a, T> {
         }
     }
 
-    fn column_map(&self) -> ColumnMap<'_> {
+    fn column_map(&self) -> ColumnMap {
         ColumnMap::from(self.column_map.as_ref())
     }
 }
 
-impl<'a, T: Transaction> Planner<'a, T> {
-    fn plan(&self, statement: parser::Statement) -> PlannerResult<PlanNode<'a, T>> {
+impl<'a> Planner<'a> {
+    fn plan(&self, statement: parser::Statement) -> PlannerResult<PlanNode<'a>> {
         match statement {
             parser::Statement::Explain(statement) => self.plan_explain(*statement),
             parser::Statement::Prepare(_)
@@ -317,14 +316,14 @@ impl<'a, T: Transaction> Planner<'a, T> {
         }
     }
 
-    fn rewrite_to<P: Params>(&self, sql: &str, params: P) -> PlannerResult<PlanNode<'a, T>> {
+    fn rewrite_to<P: Params>(&self, sql: &str, params: P) -> PlannerResult<PlanNode<'a>> {
         let mut parser = parser::Parser::new(sql);
         let statement = parser.next().unwrap().unwrap();
         assert!(parser.next().is_none());
         self.with_params(params.into_values()).plan(statement)
     }
 
-    fn plan_explain(&self, statement: parser::Statement) -> PlannerResult<PlanNode<'a, T>> {
+    fn plan_explain(&self, statement: parser::Statement) -> PlannerResult<PlanNode<'a>> {
         Ok(self.plan(statement)?.explain(self))
     }
 }

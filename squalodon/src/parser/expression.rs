@@ -36,7 +36,7 @@ pub enum Expression {
 }
 
 impl std::fmt::Display for Expression {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Constant(value) => value.fmt(f),
             Self::ColumnRef(column_ref) => column_ref.fmt(f),
@@ -80,7 +80,7 @@ pub struct ColumnRef {
 }
 
 impl std::fmt::Display for ColumnRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         if let Some(table_name) = &self.table_name {
             write!(f, "{table_name}.")?;
         }
@@ -112,7 +112,7 @@ pub enum UnaryOp {
 }
 
 impl std::fmt::Display for UnaryOp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(match self {
             Self::Plus => "+",
             Self::Minus => "-",
@@ -159,7 +159,7 @@ pub enum BinaryOp {
 }
 
 impl std::fmt::Display for BinaryOp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(match self {
             Self::Add => "+",
             Self::Sub => "-",
@@ -236,7 +236,7 @@ pub struct CaseBranch {
 }
 
 impl std::fmt::Display for CaseBranch {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "WHEN {} THEN {}", self.condition, self.result)
     }
 }
@@ -249,7 +249,7 @@ pub struct FunctionCall {
 }
 
 impl std::fmt::Display for FunctionCall {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}(", self.name)?;
         if self.is_distinct {
             f.write_str("DISTINCT ")?;
@@ -266,7 +266,7 @@ pub enum FunctionArgs {
 }
 
 impl std::fmt::Display for FunctionArgs {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Wildcard => f.write_str("*"),
             Self::Expressions(args) => {

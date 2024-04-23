@@ -3,15 +3,15 @@ use super::{
     Column, ColumnId, ColumnMap, ExplainFormatter, Node, PlanNode, Planner, PlannerError,
     PlannerResult,
 };
-use crate::{catalog::Table, parser, planner, storage::Transaction, Type};
+use crate::{catalog::Table, parser, planner, Type};
 
-pub struct Insert<'a, T> {
-    pub source: Box<PlanNode<'a, T>>,
-    pub table: Table<'a, T>,
+pub struct Insert<'a> {
+    pub source: Box<PlanNode<'a>>,
+    pub table: Table<'a>,
     output: ColumnId,
 }
 
-impl<T> Node for Insert<'_, T> {
+impl Node for Insert<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
         f.node("Insert")
             .field("table", self.table.name())
@@ -23,13 +23,13 @@ impl<T> Node for Insert<'_, T> {
     }
 }
 
-pub struct Update<'a, T> {
-    pub source: Box<PlanNode<'a, T>>,
-    pub table: Table<'a, T>,
+pub struct Update<'a> {
+    pub source: Box<PlanNode<'a>>,
+    pub table: Table<'a>,
     output: ColumnId,
 }
 
-impl<T> Node for Update<'_, T> {
+impl Node for Update<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
         f.node("Update")
             .field("table", self.table.name())
@@ -41,13 +41,13 @@ impl<T> Node for Update<'_, T> {
     }
 }
 
-pub struct Delete<'a, T> {
-    pub source: Box<PlanNode<'a, T>>,
-    pub table: Table<'a, T>,
+pub struct Delete<'a> {
+    pub source: Box<PlanNode<'a>>,
+    pub table: Table<'a>,
     output: ColumnId,
 }
 
-impl<T> Node for Delete<'_, T> {
+impl Node for Delete<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
         f.node("Delete")
             .field("table", self.table.name())
@@ -59,8 +59,8 @@ impl<T> Node for Delete<'_, T> {
     }
 }
 
-impl<'a, T> PlanNode<'a, T> {
-    fn insert(self, column_map: &mut ColumnMap, table: Table<'a, T>) -> Self {
+impl<'a> PlanNode<'a> {
+    fn insert(self, column_map: &mut ColumnMap, table: Table<'a>) -> Self {
         Self::Insert(Insert {
             source: Box::new(self),
             table,
@@ -68,7 +68,7 @@ impl<'a, T> PlanNode<'a, T> {
         })
     }
 
-    fn update(self, column_map: &mut ColumnMap, table: Table<'a, T>) -> Self {
+    fn update(self, column_map: &mut ColumnMap, table: Table<'a>) -> Self {
         Self::Update(Update {
             source: Box::new(self),
             table,
@@ -76,7 +76,7 @@ impl<'a, T> PlanNode<'a, T> {
         })
     }
 
-    fn delete(self, column_map: &mut ColumnMap, table: Table<'a, T>) -> Self {
+    fn delete(self, column_map: &mut ColumnMap, table: Table<'a>) -> Self {
         Self::Delete(Delete {
             source: Box::new(self),
             table,
@@ -85,8 +85,8 @@ impl<'a, T> PlanNode<'a, T> {
     }
 }
 
-impl<'a, T: Transaction> Planner<'a, T> {
-    pub fn plan_insert(&self, insert: parser::Insert) -> PlannerResult<PlanNode<'a, T>> {
+impl<'a> Planner<'a> {
+    pub fn plan_insert(&self, insert: parser::Insert) -> PlannerResult<PlanNode<'a>> {
         let table = self.ctx.catalog().table(&insert.table_name)?;
         let mut plan = self.plan_query(insert.query)?;
         let outputs = plan.outputs();
@@ -160,7 +160,7 @@ impl<'a, T: Transaction> Planner<'a, T> {
         Ok(plan.insert(&mut column_map, table))
     }
 
-    pub fn plan_update(&self, update: parser::Update) -> PlannerResult<PlanNode<'a, T>> {
+    pub fn plan_update(&self, update: parser::Update) -> PlannerResult<PlanNode<'a>> {
         let table = self.ctx.catalog().table(&update.table_name)?;
         let expr_binder = ExpressionBinder::new(self);
 
@@ -218,7 +218,7 @@ impl<'a, T: Transaction> Planner<'a, T> {
         Ok(plan.update(&mut column_map, table))
     }
 
-    pub fn plan_delete(&self, delete: parser::Delete) -> PlannerResult<PlanNode<'a, T>> {
+    pub fn plan_delete(&self, delete: parser::Delete) -> PlannerResult<PlanNode<'a>> {
         let table = self.ctx.catalog().table(&delete.table_name)?;
         let mut plan = self.plan_base_table(table.clone());
         if let Some(where_clause) = delete.where_clause {

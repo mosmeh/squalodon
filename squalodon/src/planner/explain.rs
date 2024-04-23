@@ -1,13 +1,13 @@
 use super::{column::ColumnMapView, Column, ColumnId, Node, PlanNode};
 use std::{cell::RefCell, rc::Rc};
 
-pub struct Explain<'a, T> {
-    pub source: Box<PlanNode<'a, T>>,
+pub struct Explain<'a> {
+    pub source: Box<PlanNode<'a>>,
     pub output: ColumnId,
     pub column_map: Rc<RefCell<Vec<Column>>>,
 }
 
-impl<T> Node for Explain<'_, T> {
+impl Node for Explain<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
         f.node("Explain").child(&self.source);
     }
@@ -17,7 +17,7 @@ impl<T> Node for Explain<'_, T> {
     }
 }
 
-impl<T> Explain<'_, T> {
+impl Explain<'_> {
     pub fn dump(&self) -> Vec<String> {
         let f = ExplainFormatter::new(self.column_map.borrow().clone());
         self.source.fmt_explain(&f);
@@ -42,7 +42,7 @@ impl ExplainFormatter {
         self.state.into_inner().rows
     }
 
-    pub fn node<T>(&self, name: &str) -> ExplainNode<'_, '_, T> {
+    pub fn node(&self, name: &str) -> ExplainNode {
         ExplainNode {
             f: self,
             name: name.to_string(),
@@ -63,28 +63,28 @@ struct FormatterState {
     prefix: String,
 }
 
-pub struct ExplainNode<'a, 'b, T> {
+pub struct ExplainNode<'a, 'b> {
     f: &'a ExplainFormatter,
     name: String,
     fields: Vec<(String, String)>,
     max_field_name_len: usize,
-    children: Vec<&'b PlanNode<'b, T>>,
+    children: Vec<&'b PlanNode<'b>>,
 }
 
-impl<'a, 'b, T> ExplainNode<'a, 'b, T> {
+impl<'a, 'b> ExplainNode<'a, 'b> {
     pub fn field(&mut self, name: &str, value: impl std::fmt::Display) -> &mut Self {
         self.max_field_name_len = self.max_field_name_len.max(name.len());
         self.fields.push((name.to_string(), value.to_string()));
         self
     }
 
-    pub fn child(&mut self, plan: &'b PlanNode<'b, T>) -> &mut Self {
+    pub fn child(&mut self, plan: &'b PlanNode<'b>) -> &mut Self {
         self.children.push(plan);
         self
     }
 }
 
-impl<T> Drop for ExplainNode<'_, '_, T> {
+impl Drop for ExplainNode<'_, '_> {
     fn drop(&mut self) {
         let mut f = self.f.state.borrow_mut();
         let initial_prefix_len = f.prefix.len();

@@ -48,15 +48,21 @@ impl super::Transaction for Transaction<'_> {
             .map(|entry| entry.value().clone().into_vec())
     }
 
-    fn scan(&self, start: Vec<u8>, end: Vec<u8>) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> {
-        self.data
+    fn scan(
+        &self,
+        start: Vec<u8>,
+        end: Vec<u8>,
+    ) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + '_> {
+        let iter = self
+            .data
             .range(start.into_boxed_slice()..end.into_boxed_slice())
             .map(|entry| {
                 (
                     entry.key().clone().into_vec(),
                     entry.value().clone().into_vec(),
                 )
-            })
+            });
+        Box::new(iter)
     }
 
     fn insert(&self, key: &[u8], value: &[u8]) -> bool {

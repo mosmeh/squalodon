@@ -63,7 +63,7 @@ macro_rules! keywords {
         }
 
         impl std::fmt::Debug for Token {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 match self {
                     $(Self::$v => f.write_str(&stringify!($v).to_ascii_uppercase()),)*
                     Self::Percent => f.write_str("%"),

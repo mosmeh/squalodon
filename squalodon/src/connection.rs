@@ -12,14 +12,14 @@ use fastrand::Rng;
 use std::{cell::RefCell, collections::HashMap};
 
 pub struct Connection<'a, T: Storage> {
-    db: &'a Database<'a, T>,
+    db: &'a Database<T>,
     txn_status: RefCell<TransactionState<T::Transaction<'a>>>,
     prepared_statements: RefCell<HashMap<String, Statement>>,
     rng: RefCell<Rng>,
 }
 
 impl<'a, T: Storage> Connection<'a, T> {
-    pub(crate) fn new(db: &'a Database<'a, T>) -> Self {
+    pub(crate) fn new(db: &'a Database<T>) -> Self {
         Self {
             db,
             txn_status: TransactionState::Inactive.into(),
@@ -62,7 +62,7 @@ impl<'a, T: Storage> Connection<'a, T> {
     ///
     /// When any insert fails, the transaction is rolled back and the inserter
     /// is marked as failed. Further inserts return errors immediately.
-    pub fn inserter(&self, table: &str) -> Result<Inserter<'_, T::Transaction<'a>>> {
+    pub fn inserter(&self, table: &str) -> Result<Inserter<T::Transaction<'a>>> {
         let table_name = table.to_owned();
         let txn = self.db.storage.transaction();
         let catalog = self.db.catalog.with(&txn);
@@ -186,7 +186,7 @@ impl<'a, T: Storage> Connection<'a, T> {
     }
 }
 
-fn execute_plan<T: Transaction>(ctx: &ConnectionContext<'_, T>, plan: Plan<'_, T>) -> Result<Rows> {
+fn execute_plan(ctx: &ConnectionContext, plan: Plan) -> Result<Rows> {
     let Plan { node, schema } = plan;
     let columns: Vec<_> = schema
         .into_iter()
@@ -280,7 +280,7 @@ impl<T: Storage> PreparedStatement<'_, '_, T> {
 
 pub struct Inserter<'a, T: Transaction> {
     txn: Option<T>,
-    catalog: &'a Catalog<T>,
+    catalog: &'a Catalog,
     table_name: String,
     columns: Vec<catalog::Column>,
     rows: Vec<Row>,
@@ -355,17 +355,17 @@ impl<T: Transaction> Drop for Inserter<'_, T> {
     }
 }
 
-pub struct ConnectionContext<'a, T> {
-    catalog: &'a CatalogRef<'a, T>,
+pub struct ConnectionContext<'a> {
+    catalog: &'a CatalogRef<'a>,
     rng: &'a RefCell<Rng>,
 }
 
-impl<'a, T> ConnectionContext<'a, T> {
-    pub fn new(catalog: &'a CatalogRef<'a, T>, rng: &'a RefCell<Rng>) -> Self {
+impl<'a> ConnectionContext<'a> {
+    pub fn new(catalog: &'a CatalogRef<'a>, rng: &'a RefCell<Rng>) -> Self {
         Self { catalog, rng }
     }
 
-    pub fn catalog(&self) -> &CatalogRef<'a, T> {
+    pub fn catalog(&self) -> &CatalogRef<'a> {
         self.catalog
     }
 

@@ -9,7 +9,6 @@ use crate::{
     parser::{self, BinaryOp, FunctionArgs, UnaryOp},
     planner::{self, aggregate::ApplyAggregateOp},
     rows::ColumnIndex,
-    storage::Transaction,
     types::{NullableType, Type},
     CatalogError, Row, Value,
 };
@@ -19,204 +18,40 @@ use std::{
     hash::Hash,
 };
 
-pub enum Expression<'a, T, C> {
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum Expression<'a, C> {
     Constant(Value),
     ColumnRef(C),
     Cast {
-        expr: Box<Expression<'a, T, C>>,
+        expr: Box<Expression<'a, C>>,
         ty: Type,
     },
     UnaryOp {
         op: UnaryOp,
-        expr: Box<Expression<'a, T, C>>,
+        expr: Box<Expression<'a, C>>,
     },
     BinaryOp {
         op: BinaryOp,
-        lhs: Box<Expression<'a, T, C>>,
-        rhs: Box<Expression<'a, T, C>>,
+        lhs: Box<Expression<'a, C>>,
+        rhs: Box<Expression<'a, C>>,
     },
     Case {
-        branches: Vec<CaseBranch<'a, T, C>>,
-        else_branch: Option<Box<Expression<'a, T, C>>>,
+        branches: Vec<CaseBranch<'a, C>>,
+        else_branch: Option<Box<Expression<'a, C>>>,
     },
     Like {
-        str_expr: Box<Expression<'a, T, C>>,
-        pattern: Box<Expression<'a, T, C>>,
+        str_expr: Box<Expression<'a, C>>,
+        pattern: Box<Expression<'a, C>>,
         case_insensitive: bool,
     },
     Function {
-        function: &'a ScalarFunction<T>,
-        args: Vec<Expression<'a, T, C>>,
+        function: &'a ScalarFunction,
+        args: Vec<Expression<'a, C>>,
     },
 }
 
-impl<T, C: Clone> Clone for Expression<'_, T, C> {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Constant(value) => Self::Constant(value.clone()),
-            Self::ColumnRef(index) => Self::ColumnRef(index.clone()),
-            Self::Cast { expr, ty } => Self::Cast {
-                expr: expr.clone(),
-                ty: *ty,
-            },
-            Self::UnaryOp { op, expr } => Self::UnaryOp {
-                op: *op,
-                expr: expr.clone(),
-            },
-            Self::BinaryOp { op, lhs, rhs } => Self::BinaryOp {
-                op: *op,
-                lhs: lhs.clone(),
-                rhs: rhs.clone(),
-            },
-            Self::Case {
-                branches,
-                else_branch,
-            } => Self::Case {
-                branches: branches.clone(),
-                else_branch: else_branch.clone(),
-            },
-            Self::Like {
-                str_expr,
-                pattern,
-                case_insensitive,
-            } => Self::Like {
-                str_expr: str_expr.clone(),
-                pattern: pattern.clone(),
-                case_insensitive: *case_insensitive,
-            },
-            Self::Function { function, args } => Self::Function {
-                function: *function,
-                args: args.clone(),
-            },
-        }
-    }
-}
-
-impl<T, C: PartialEq> PartialEq for Expression<'_, T, C> {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Constant(a), Self::Constant(b)) => a == b,
-            (Self::ColumnRef(a), Self::ColumnRef(b)) => a == b,
-            (
-                Self::Cast {
-                    expr: expr_a,
-                    ty: ty_a,
-                },
-                Self::Cast {
-                    expr: expr_b,
-                    ty: ty_b,
-                },
-            ) => expr_a == expr_b && ty_a == ty_b,
-            (
-                Self::UnaryOp {
-                    op: op_a,
-                    expr: expr_a,
-                },
-                Self::UnaryOp {
-                    op: op_b,
-                    expr: expr_b,
-                },
-            ) => op_a == op_b && expr_a == expr_b,
-            (
-                Self::BinaryOp {
-                    op: op_a,
-                    lhs: lhs_a,
-                    rhs: rhs_a,
-                },
-                Self::BinaryOp {
-                    op: op_b,
-                    lhs: lhs_b,
-                    rhs: rhs_b,
-                },
-            ) => op_a == op_b && lhs_a == lhs_b && rhs_a == rhs_b,
-            (
-                Self::Case {
-                    branches: branches_a,
-                    else_branch: else_branch_a,
-                },
-                Self::Case {
-                    branches: branches_b,
-                    else_branch: else_branch_b,
-                },
-            ) => branches_a == branches_b && else_branch_a == else_branch_b,
-            (
-                Self::Like {
-                    str_expr: str_expr_a,
-                    pattern: pattern_a,
-                    case_insensitive: case_insensitive_a,
-                },
-                Self::Like {
-                    str_expr: str_expr_b,
-                    pattern: pattern_b,
-                    case_insensitive: case_insensitive_b,
-                },
-            ) => {
-                str_expr_a == str_expr_b
-                    && pattern_a == pattern_b
-                    && case_insensitive_a == case_insensitive_b
-            }
-            (
-                Self::Function {
-                    function: function_a,
-                    args: args_a,
-                },
-                Self::Function {
-                    function: function_b,
-                    args: args_b,
-                },
-            ) => function_a == function_b && args_a == args_b,
-            _ => false,
-        }
-    }
-}
-
-impl<T, C: Eq> Eq for Expression<'_, T, C> {}
-
-impl<T, C: Hash> Hash for Expression<'_, T, C> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::mem::discriminant(self).hash(state);
-        match self {
-            Self::Constant(value) => value.hash(state),
-            Self::ColumnRef(index) => index.hash(state),
-            Self::Cast { expr, ty } => {
-                expr.hash(state);
-                ty.hash(state);
-            }
-            Self::UnaryOp { op, expr } => {
-                op.hash(state);
-                expr.hash(state);
-            }
-            Self::BinaryOp { op, lhs, rhs } => {
-                op.hash(state);
-                lhs.hash(state);
-                rhs.hash(state);
-            }
-            Self::Case {
-                branches,
-                else_branch,
-            } => {
-                branches.hash(state);
-                else_branch.hash(state);
-            }
-            Self::Like {
-                str_expr,
-                pattern,
-                case_insensitive,
-            } => {
-                str_expr.hash(state);
-                pattern.hash(state);
-                case_insensitive.hash(state);
-            }
-            Self::Function { function, args } => {
-                function.hash(state);
-                args.hash(state);
-            }
-        }
-    }
-}
-
-impl<T> std::fmt::Display for Expression<'_, T, Cow<'_, str>> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl std::fmt::Display for Expression<'_, Cow<'_, str>> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Constant(value) => std::fmt::Debug::fmt(value, f),
             Self::ColumnRef(c) => c.fmt(f),
@@ -261,7 +96,7 @@ impl<T> std::fmt::Display for Expression<'_, T, Cow<'_, str>> {
     }
 }
 
-impl<'a, T> Expression<'a, T, ColumnId> {
+impl<'a> Expression<'a, ColumnId> {
     pub fn cast(self, ty: Type) -> Self {
         if let Self::Constant(value) = &self {
             if let Some(value) = value.cast(ty) {
@@ -274,7 +109,7 @@ impl<'a, T> Expression<'a, T, ColumnId> {
         }
     }
 
-    fn unary_op(self, ctx: &ConnectionContext<T>, op: UnaryOp) -> Self {
+    fn unary_op(self, ctx: &ConnectionContext, op: UnaryOp) -> Self {
         if let Ok(value) = op.eval(ctx, &Row::empty(), &self) {
             return Self::Constant(value);
         }
@@ -349,7 +184,7 @@ impl<'a, T> Expression<'a, T, ColumnId> {
         }
     }
 
-    fn binary_op(self, ctx: &ConnectionContext<T>, op: BinaryOp, other: Self) -> Self {
+    fn binary_op(self, ctx: &ConnectionContext, op: BinaryOp, other: Self) -> Self {
         if let Ok(value) = op.eval(ctx, &Row::empty(), &self, &other) {
             return Self::Constant(value);
         }
@@ -398,27 +233,27 @@ impl<'a, T> Expression<'a, T, ColumnId> {
         }
     }
 
-    pub fn into_typed(self, ty: impl Into<NullableType>) -> TypedExpression<'a, T> {
+    pub fn into_typed(self, ty: impl Into<NullableType>) -> TypedExpression<'a> {
         TypedExpression {
             expr: self,
             ty: ty.into(),
         }
     }
 
-    pub fn into_executable(self, columns: &[ColumnId]) -> Expression<'a, T, ColumnIndex> {
+    pub fn into_executable(self, columns: &[ColumnId]) -> Expression<'a, ColumnIndex> {
         self.map_column_ref(|id| id.to_index(columns))
     }
 
     pub(super) fn into_display<'b>(
         self,
         column_map: &'b ColumnMapView,
-    ) -> Expression<'a, T, Cow<'b, str>> {
+    ) -> Expression<'a, Cow<'b, str>> {
         self.map_column_ref(|id| column_map[id].name())
     }
 
-    fn map_column_ref<U, F>(self, f: F) -> Expression<'a, T, U>
+    fn map_column_ref<T, F>(self, f: F) -> Expression<'a, T>
     where
-        F: FnOnce(ColumnId) -> U + Copy,
+        F: FnOnce(ColumnId) -> T + Copy,
     {
         match self {
             Self::Constant(value) => Expression::Constant(value),
@@ -516,50 +351,19 @@ impl<'a, T> Expression<'a, T, ColumnId> {
     }
 }
 
-pub struct CaseBranch<'a, T, C> {
-    pub condition: Expression<'a, T, C>,
-    pub result: Expression<'a, T, C>,
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct CaseBranch<'a, C> {
+    pub condition: Expression<'a, C>,
+    pub result: Expression<'a, C>,
 }
 
-impl<T, C: Clone> Clone for CaseBranch<'_, T, C> {
-    fn clone(&self) -> Self {
-        Self {
-            condition: self.condition.clone(),
-            result: self.result.clone(),
-        }
-    }
-}
-
-impl<T, C: PartialEq> PartialEq for CaseBranch<'_, T, C> {
-    fn eq(&self, other: &Self) -> bool {
-        self.condition == other.condition && self.result == other.result
-    }
-}
-
-impl<T, C: Eq> Eq for CaseBranch<'_, T, C> {}
-
-impl<T, C: Hash> Hash for CaseBranch<'_, T, C> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.condition.hash(state);
-        self.result.hash(state);
-    }
-}
-
-pub struct TypedExpression<'a, T> {
-    pub expr: planner::Expression<'a, T, ColumnId>,
+#[derive(Clone)]
+pub struct TypedExpression<'a> {
+    pub expr: planner::Expression<'a, ColumnId>,
     pub ty: NullableType,
 }
 
-impl<T> Clone for TypedExpression<'_, T> {
-    fn clone(&self) -> Self {
-        Self {
-            expr: self.expr.clone(),
-            ty: self.ty,
-        }
-    }
-}
-
-impl<T> From<Value> for TypedExpression<'_, T> {
+impl From<Value> for TypedExpression<'_> {
     fn from(value: Value) -> Self {
         let ty = value.ty();
         Self {
@@ -569,11 +373,11 @@ impl<T> From<Value> for TypedExpression<'_, T> {
     }
 }
 
-impl<'a, T> TypedExpression<'a, T> {
-    pub fn expect_type<I: Into<NullableType>>(
+impl<'a> TypedExpression<'a> {
+    pub fn expect_type<T: Into<NullableType>>(
         self,
-        expected: I,
-    ) -> PlannerResult<planner::Expression<'a, T, ColumnId>> {
+        expected: T,
+    ) -> PlannerResult<planner::Expression<'a, ColumnId>> {
         if self.ty.is_compatible_with(expected.into()) {
             Ok(self.expr)
         } else {
@@ -581,7 +385,7 @@ impl<'a, T> TypedExpression<'a, T> {
         }
     }
 
-    fn unary_op(self, ctx: &ConnectionContext<T>, op: UnaryOp) -> PlannerResult<Self> {
+    fn unary_op(self, ctx: &ConnectionContext, op: UnaryOp) -> PlannerResult<Self> {
         let ty = match (op, self.ty) {
             (_, NullableType::Null) => return Ok(Value::Null.into()),
             (UnaryOp::Not, _) => NullableType::NonNull(Type::Boolean),
@@ -593,12 +397,7 @@ impl<'a, T> TypedExpression<'a, T> {
         Ok(self.expr.unary_op(ctx, op).into_typed(ty))
     }
 
-    fn binary_op(
-        self,
-        ctx: &ConnectionContext<T>,
-        op: BinaryOp,
-        other: Self,
-    ) -> PlannerResult<Self> {
+    fn binary_op(self, ctx: &ConnectionContext, op: BinaryOp, other: Self) -> PlannerResult<Self> {
         let ty = match op {
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
                 match (self.ty, other.ty) {
@@ -645,23 +444,23 @@ impl<'a, T> TypedExpression<'a, T> {
         Ok(self.expr.binary_op(ctx, op, other.expr).into_typed(ty))
     }
 
-    pub fn eq(self, ctx: &ConnectionContext<T>, other: Self) -> PlannerResult<Self> {
+    pub fn eq(self, ctx: &ConnectionContext, other: Self) -> PlannerResult<Self> {
         self.binary_op(ctx, BinaryOp::Eq, other)
     }
 
-    pub fn and(self, ctx: &ConnectionContext<T>, other: Self) -> PlannerResult<Self> {
+    pub fn and(self, ctx: &ConnectionContext, other: Self) -> PlannerResult<Self> {
         self.binary_op(ctx, BinaryOp::And, other)
     }
 }
 
-pub struct ExpressionBinder<'a, 'b, T> {
-    planner: &'a Planner<'b, T>,
-    aliases: Option<&'a HashMap<String, TypedExpression<'b, T>>>,
-    aggregates: Option<&'a AggregatePlanner<'a, 'b, T>>,
+pub struct ExpressionBinder<'a, 'b> {
+    planner: &'a Planner<'b>,
+    aliases: Option<&'a HashMap<String, TypedExpression<'b>>>,
+    aggregates: Option<&'a AggregatePlanner<'a, 'b>>,
 }
 
-impl<'a, 'b, T> ExpressionBinder<'a, 'b, T> {
-    pub fn new(planner: &'a Planner<'b, T>) -> Self {
+impl<'a, 'b> ExpressionBinder<'a, 'b> {
+    pub fn new(planner: &'a Planner<'b>) -> Self {
         Self {
             planner,
             aliases: None,
@@ -669,14 +468,14 @@ impl<'a, 'b, T> ExpressionBinder<'a, 'b, T> {
         }
     }
 
-    pub fn with_aliases(&self, aliases: &'a HashMap<String, TypedExpression<'b, T>>) -> Self {
+    pub fn with_aliases(&self, aliases: &'a HashMap<String, TypedExpression<'b>>) -> Self {
         Self {
             aliases: Some(aliases),
             ..*self
         }
     }
 
-    pub fn with_aggregates(&self, aggregates: &'a AggregatePlanner<'a, 'b, T>) -> Self {
+    pub fn with_aggregates(&self, aggregates: &'a AggregatePlanner<'a, 'b>) -> Self {
         Self {
             aggregates: Some(aggregates),
             ..*self
@@ -684,12 +483,12 @@ impl<'a, 'b, T> ExpressionBinder<'a, 'b, T> {
     }
 }
 
-impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
+impl<'a, 'b> ExpressionBinder<'a, 'b> {
     pub fn bind(
         &self,
-        source: PlanNode<'b, T>,
+        source: PlanNode<'b>,
         expr: parser::Expression,
-    ) -> PlannerResult<(PlanNode<'b, T>, TypedExpression<'b, T>)> {
+    ) -> PlannerResult<(PlanNode<'b>, TypedExpression<'b>)> {
         if let Some(column_id) = self
             .aggregates
             .and_then(|aggregates| aggregates.resolve_group_by(&expr))
@@ -975,7 +774,7 @@ impl<'a, 'b, T: Transaction> ExpressionBinder<'a, 'b, T> {
     pub fn bind_without_source(
         &self,
         expr: parser::Expression,
-    ) -> PlannerResult<TypedExpression<'b, T>> {
+    ) -> PlannerResult<TypedExpression<'b>> {
         self.bind(PlanNode::new_empty_row(), expr)
             .map(|(_, expr)| expr)
     }

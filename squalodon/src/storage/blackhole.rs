@@ -32,8 +32,8 @@ impl super::Transaction for Transaction<'_> {
         None
     }
 
-    fn scan(&self, _start: Vec<u8>, _end: Vec<u8>) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> {
-        std::iter::empty()
+    fn scan(&self, _start: Vec<u8>, _end: Vec<u8>) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)>> {
+        Box::new(std::iter::empty())
     }
 
     fn insert(&self, _key: &[u8], _value: &[u8]) -> bool {

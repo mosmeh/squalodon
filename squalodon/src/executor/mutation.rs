@@ -1,15 +1,12 @@
 use super::{ExecutorNode, ExecutorResult, IntoOutput, Node, Output};
-use crate::{catalog::Table, storage::Transaction, Row};
+use crate::{catalog::Table, Row};
 
 pub struct Insert {
     row: Option<Row>,
 }
 
 impl Insert {
-    pub fn new<T: Transaction>(
-        source: ExecutorNode<'_, T>,
-        table: Table<'_, T>,
-    ) -> ExecutorResult<Self> {
+    pub fn new(source: ExecutorNode, table: Table) -> ExecutorResult<Self> {
         let mut count = 0;
         for row in source {
             table.insert(&row?)?;
@@ -32,10 +29,7 @@ pub struct Update {
 }
 
 impl Update {
-    pub fn new<T: Transaction>(
-        source: ExecutorNode<'_, T>,
-        table: Table<'_, T>,
-    ) -> ExecutorResult<Self> {
+    pub fn new(source: ExecutorNode, table: Table) -> ExecutorResult<Self> {
         let num_columns = table.columns().len();
         let mut count = 0;
         for row in source {
@@ -62,10 +56,7 @@ pub struct Delete {
 }
 
 impl Delete {
-    pub fn new<T: Transaction>(
-        source: ExecutorNode<'_, T>,
-        table: Table<'_, T>,
-    ) -> ExecutorResult<Self> {
+    pub fn new(source: ExecutorNode, table: Table) -> ExecutorResult<Self> {
         let mut count = 0;
         for row in source {
             table.delete(&row?)?;

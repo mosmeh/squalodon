@@ -40,7 +40,7 @@ pub enum CatalogEntryKind {
 }
 
 impl std::fmt::Display for CatalogEntryKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(match self {
             Self::Metadata => "metadata",
             Self::Table => "table",
@@ -76,24 +76,15 @@ impl ObjectId {
     }
 }
 
-pub struct Table<'a, T> {
-    txn: &'a T,
+#[derive(Clone)]
+pub struct Table<'a> {
+    txn: &'a dyn Transaction,
     def: TableDef,
     indexes: Vec<Index>,
 }
 
-impl<T> Clone for Table<'_, T> {
-    fn clone(&self) -> Self {
-        Self {
-            txn: self.txn,
-            def: self.def.clone(),
-            indexes: self.indexes.clone(),
-        }
-    }
-}
-
-impl<'a, T> Table<'a, T> {
-    fn new(txn: &'a T, def: TableDef, indexes: Vec<IndexDef>) -> Self {
+impl<'a> Table<'a> {
+    fn new(txn: &'a dyn Transaction, def: TableDef, indexes: Vec<IndexDef>) -> Self {
         let indexes = indexes
             .into_iter()
             .zip(def.index_names.iter())
@@ -125,7 +116,7 @@ impl<'a, T> Table<'a, T> {
         &self.indexes
     }
 
-    pub fn transaction(&self) -> &'a T {
+    pub fn transaction(&self) -> &'a dyn Transaction {
         self.txn
     }
 }
@@ -180,13 +171,13 @@ struct IndexDef {
     is_unique: bool,
 }
 
-pub enum Function<'a, T> {
-    Scalar(&'a ScalarFunction<T>),
+pub enum Function<'a> {
+    Scalar(&'a ScalarFunction),
     Aggregate(&'a AggregateFunction),
-    Table(&'a TableFunction<T>),
+    Table(&'a TableFunction),
 }
 
-impl<'a, T> Function<'a, T> {
+impl<'a> Function<'a> {
     pub fn name(&self) -> &str {
         match self {
             Self::Scalar(f) => f.name,
@@ -196,30 +187,15 @@ impl<'a, T> Function<'a, T> {
     }
 }
 
-pub struct ScalarFunction<T> {
+#[derive(PartialEq, Eq, Hash)]
+pub struct ScalarFunction {
     pub name: &'static str,
     pub bind: ScalarBindFnPtr,
-    pub eval: ScalarEvalFnPtr<T>,
+    pub eval: ScalarEvalFnPtr,
 }
 
 pub type ScalarBindFnPtr = fn(&[NullableType]) -> PlannerResult<NullableType>;
-pub type ScalarEvalFnPtr<T> = fn(&ConnectionContext<'_, T>, &[Value]) -> ExecutorResult<Value>;
-
-impl<T> PartialEq for ScalarFunction<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.bind == other.bind && self.eval == other.eval
-    }
-}
-
-impl<T> Eq for ScalarFunction<T> {}
-
-impl<T> std::hash::Hash for ScalarFunction<T> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.name.hash(state);
-        self.bind.hash(state);
-        self.eval.hash(state);
-    }
-}
+pub type ScalarEvalFnPtr = fn(&ConnectionContext, &[Value]) -> ExecutorResult<Value>;
 
 pub struct AggregateFunction {
     pub name: &'static str,
@@ -246,30 +222,28 @@ pub trait Aggregator {
     fn finish(&self) -> Value;
 }
 
-pub struct TableFunction<T> {
+pub struct TableFunction {
     pub name: &'static str,
-    pub fn_ptr: TableFnPtr<T>,
+    pub fn_ptr: TableFnPtr,
     pub result_columns: Vec<planner::Column>,
 }
 
-pub type TableFnPtr<T> = for<'a> fn(
-    &'a ConnectionContext<'_, T>,
-    &Row,
-) -> ExecutorResult<Box<dyn Iterator<Item = Row> + 'a>>;
+pub type TableFnPtr =
+    for<'a> fn(&'a ConnectionContext, &Row) -> ExecutorResult<Box<dyn Iterator<Item = Row> + 'a>>;
 
-pub struct Catalog<T> {
-    scalar_functions: HashMap<&'static str, ScalarFunction<T>>,
+pub struct Catalog {
+    scalar_functions: HashMap<&'static str, ScalarFunction>,
     aggregate_functions: HashMap<&'static str, AggregateFunction>,
-    table_functions: HashMap<&'static str, TableFunction<T>>,
+    table_functions: HashMap<&'static str, TableFunction>,
 }
 
-impl<T> Catalog<T> {
-    pub fn with<'a>(&'a self, txn: &'a T) -> CatalogRef<'a, T> {
+impl Catalog {
+    pub fn with<'a>(&'a self, txn: &'a dyn Transaction) -> CatalogRef<'a> {
         CatalogRef { catalog: self, txn }
     }
 }
 
-impl<T: Transaction> Catalog<T> {
+impl Catalog {
     pub fn new() -> Self {
         Self {
             scalar_functions: builtin::scalar_function::load()
@@ -285,13 +259,13 @@ impl<T: Transaction> Catalog<T> {
     }
 }
 
-pub struct CatalogRef<'a, T> {
-    catalog: &'a Catalog<T>,
-    txn: &'a T,
+pub struct CatalogRef<'a> {
+    catalog: &'a Catalog,
+    txn: &'a dyn Transaction,
 }
 
-impl<'a, T: Transaction> CatalogRef<'a, T> {
-    pub fn table(&self, name: &str) -> CatalogResult<Table<'a, T>> {
+impl<'a> CatalogRef<'a> {
+    pub fn table(&self, name: &str) -> CatalogResult<Table<'a>> {
         let key = CatalogEntryKind::Table.key(name);
         self.txn.get(&key).map_or(
             Err(CatalogError::UnknownEntry(
@@ -302,14 +276,14 @@ impl<'a, T: Transaction> CatalogRef<'a, T> {
         )
     }
 
-    pub fn tables(&self) -> impl Iterator<Item = CatalogResult<Table<'a, T>>> + '_ {
+    pub fn tables(&self) -> impl Iterator<Item = CatalogResult<Table<'a>>> + '_ {
         let prefix = CatalogEntryKind::Table.prefix();
         self.txn
             .prefix_scan(prefix)
             .map(|(_, v)| self.read_table(&v))
     }
 
-    fn read_table(&self, bytes: &[u8]) -> CatalogResult<Table<'a, T>> {
+    fn read_table(&self, bytes: &[u8]) -> CatalogResult<Table<'a>> {
         let table: TableDef = bincode::deserialize(bytes)?;
         let mut indexes = Vec::with_capacity(table.index_names.len());
         for index_name in &table.index_names {
@@ -444,8 +418,8 @@ impl<'a, T: Transaction> CatalogRef<'a, T> {
     }
 }
 
-impl<T> CatalogRef<'_, T> {
-    pub fn functions(&self) -> impl Iterator<Item = Function<T>> + '_ {
+impl CatalogRef<'_> {
+    pub fn functions(&self) -> impl Iterator<Item = Function> + '_ {
         let scalar = self.catalog.scalar_functions.values().map(Function::Scalar);
         let aggregate = self
             .catalog
@@ -456,7 +430,7 @@ impl<T> CatalogRef<'_, T> {
         scalar.chain(aggregate).chain(table)
     }
 
-    pub fn scalar_function(&self, name: &str) -> CatalogResult<&ScalarFunction<T>> {
+    pub fn scalar_function(&self, name: &str) -> CatalogResult<&ScalarFunction> {
         self.catalog.scalar_functions.get(name).ok_or_else(|| {
             CatalogError::UnknownEntry(CatalogEntryKind::ScalarFunction, name.to_owned())
         })
@@ -468,7 +442,7 @@ impl<T> CatalogRef<'_, T> {
         })
     }
 
-    pub fn table_function(&self, name: &str) -> CatalogResult<&TableFunction<T>> {
+    pub fn table_function(&self, name: &str) -> CatalogResult<&TableFunction> {
         self.catalog.table_functions.get(name).ok_or_else(|| {
             CatalogError::UnknownEntry(CatalogEntryKind::TableFunction, name.to_owned())
         })

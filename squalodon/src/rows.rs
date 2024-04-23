@@ -22,7 +22,7 @@ impl Column {
 pub struct ColumnIndex(pub usize);
 
 impl std::fmt::Display for ColumnIndex {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "#{}", self.0)
     }
 }

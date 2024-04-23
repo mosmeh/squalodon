@@ -76,7 +76,7 @@ impl ColumnId {
 pub struct ColumnMap<'a>(RefMut<'a, Vec<Column>>);
 
 impl ColumnMap<'_> {
-    pub fn view(&self) -> ColumnMapView<'_> {
+    pub fn view(&self) -> ColumnMapView {
         ColumnMapView(&self.0)
     }
 

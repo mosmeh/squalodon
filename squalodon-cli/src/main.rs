@@ -313,7 +313,7 @@ impl<T: Storage> Completer for RustylineHelper<'_, '_, T> {
         &self,
         line: &str,
         pos: usize,
-        _ctx: &rustyline::Context<'_>,
+        _ctx: &rustyline::Context,
     ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
         let (start, word) = extract_word(line, pos, None, |ch| !is_valid_identifier_char(ch));
         let mut candidates = Vec::new();

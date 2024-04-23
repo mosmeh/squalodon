@@ -26,8 +26,8 @@ impl ExtractColumn for ColumnIndex {
     }
 }
 
-impl<T, C: ExtractColumn> Expression<'_, T, C> {
-    pub fn eval(&self, ctx: &ConnectionContext<T>, row: &Row) -> ExecutorResult<Value> {
+impl<C: ExtractColumn> Expression<'_, C> {
+    pub fn eval(&self, ctx: &ConnectionContext, row: &Row) -> ExecutorResult<Value> {
         match self {
             Self::Constant(v) => Ok(v.clone()),
             Self::ColumnRef(c) => c.extract_column(row).cloned(),
@@ -58,11 +58,11 @@ impl<T, C: ExtractColumn> Expression<'_, T, C> {
 }
 
 impl UnaryOp {
-    pub fn eval<T, C: ExtractColumn>(
+    pub fn eval<C: ExtractColumn>(
         self,
-        ctx: &ConnectionContext<T>,
+        ctx: &ConnectionContext,
         row: &Row,
-        expr: &Expression<T, C>,
+        expr: &Expression<C>,
     ) -> ExecutorResult<Value> {
         let expr = expr.eval(ctx, row)?;
         match (self, expr) {
@@ -77,12 +77,12 @@ impl UnaryOp {
 }
 
 impl BinaryOp {
-    pub fn eval<T, C: ExtractColumn>(
+    pub fn eval<C: ExtractColumn>(
         self,
-        ctx: &ConnectionContext<T>,
+        ctx: &ConnectionContext,
         row: &Row,
-        lhs: &Expression<T, C>,
-        rhs: &Expression<T, C>,
+        lhs: &Expression<C>,
+        rhs: &Expression<C>,
     ) -> ExecutorResult<Value> {
         let lhs = lhs.eval(ctx, row)?;
         if lhs == Value::Null {
@@ -164,11 +164,11 @@ impl BinaryOp {
     }
 }
 
-fn eval_case<T, C: ExtractColumn>(
-    ctx: &ConnectionContext<T>,
+fn eval_case<C: ExtractColumn>(
+    ctx: &ConnectionContext,
     row: &Row,
-    branches: &[CaseBranch<T, C>],
-    else_branch: Option<&Expression<T, C>>,
+    branches: &[CaseBranch<C>],
+    else_branch: Option<&Expression<C>>,
 ) -> ExecutorResult<Value> {
     for CaseBranch { condition, result } in branches {
         if condition.eval(ctx, row)? == Value::Boolean(true) {
@@ -178,11 +178,11 @@ fn eval_case<T, C: ExtractColumn>(
     else_branch.map_or(Ok(Value::Null), |else_branch| else_branch.eval(ctx, row))
 }
 
-fn eval_like<T, C: ExtractColumn>(
-    ctx: &ConnectionContext<T>,
+fn eval_like<C: ExtractColumn>(
+    ctx: &ConnectionContext,
     row: &Row,
-    str_expr: &Expression<T, C>,
-    pattern: &Expression<T, C>,
+    str_expr: &Expression<C>,
+    pattern: &Expression<C>,
     case_insensitive: bool,
 ) -> ExecutorResult<Value> {
     let Value::Text(string) = str_expr.eval(ctx, row)? else {

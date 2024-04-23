@@ -7,17 +7,16 @@ use crate::{
     connection::ConnectionContext,
     parser::{self, BinaryOp},
     planner::{self, CrossProduct},
-    storage::Transaction,
     Row, Type, Value,
 };
 use std::collections::HashSet;
 
-pub struct Filter<'a, T> {
-    pub source: Box<PlanNode<'a, T>>,
-    pub conjuncts: HashSet<planner::Expression<'a, T, ColumnId>>,
+pub struct Filter<'a> {
+    pub source: Box<PlanNode<'a>>,
+    pub conjuncts: HashSet<planner::Expression<'a, ColumnId>>,
 }
 
-impl<T> Node for Filter<'_, T> {
+impl Node for Filter<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
         let mut node = f.node("Filter");
         for conjunct in &self.conjuncts {
@@ -31,11 +30,11 @@ impl<T> Node for Filter<'_, T> {
     }
 }
 
-impl<'a, T> PlanNode<'a, T> {
+impl<'a> PlanNode<'a> {
     pub(super) fn filter(
         self,
-        ctx: &ConnectionContext<'a, T>,
-        condition: TypedExpression<'a, T>,
+        ctx: &ConnectionContext<'a>,
+        condition: TypedExpression<'a>,
     ) -> PlannerResult<Self> {
         let condition = condition.expect_type(Type::Boolean)?;
         self.filter_inner(ctx, [condition].into())
@@ -43,8 +42,8 @@ impl<'a, T> PlanNode<'a, T> {
 
     fn filter_inner(
         self,
-        ctx: &ConnectionContext<'a, T>,
-        conjuncts: HashSet<planner::Expression<'a, T, ColumnId>>,
+        ctx: &ConnectionContext<'a>,
+        conjuncts: HashSet<planner::Expression<'a, ColumnId>>,
     ) -> PlannerResult<Self> {
         if self.produces_no_rows() {
             return Ok(self);
@@ -106,10 +105,10 @@ impl<'a, T> PlanNode<'a, T> {
 /// Collects conjuncts from an expression.
 ///
 /// Returns false if the expression evaluates to false.
-fn collect_conjuncts<'a, T>(
-    ctx: &ConnectionContext<'a, T>,
-    conjuncts: &mut HashSet<planner::Expression<'a, T, ColumnId>>,
-    expr: planner::Expression<'a, T, ColumnId>,
+fn collect_conjuncts<'a>(
+    ctx: &ConnectionContext<'a>,
+    conjuncts: &mut HashSet<planner::Expression<'a, ColumnId>>,
+    expr: planner::Expression<'a, ColumnId>,
 ) -> bool {
     if let planner::Expression::BinaryOp {
         op: BinaryOp::And,
@@ -133,13 +132,13 @@ fn collect_conjuncts<'a, T>(
     true
 }
 
-impl<'a, T: Transaction> Planner<'a, T> {
+impl<'a> Planner<'a> {
     pub fn plan_filter(
         &self,
-        expr_binder: &ExpressionBinder<'_, 'a, T>,
-        source: PlanNode<'a, T>,
+        expr_binder: &ExpressionBinder<'_, 'a>,
+        source: PlanNode<'a>,
         expr: parser::Expression,
-    ) -> PlannerResult<PlanNode<'a, T>> {
+    ) -> PlannerResult<PlanNode<'a>> {
         let (plan, condition) = expr_binder.bind(source, expr)?;
         plan.filter(self.ctx, condition)
     }

@@ -16,7 +16,7 @@ impl Type {
 }
 
 impl std::fmt::Debug for Type {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Integer => f.write_str("INTEGER"),
             Self::Real => f.write_str("REAL"),
@@ -27,7 +27,7 @@ impl std::fmt::Debug for Type {
 }
 
 impl std::fmt::Display for Type {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Integer => f.write_str("INTEGER"),
             Self::Real => f.write_str("REAL"),
@@ -50,7 +50,7 @@ impl From<Type> for NullableType {
 }
 
 impl std::fmt::Display for NullableType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Null => f.write_str("NULL"),
             Self::NonNull(ty) => ty.fmt(f),
@@ -88,7 +88,7 @@ pub enum Value {
 }
 
 impl std::fmt::Debug for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Null => f.write_str("NULL"),
             Self::Integer(i) => i.fmt(f),
@@ -100,7 +100,7 @@ impl std::fmt::Debug for Value {
 }
 
 impl std::fmt::Display for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Null => f.write_str("NULL"),
             Self::Integer(i) => i.fmt(f),

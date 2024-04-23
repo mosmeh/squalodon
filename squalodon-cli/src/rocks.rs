@@ -26,12 +26,18 @@ impl squalodon::storage::Transaction for Transaction<'_> {
         self.inner().get(key).unwrap()
     }
 
-    fn scan(&self, start: Vec<u8>, end: Vec<u8>) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> {
-        self.inner()
+    fn scan(
+        &self,
+        start: Vec<u8>,
+        end: Vec<u8>,
+    ) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + '_> {
+        let iter = self
+            .inner()
             .iterator(IteratorMode::From(&start, Direction::Forward))
             .map(std::result::Result::unwrap)
             .take_while(move |(k, _)| k.as_ref() < &end)
-            .map(|(k, v)| (k.to_vec(), v.to_vec()))
+            .map(|(k, v)| (k.to_vec(), v.to_vec()));
+        Box::new(iter)
     }
 
     fn insert(&self, key: &[u8], value: &[u8]) -> bool {
@@ -63,7 +69,7 @@ impl Drop for Transaction<'_> {
 }
 
 impl Transaction<'_> {
-    fn inner(&self) -> &rocksdb::Transaction<'_, TransactionDB> {
+    fn inner(&self) -> &rocksdb::Transaction<TransactionDB> {
         self.0.as_ref().unwrap()
     }
 }
