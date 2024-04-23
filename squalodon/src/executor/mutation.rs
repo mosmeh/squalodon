@@ -16,7 +16,7 @@ impl Insert {
             count += 1;
         }
         Ok(Self {
-            row: Some(Row(vec![count.into()])),
+            row: Some(Row::new(vec![count.into()])),
         })
     }
 }
@@ -46,7 +46,7 @@ impl Update {
             count += 1;
         }
         Ok(Self {
-            row: Some(Row(vec![count.into()])),
+            row: Some(Row::new(vec![count.into()])),
         })
     }
 }
@@ -72,7 +72,7 @@ impl Delete {
             count += 1;
         }
         Ok(Self {
-            row: Some(Row(vec![count.into()])),
+            row: Some(Row::new(vec![count.into()])),
         })
     }
 }

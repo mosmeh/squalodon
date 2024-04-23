@@ -306,7 +306,7 @@ impl<T: Transaction> Inserter<'_, T> {
                 .ok_or(Error::Executor(ExecutorError::TypeError))?;
             row.push(value);
         }
-        self.rows.push(Row(row));
+        self.rows.push(Row::new(row));
 
         // Arbitrary threshold
         if self.rows.len() >= 16384 {

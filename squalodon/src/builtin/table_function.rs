@@ -38,7 +38,7 @@ pub fn load<T: Transaction>() -> impl Iterator<Item = TableFunction<T>> {
                             .as_ref()
                             .map_or_else(String::new, ToString::to_string)
                             .into();
-                        rows.push(Row(vec![
+                        rows.push(Row::new(vec![
                             table.name().into(),
                             column.name.clone().into(),
                             column.ty.to_string().into(),
@@ -68,7 +68,7 @@ pub fn load<T: Transaction>() -> impl Iterator<Item = TableFunction<T>> {
                         Function::Aggregate(_) => "aggregate",
                         Function::Table(_) => "table",
                     };
-                    Row(vec![function.name().into(), kind.into()])
+                    Row::new(vec![function.name().into(), kind.into()])
                 });
                 Ok(Box::new(rows))
             },
@@ -84,7 +84,7 @@ pub fn load<T: Transaction>() -> impl Iterator<Item = TableFunction<T>> {
                 for table in ctx.catalog().tables() {
                     let table = table?;
                     for index in table.indexes() {
-                        rows.push(Row(vec![
+                        rows.push(Row::new(vec![
                             table.name().into(),
                             index.name().into(),
                             index.is_unique().into(),
@@ -104,7 +104,7 @@ pub fn load<T: Transaction>() -> impl Iterator<Item = TableFunction<T>> {
             fn_ptr: |_, _| {
                 let rows = lexer::KEYWORDS
                     .iter()
-                    .map(|keyword| Row(vec![keyword.to_ascii_uppercase().into()]));
+                    .map(|keyword| Row::new(vec![keyword.to_ascii_uppercase().into()]));
                 Ok(Box::new(rows))
             },
             result_columns: vec![Column::new("keyword", Type::Text)],
@@ -115,7 +115,7 @@ pub fn load<T: Transaction>() -> impl Iterator<Item = TableFunction<T>> {
                 let mut rows = Vec::new();
                 for table in ctx.catalog().tables() {
                     let table = table?;
-                    rows.push(Row(vec![table.name().into()]));
+                    rows.push(Row::new(vec![table.name().into()]));
                 }
                 Ok(Box::new(rows.into_iter()))
             },

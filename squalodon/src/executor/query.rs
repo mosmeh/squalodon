@@ -355,10 +355,10 @@ impl<T> Node for CrossProduct<'_, T> {
                 None => self.outer_row.insert(self.outer_source.next_row()?),
             };
             if let Some(inner_row) = self.inner_rows.get(self.inner_cursor) {
-                let mut row = outer_row.clone();
-                row.0.extend(inner_row.0.clone());
+                let mut row = outer_row.0.clone().into_vec();
+                row.extend(inner_row.0.iter().cloned());
                 self.inner_cursor += 1;
-                return Ok(row);
+                return Ok(Row::new(row));
             }
             self.outer_row = None;
             self.inner_cursor = 0;

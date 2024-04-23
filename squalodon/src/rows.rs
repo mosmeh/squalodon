@@ -28,11 +28,15 @@ impl std::fmt::Display for ColumnIndex {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct Row(pub(crate) Vec<Value>);
+pub struct Row(pub(crate) Box<[Value]>);
 
 impl Row {
+    pub(crate) fn new(values: Vec<Value>) -> Self {
+        Self(values.into_boxed_slice())
+    }
+
     pub(crate) fn empty() -> Self {
-        Self(Vec::new())
+        Self(Default::default())
     }
 
     pub fn get<T>(&self, column: usize) -> Result<T>
