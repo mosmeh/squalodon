@@ -312,6 +312,12 @@ impl<'a, T> PlanNode<'a, T> {
             outputs.append(&mut other.outputs());
             return PlanNode::new_no_rows(outputs);
         }
+        if self.outputs().is_empty() {
+            return other;
+        }
+        if other.outputs().is_empty() {
+            return self;
+        }
         Self::CrossProduct(CrossProduct {
             left: Box::new(self),
             right: Box::new(other),
@@ -338,8 +344,7 @@ impl<'a, T> PlanNode<'a, T> {
         if self.produces_no_rows() {
             return Ok(other);
         }
-        let outputs = self
-            .outputs()
+        let outputs = left_outputs
             .into_iter()
             .map(|id| column_map.insert(column_map[id].clone()))
             .collect();
