@@ -22,6 +22,8 @@ jobs:
         toolchain: ${{ matrix.toolchain }}
         components: rustfmt, clippy
     - uses: Swatinem/rust-cache@v2
+      with:
+        cache-on-failure: true
     - run: cargo build --verbose
     - run: cargo build --all-features --verbose
     - run: cargo test --verbose
