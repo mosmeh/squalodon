@@ -267,7 +267,7 @@ impl std::fmt::Display for OrderBy {
         if self.order != Order::default() {
             write!(f, " {}", self.order)?;
         }
-        if self.null_order != NullOrder::default() {
+        if self.null_order != self.order.default_null_order() {
             write!(f, " {}", self.null_order)?;
         }
         Ok(())
@@ -286,6 +286,15 @@ impl Default for Order {
     }
 }
 
+impl Order {
+    pub fn default_null_order(self) -> NullOrder {
+        match self {
+            Self::Asc => NullOrder::NullsLast,
+            Self::Desc => NullOrder::NullsFirst,
+        }
+    }
+}
+
 impl std::fmt::Display for Order {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(match self {
@@ -299,12 +308,6 @@ impl std::fmt::Display for Order {
 pub enum NullOrder {
     NullsFirst,
     NullsLast,
-}
-
-impl Default for NullOrder {
-    fn default() -> Self {
-        Self::NullsLast
-    }
 }
 
 impl std::fmt::Display for NullOrder {
@@ -586,7 +589,7 @@ impl Parser<'_> {
                     token => return Err(unexpected(&token)),
                 }
             } else {
-                Default::default()
+                order.default_null_order()
             };
 
             Ok(OrderBy {

@@ -68,7 +68,7 @@ impl std::fmt::Display for OrderBy<'_, Cow<'_, str>> {
         if self.order != Default::default() {
             write!(f, " {}", self.order)?;
         }
-        if self.null_order != Default::default() {
+        if self.null_order != self.order.default_null_order() {
             write!(f, " {}", self.null_order)?;
         }
         Ok(())

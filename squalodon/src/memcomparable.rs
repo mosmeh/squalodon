@@ -23,10 +23,18 @@ const UNIT_SIZE: usize = CHUNK_SIZE + 1;
 const CHUNK_SIZE_U8: u8 = CHUNK_SIZE as u8;
 const UNIT_SIZE_U8: u8 = UNIT_SIZE as u8;
 
-#[derive(Default)]
 pub struct MemcomparableSerde {
     order: Order,
     null_order: NullOrder,
+}
+
+impl Default for MemcomparableSerde {
+    fn default() -> Self {
+        Self {
+            order: Order::Asc,
+            null_order: Order::Asc.default_null_order(),
+        }
+    }
 }
 
 impl MemcomparableSerde {
