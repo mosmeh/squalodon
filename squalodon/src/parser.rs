@@ -206,10 +206,10 @@ impl<'a> Parser<'a> {
 
     fn parse_type(&mut self) -> ParserResult<Type> {
         let ty = match self.lexer.consume()? {
-            Token::Integer => Type::Integer,
-            Token::Real => Type::Real,
+            Token::Integer | Token::BigInt | Token::Int | Token::SmallInt => Type::Integer,
+            Token::Real | Token::Decimal => Type::Real,
             Token::Boolean => Type::Boolean,
-            Token::Text => Type::Text,
+            Token::Text | Token::Char | Token::BpChar | Token::VarChar => Type::Text,
             token => return Err(unexpected(&token)),
         };
         Ok(ty)

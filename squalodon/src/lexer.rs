@@ -103,14 +103,18 @@ keywords! {
     As
     Asc
     Begin
+    BigInt
     Boolean
+    BpChar
     By
     Case
     Cast
+    Char
     Commit
     Create
     Cross
     Deallocate
+    Decimal
     Default
     Delete
     Desc
@@ -132,6 +136,7 @@ keywords! {
     Index
     Inner
     Insert
+    Int
     Integer
     Into
     Join
@@ -153,6 +158,7 @@ keywords! {
     Select
     Set
     Show
+    SmallInt
     Table
     Tables
     Text
@@ -164,6 +170,7 @@ keywords! {
     Update
     Using
     Values
+    VarChar
     When
     Where
 }
