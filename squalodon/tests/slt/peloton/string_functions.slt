@@ -1,0 +1,77 @@
+# Based on https://github.com/cmu-db/peloton/blob/484d76df9344cb5c153a2c361c5d5018912d4cf4/test/sql/string_functions_sql_test.cpp
+
+# LengthTest
+
+statement ok
+CREATE TABLE foo (id INTEGER PRIMARY KEY, name VARCHAR);
+
+statement ok
+INSERT INTO foo VALUES
+    (0, 'a'),
+    (1, 'aa'),
+    (2, 'aaa'),
+    (3, 'aaaa'),
+    (4, 'aaaaa'),
+    (5, 'aaaaaa'),
+    (6, 'aaaaaaa'),
+    (7, 'aaaaaaaa'),
+    (8, 'aaaaaaaaa'),
+    (9, 'aaaaaaaaaa'),
+    (10, 'aaaaaaaaaaa'),
+    (11, 'aaaaaaaaaaaa'),
+    (12, 'aaaaaaaaaaaaa'),
+    (13, 'aaaaaaaaaaaaaa'),
+    (14, 'aaaaaaaaaaaaaaa'),
+    (15, 'aaaaaaaaaaaaaaaa'),
+    (16, 'aaaaaaaaaaaaaaaaa'),
+    (17, 'aaaaaaaaaaaaaaaaaa'),
+    (18, 'aaaaaaaaaaaaaaaaaaa'),
+    (19, 'aaaaaaaaaaaaaaaaaaaa'),
+    (20, 'aaaaaaaaaaaaaaaaaaaaa'),
+    (21, 'aaaaaaaaaaaaaaaaaaaaaa'),
+    (22, 'aaaaaaaaaaaaaaaaaaaaaaa'),
+    (23, 'aaaaaaaaaaaaaaaaaaaaaaaa'),
+    (24, 'aaaaaaaaaaaaaaaaaaaaaaaaa'),
+    (25, 'aaaaaaaaaaaaaaaaaaaaaaaaaa'),
+    (26, 'aaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+    (27, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+    (28, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+    (29, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+    (30, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+    (31, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+
+query I
+SELECT length(name) FROM foo;
+----
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32

@@ -1,0 +1,56 @@
+# Based on https://github.com/cmu-db/peloton/blob/484d76df9344cb5c153a2c361c5d5018912d4cf4/test/sql/case_sql_test.cpp
+
+statement ok
+CREATE TABLE test (a INT PRIMARY KEY, b INT, c INT);
+
+statement ok
+INSERT INTO test VALUES
+    (1, 22, 333),
+    (2, 11, 000),
+    (3, 33, 444),
+    (4, 00, 555);
+
+# Simple
+query II
+SELECT a, CASE WHEN a=1 THEN 2 ELSE 0 END FROM test;
+----
+1 2
+2 0
+3 0
+4 0
+
+# SimpleWithArg
+query II
+SELECT a, CASE a WHEN 1 THEN 2 WHEN 2 THEN 3 ELSE 100 END FROM test;
+----
+1 2
+2 3
+3 100
+4 100
+
+# SimpleWithArgStringResult
+query IT
+SELECT a, CASE a WHEN 1 THEN '2' WHEN 2 THEN '3' ELSE '100' END FROM test;
+----
+1 2
+2 3
+3 100
+4 100
+
+# SimpleMultipleWhen
+query II
+SELECT a, CASE WHEN a=1 THEN 2 WHEN a=2 THEN 3 ELSE 0 END FROM test;
+----
+1 2
+2 3
+3 0
+4 0
+
+# SimpleMultipleWhenWithoutElse
+query II
+SELECT a, CASE WHEN a=1 THEN 2 WHEN a=2 THEN 3 END FROM test;
+----
+1 2
+2 3
+3 NULL
+4 NULL

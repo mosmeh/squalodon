@@ -8,8 +8,16 @@ bincode = "1.3.3"
 crossbeam-skiplist = "0.1.3"
 fastrand = "2.0.2"
 regex-lite = "0.1.5"
-serde = { version = "1.0.197", features = ["derive"] }
-thiserror = "1.0.58"
+serde = { version = "1.0.198", features = ["derive"] }
+thiserror = "1.0.59"
+
+[dev-dependencies]
+sqllogictest = "0.20.2"
+
+[[test]]
+name = "sqllogictest"
+path = "tests/sqllogictest.rs"
+harness = false
 
 [lints.clippy]
 nursery = "warn"

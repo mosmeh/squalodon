@@ -1,0 +1,80 @@
+# Based on https://github.com/cmu-db/peloton/blob/484d76df9344cb5c153a2c361c5d5018912d4cf4/test/sql/type_sql_test.cpp
+
+# VarcharTest
+
+statement ok
+CREATE TABLE foo (id INTEGER PRIMARY KEY, name VARCHAR);
+
+statement ok
+INSERT INTO foo VALUES
+    (1, 'Alice'),
+    (2, 'Peter'),
+    (3, 'Cathy'),
+    (4, 'Bob'),
+    (5, 'Alicia'),
+    (6, 'David'),
+    (7, NULL);
+
+query T
+SELECT name FROM foo WHERE name = 'Alice';
+----
+Alice
+
+query T
+SELECT name FROM foo WHERE name = 'david';
+----
+
+query T
+SELECT name FROM foo WHERE name = 'Ann';
+----
+
+query T
+SELECT name FROM foo WHERE name = 'Alice' OR name = 'Alicia';
+----
+Alice
+Alicia
+
+query T
+SELECT name FROM foo WHERE name != 'Bob' AND name != 'David';
+----
+Alice
+Peter
+Cathy
+Alicia
+
+query T
+SELECT name FROM foo WHERE name >= 'A' AND name <= 'D';
+----
+Alice
+Cathy
+Bob
+Alicia
+
+query T
+SELECT name FROM foo WHERE name > 'David';
+----
+Peter
+
+query T
+SELECT name FROM foo WHERE name <= 'Alicia';
+----
+Alice
+Alicia
+
+query T
+SELECT name FROM foo WHERE name LIKE '%li%';
+----
+Alice
+Alicia
+
+query T
+SELECT name FROM foo WHERE name LIKE '_____';
+----
+Alice
+Peter
+Cathy
+David
+
+query T
+SELECT name FROM foo WHERE name LIKE '%th';
+----

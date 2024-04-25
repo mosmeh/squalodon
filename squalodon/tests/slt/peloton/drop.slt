@@ -1,0 +1,31 @@
+# Based on https://github.com/cmu-db/peloton/blob/484d76df9344cb5c153a2c361c5d5018912d4cf4/test/sql/drop_sql_test.cpp
+
+# DropTableTest
+
+statement ok
+CREATE TABLE test (a INT PRIMARY KEY, b INT);
+
+statement ok
+INSERT INTO test VALUES (1, 10);
+
+query II
+SELECT * FROM test;
+----
+1 10
+
+statement ok
+DROP TABLE test;
+
+statement error
+SELECT * FROM test;
+
+# DropIndexTest
+
+statement ok
+CREATE TABLE test (a INT PRIMARY KEY, b INT);
+
+statement ok
+CREATE INDEX idx ON test(a);
+
+statement ok
+DROP INDEX idx;

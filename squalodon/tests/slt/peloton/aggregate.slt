@@ -1,0 +1,122 @@
+# Based on https://github.com/cmu-db/peloton/blob/484d76df9344cb5c153a2c361c5d5018912d4cf4/test/sql/aggregate_sql_test.cpp
+
+# EmptyTableTest
+
+statement ok
+CREATE TABLE xxx (a INT PRIMARY KEY, b INT);
+
+query I
+SELECT min(b) FROM xxx;
+----
+NULL
+
+query I
+SELECT max(b) FROM xxx;
+----
+NULL
+
+query R
+SELECT avg(b) FROM xxx;
+----
+NULL
+
+query I
+SELECT sum(b) FROM xxx;
+----
+NULL
+
+query I
+SELECT count(b) FROM xxx;
+----
+0
+
+# MinMaxTest
+
+statement ok
+CREATE TABLE test (
+    a INT PRIMARY KEY,
+    b SMALLINT,
+    c INT,
+    d BIGINT,
+    e DECIMAL,
+    f REAL,
+    g VARCHAR,
+    h TEXT
+);
+
+statement ok
+INSERT INTO test VALUES
+    (2, 2, 2, 2, 2.0, 2.0, '23', '2016-12-06 00:00:02-04'),
+    (1, 1, 1, 1, 1.0, 1.0, '15', '2016-12-06 00:00:01-04'),
+    (4, 4, 4, 4, 4.0, 4.0, '41', '2016-12-06 00:00:04-04'),
+    (3, 3, 3, 3, 3.0, 3.0, '33', '2016-12-06 00:00:03-04');
+
+query I
+SELECT min(b) FROM test;
+----
+1
+
+query I
+SELECT max(b) FROM test;
+----
+4
+
+query I
+SELECT min(a) FROM test;
+----
+1
+
+query I
+SELECT max(a) FROM test;
+----
+4
+
+query I
+SELECT min(d) FROM test;
+----
+1
+
+query I
+SELECT max(d) FROM test;
+----
+4
+
+query R
+SELECT CAST(min(e) AS REAL) FROM test;
+----
+1
+
+query R
+SELECT CAST(max(e) AS REAL) FROM test;
+----
+4
+
+query R
+SELECT min(f) FROM test;
+----
+1
+
+query R
+SELECT max(f) FROM test;
+----
+4
+
+query T
+SELECT min(g) FROM test;
+----
+15
+
+query T
+SELECT max(g) FROM test;
+----
+41
+
+query T
+SELECT min(h) FROM test;
+----
+2016-12-06 00:00:01-04
+
+query T
+SELECT max(h) FROM test;
+----
+2016-12-06 00:00:04-04

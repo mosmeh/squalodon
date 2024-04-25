@@ -1,0 +1,45 @@
+# Based on https://github.com/cmu-db/peloton/blob/484d76df9344cb5c153a2c361c5d5018912d4cf4/test/sql/delete_sql_test.cpp
+
+# SimpleDeleteSQLTest
+
+statement ok
+CREATE TABLE department_table (dept_id INT PRIMARY KEY, dept_name VARCHAR);
+
+statement ok
+INSERT INTO department_table(dept_id,dept_name) VALUES (1,'hello_1');
+
+query T
+SELECT dept_name from department_table;
+----
+hello_1
+
+statement ok
+INSERT INTO department_table(dept_id,dept_name) VALUES (2,'hello_2');
+
+statement ok
+INSERT INTO department_table(dept_id,dept_name) VALUES (3,'hello_3');
+
+query I
+SELECT count(dept_name) from department_table;
+----
+3
+
+query I
+SELECT max(dept_id) FROM department_table;
+----
+3
+
+statement ok
+DELETE FROM department_table WHERE dept_id < 3;
+
+query T
+SELECT dept_name from department_table;
+----
+hello_3
+
+statement ok
+DELETE FROM department_table;
+
+query T
+SELECT dept_name from department_table;
+----

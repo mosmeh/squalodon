@@ -1,0 +1,65 @@
+# Based on https://github.com/cmu-db/peloton/blob/484d76df9344cb5c153a2c361c5d5018912d4cf4/test/sql/projection_sql_test.cpp
+
+statement ok
+CREATE TABLE test (
+    a INTEGER PRIMARY KEY,
+    b SMALLINT,
+    c INT,
+    d BIGINT,
+    e DECIMAL
+);
+
+statement ok
+INSERT INTO test VALUES (1, 2, 3, 4, 5.0);
+
+# SimpleProjectionSQLTest
+
+query IIIIIIIR
+SELECT a+a, a-a, a*a, a/a, a+b, a+c, a+d, CAST(a+e AS REAL) FROM test;
+----
+2 0 1 1 3 4 5 6
+
+query IIIIIIIR
+SELECT b+b, b-b, b*b, b/b, b+a, b+c, b+d, CAST(b+e AS REAL) FROM test;
+----
+4 0 4 1 3 5 6 7
+
+query IIIIIIIR
+SELECT c+c, c-c, c*c, c/c, c+a, c+b, c+d, CAST(c+e AS REAL) FROM test;
+----
+6 0 9 1 4 5 7 8
+
+query IIIIIIIR
+SELECT d+d, d-d, d*d, d/d, d+a, d+b, d+c, CAST(d+e AS REAL) FROM test;
+----
+8 0 16 1 5 6 7 9
+
+query RRRRRRRR
+SELECT
+    CAST(e+e AS REAL),
+    CAST(e-e AS REAL),
+    CAST(e*e AS REAL),
+    CAST(e/e AS REAL),
+    CAST(e+a AS REAL),
+    CAST(e+b AS REAL),
+    CAST(e+c AS REAL),
+    CAST(e+d AS REAL)
+FROM test;
+----
+10 0 25 1 6 7 8 9
+
+# ProjectionSQLTest
+
+query IIII
+SELECT a*5+b, -1+c, 6, a FROM test;
+----
+7 2 6 1
+
+query RRR
+SELECT
+    CAST(d+e*2.0 AS REAL),
+    CAST(e AS REAL),
+    CAST(e+(2*c) AS REAL)
+FROM test;
+----
+14 5 11

@@ -64,6 +64,7 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[derive(Default)]
 pub struct Database<T> {
     storage: T,
     catalog: Catalog,
@@ -73,7 +74,7 @@ impl<T> Database<T> {
     pub fn new(storage: T) -> Self {
         Self {
             storage,
-            catalog: Catalog::new(),
+            catalog: Catalog::default(),
         }
     }
 }

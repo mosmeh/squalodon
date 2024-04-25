@@ -1,0 +1,152 @@
+# Based on https://github.com/cmu-db/peloton/blob/484d76df9344cb5c153a2c361c5d5018912d4cf4/test/sql/update_sql_test.cpp
+
+# SimpleUpdateSQLTest
+
+statement ok
+CREATE TABLE test (a INT PRIMARY KEY, b REAL);
+
+statement ok
+INSERT INTO test VALUES (0, 1);
+
+statement ok
+UPDATE test SET b = 2.0 WHERE a = 0;
+
+query R
+SELECT b FROM test;
+----
+2
+
+statement ok
+UPDATE test SET b = 3.0 WHERE a = 0;
+
+query R
+SELECT b FROM test;
+----
+3
+
+# ComplexUpdateSQLTest
+
+statement ok
+CREATE TABLE employees (e_id INT PRIMARY KEY, salary REAL, bonus REAL);
+
+statement ok
+INSERT INTO employees VALUES (0, 1.1, 0.5);
+
+statement ok
+UPDATE employees
+SET salary = 2 + salary + bonus*salary + 3*(salary+1)+0.1*bonus*salary
+WHERE e_id = 0;
+
+query R
+SELECT salary FROM employees;
+----
+10.005
+
+statement ok
+UPDATE employees SET salary = 10, bonus = bonus + 5 WHERE e_id = 0;
+
+query RR
+SELECT salary, bonus FROM employees;
+----
+10 5.5
+
+# UpdateSQLCastTest
+
+statement ok
+DELETE FROM employees;
+
+statement ok
+INSERT INTO employees VALUES (0, 1, 0.5);
+
+statement ok
+UPDATE employees SET salary = 2.0 WHERE e_id = 0;
+
+query R
+SELECT salary FROM employees;
+----
+2
+
+statement ok
+UPDATE employees SET salary = 3 WHERE e_id = 0;
+
+query R
+SELECT salary FROM employees;
+----
+3
+
+# HalloweenProblemTest
+
+statement ok
+DROP TABLE test;
+
+statement ok
+CREATE TABLE test(a INT PRIMARY KEY, b INT);
+
+statement ok
+INSERT INTO test VALUES (10, 1000);
+
+statement ok
+UPDATE test SET a = a/2;
+
+query I
+SELECT a FROM test;
+----
+5
+
+# HalloweenProblemTestWithPK
+
+statement ok
+UPDATE test SET b = b/2;
+
+query I
+SELECT b FROM test;
+----
+500
+
+# MultiTileGroupUpdateSQLTest
+
+statement ok
+DELETE FROM test;
+
+statement ok
+INSERT INTO test VALUES (0, 100);
+
+statement ok
+UPDATE test SET a = 10 WHERE b = 100;
+
+query I
+SELECT a FROM test;
+----
+10
+
+statement ok
+UPDATE test SET a = 1 WHERE b = 100;
+
+query I
+SELECT a FROM test;
+----
+1
+
+# AttributeOrderUpdateSQLTest
+
+statement ok
+DELETE FROM test;
+
+statement ok
+INSERT INTO test VALUES (1, 100);
+
+statement ok
+UPDATE test SET b = b * 2, a = a * 2;
+
+query II
+SELECT a, b FROM test;
+----
+2 200
+
+statement ok
+UPDATE test SET a = a * 2, b = b * 2;
+
+query II
+SELECT a, b FROM test;
+----
+4 400

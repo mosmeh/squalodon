@@ -1,0 +1,61 @@
+statement ok
+CREATE TABLE test (a INTEGER PRIMARY KEY, b INTEGER, c INTEGER, d TEXT);
+
+statement ok
+INSERT INTO test VALUES
+    (1, 22, 333, 'abcd'),
+    (2, 33, 111, 'bcda'),
+    (3, 11, 222, 'bcd'),
+    (4, 55, 222, 'aaa'),
+    (5, NULL, 222, 'ccc'),
+    (6, 44, NULL, 'bbb'),
+    (7, 66, 555, NULL),
+    (8, NULL, 222, NULL);
+
+query I
+SELECT b FROM test ORDER BY b NULLS FIRST;
+----
+NULL
+NULL
+11
+22
+33
+44
+55
+66
+
+query I
+SELECT b FROM test ORDER BY b NULLS LAST;
+----
+11
+22
+33
+44
+55
+66
+NULL
+NULL
+
+query I
+SELECT b FROM test ORDER BY b DESC NULLS FIRST;
+----
+NULL
+NULL
+66
+55
+44
+33
+22
+11
+
+query I
+SELECT b FROM test ORDER BY b DESC NULLS LAST;
+----
+66
+55
+44
+33
+22
+11
+NULL
+NULL

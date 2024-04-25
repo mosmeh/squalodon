@@ -237,14 +237,8 @@ pub struct Catalog {
     table_functions: HashMap<&'static str, TableFunction>,
 }
 
-impl Catalog {
-    pub fn with<'a>(&'a self, txn: &'a dyn Transaction) -> CatalogRef<'a> {
-        CatalogRef { catalog: self, txn }
-    }
-}
-
-impl Catalog {
-    pub fn new() -> Self {
+impl Default for Catalog {
+    fn default() -> Self {
         Self {
             scalar_functions: builtin::scalar_function::load()
                 .map(|f| (f.name, f))
@@ -256,6 +250,12 @@ impl Catalog {
                 .map(|f| (f.name, f))
                 .collect(),
         }
+    }
+}
+
+impl Catalog {
+    pub fn with<'a>(&'a self, txn: &'a dyn Transaction) -> CatalogRef<'a> {
+        CatalogRef { catalog: self, txn }
     }
 }
 
