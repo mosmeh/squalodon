@@ -105,7 +105,7 @@ impl std::fmt::Display for Value {
             Self::Null => f.write_str("NULL"),
             Self::Integer(i) => i.fmt(f),
             Self::Real(r) => r.fmt(f),
-            Self::Boolean(b) => b.fmt(f),
+            Self::Boolean(b) => f.write_str(if *b { "t" } else { "f" }),
             Self::Text(s) => s.fmt(f),
         }
     }
