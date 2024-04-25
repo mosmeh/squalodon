@@ -171,8 +171,10 @@ fn eval_case<C: ExtractColumn>(
     else_branch: Option<&Expression<C>>,
 ) -> ExecutorResult<Value> {
     for CaseBranch { condition, result } in branches {
-        if condition.eval(ctx, row)? == Value::Boolean(true) {
-            return result.eval(ctx, row);
+        match condition.eval(ctx, row)? {
+            Value::Null | Value::Boolean(false) => continue,
+            Value::Boolean(true) => return result.eval(ctx, row),
+            _ => return Err(ExecutorError::TypeError),
         }
     }
     else_branch.map_or(Ok(Value::Null), |else_branch| else_branch.eval(ctx, row))
@@ -185,13 +187,17 @@ fn eval_like<C: ExtractColumn>(
     pattern: &Expression<C>,
     case_insensitive: bool,
 ) -> ExecutorResult<Value> {
-    let Value::Text(string) = str_expr.eval(ctx, row)? else {
-        return Err(ExecutorError::TypeError);
+    let string = match str_expr.eval(ctx, row)? {
+        Value::Null => return Ok(Value::Null),
+        Value::Text(string) => string,
+        _ => return Err(ExecutorError::TypeError),
     };
-    let Value::Text(pattern) = pattern.eval(ctx, row)? else {
-        return Err(ExecutorError::TypeError);
+    let pattern = match pattern.eval(ctx, row)? {
+        Value::Null => return Ok(Value::Null),
+        Value::Text(pattern) => pattern,
+        _ => return Err(ExecutorError::TypeError),
     };
-    let mut regex = String::new();
+    let mut regex = "^".to_owned();
     for ch in pattern.chars() {
         match ch {
             '%' => regex.push_str(".*"),
@@ -199,6 +205,7 @@ fn eval_like<C: ExtractColumn>(
             ch => regex.push_str(&regex_lite::escape(&ch.to_string())),
         }
     }
+    regex.push('$');
     let is_match = regex_lite::RegexBuilder::new(&regex)
         .case_insensitive(case_insensitive)
         .build()
