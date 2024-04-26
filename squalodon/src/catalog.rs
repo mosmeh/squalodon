@@ -9,7 +9,7 @@ use crate::{
     types::{NullableType, Type},
     Row, Value,
 };
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, thiserror::Error)]
@@ -265,36 +265,90 @@ pub struct CatalogRef<'a> {
 }
 
 impl<'a> CatalogRef<'a> {
+    fn entry<T: DeserializeOwned>(&self, kind: CatalogEntryKind, name: &str) -> CatalogResult<T> {
+        let key = kind.key(name);
+        let bytes = self
+            .txn
+            .get(&key)
+            .ok_or_else(|| CatalogError::UnknownEntry(kind, name.to_owned()))?;
+        bincode::deserialize(&bytes).map_err(Into::into)
+    }
+
+    fn entries<T: DeserializeOwned>(
+        &self,
+        kind: CatalogEntryKind,
+    ) -> impl Iterator<Item = CatalogResult<T>> + '_ {
+        let prefix = kind.prefix();
+        self.txn
+            .prefix_scan(prefix)
+            .map(|(_, v)| bincode::deserialize(&v).map_err(Into::into))
+    }
+
+    fn insert_entry<T: Serialize>(
+        &self,
+        kind: CatalogEntryKind,
+        name: &str,
+        value: &T,
+    ) -> CatalogResult<()> {
+        let key = kind.key(name);
+        let value = bincode::serialize(value)?;
+        if self.txn.insert(&key, &value) {
+            Ok(())
+        } else {
+            Err(CatalogError::DuplicateEntry(kind, name.to_owned()))
+        }
+    }
+
+    fn put_entry<T: Serialize>(
+        &self,
+        kind: CatalogEntryKind,
+        name: &str,
+        value: &T,
+    ) -> CatalogResult<()> {
+        let key = kind.key(name);
+        let value = bincode::serialize(value)?;
+        let _ = self.txn.insert(&key, &value);
+        Ok(())
+    }
+
+    fn remove_entry(&self, kind: CatalogEntryKind, name: &str) -> CatalogResult<()> {
+        let key = kind.key(name);
+        self.txn
+            .remove(&key)
+            .ok_or_else(|| CatalogError::UnknownEntry(kind, name.to_owned()))?;
+        Ok(())
+    }
+
+    fn generate_object_id(&self) -> CatalogResult<ObjectId> {
+        const KEY: &str = "next_id";
+        let mut next_id: u64 = match self.entry(CatalogEntryKind::Metadata, KEY) {
+            Ok(id) => id,
+            Err(CatalogError::UnknownEntry(_, _)) => 1,
+            Err(e) => return Err(e),
+        };
+        assert!(next_id > ObjectId::CATALOG.0);
+        let id = ObjectId(next_id);
+        next_id += 1;
+        self.put_entry(CatalogEntryKind::Metadata, KEY, &next_id)?;
+        Ok(id)
+    }
+
     pub fn table(&self, name: &str) -> CatalogResult<Table<'a>> {
-        let key = CatalogEntryKind::Table.key(name);
-        self.txn.get(&key).map_or(
-            Err(CatalogError::UnknownEntry(
-                CatalogEntryKind::Table,
-                name.to_owned(),
-            )),
-            |value| self.read_table(&value),
-        )
+        self.entry(CatalogEntryKind::Table, name)
+            .and_then(|def| self.read_table(def))
     }
 
     pub fn tables(&self) -> impl Iterator<Item = CatalogResult<Table<'a>>> + '_ {
-        let prefix = CatalogEntryKind::Table.prefix();
-        self.txn
-            .prefix_scan(prefix)
-            .map(|(_, v)| self.read_table(&v))
+        self.entries(CatalogEntryKind::Table)
+            .map(|def| self.read_table(def?))
     }
 
-    fn read_table(&self, bytes: &[u8]) -> CatalogResult<Table<'a>> {
-        let table: TableDef = bincode::deserialize(bytes)?;
-        let mut indexes = Vec::with_capacity(table.index_names.len());
-        for index_name in &table.index_names {
-            let key = CatalogEntryKind::Index.key(index_name);
-            let value = self.txn.get(&key).ok_or_else(|| {
-                CatalogError::UnknownEntry(CatalogEntryKind::Index, index_name.to_owned())
-            })?;
-            let index: IndexDef = bincode::deserialize(&value)?;
-            indexes.push(index);
+    fn read_table(&self, def: TableDef) -> CatalogResult<Table<'a>> {
+        let mut indexes = Vec::with_capacity(def.index_names.len());
+        for index_name in &def.index_names {
+            indexes.push(self.entry(CatalogEntryKind::Index, index_name)?);
         }
-        Ok(Table::new(self.txn, table, indexes))
+        Ok(Table::new(self.txn, def, indexes))
     }
 
     pub fn create_table(
@@ -304,40 +358,27 @@ impl<'a> CatalogRef<'a> {
         constraints: &[Constraint],
     ) -> CatalogResult<ObjectId> {
         let id = self.generate_object_id()?;
-        let table = TableDef {
+        let table_def = TableDef {
             id,
             name: name.to_owned(),
             columns: columns.to_owned(),
             constraints: constraints.to_owned(),
             index_names: Vec::new(),
         };
-        let key = CatalogEntryKind::Table.key(name);
-        let new = self.txn.insert(&key, &bincode::serialize(&table)?);
-        if new {
-            Ok(id)
-        } else {
-            Err(CatalogError::DuplicateEntry(
-                CatalogEntryKind::Table,
-                name.to_owned(),
-            ))
-        }
+        self.insert_entry(CatalogEntryKind::Table, name, &table_def)?;
+        Ok(id)
     }
 
     pub fn drop_table(&self, name: &str) -> CatalogResult<()> {
-        let key = CatalogEntryKind::Table.key(name);
-        let bytes = self
-            .txn
-            .remove(&key)
-            .ok_or_else(|| CatalogError::UnknownEntry(CatalogEntryKind::Table, name.to_owned()))?;
-        let table: TableDef = bincode::deserialize(&bytes)?;
-        let prefix = table.id.serialize();
+        let table_def: TableDef = self.entry(CatalogEntryKind::Table, name)?;
+        let prefix = table_def.id.serialize();
         for (key, _) in self.txn.prefix_scan(prefix) {
             self.txn.remove(&key).unwrap();
         }
-        for index_name in table.index_names {
+        for index_name in table_def.index_names {
             self.drop_index(&index_name)?;
         }
-        Ok(())
+        self.remove_entry(CatalogEntryKind::Table, name)
     }
 
     pub fn create_index(
@@ -349,76 +390,39 @@ impl<'a> CatalogRef<'a> {
     ) -> CatalogResult<ObjectId> {
         assert!(!column_indexes.is_empty());
 
-        let table_key = CatalogEntryKind::Table.key(&table_name);
-        let mut table: TableDef = match self.txn.get(&table_key) {
-            Some(v) => bincode::deserialize(&v)?,
-            None => {
-                return Err(CatalogError::UnknownEntry(
-                    CatalogEntryKind::Table,
-                    table_name,
-                ))
-            }
-        };
-        assert!(column_indexes.iter().all(|i| i.0 < table.columns.len()));
+        let mut table_def: TableDef = self.entry(CatalogEntryKind::Table, &table_name)?;
+        assert!(column_indexes.iter().all(|i| i.0 < table_def.columns.len()));
 
         let id = self.generate_object_id()?;
-        let index = IndexDef {
+        let index_def = IndexDef {
             id,
-            table_name,
+            table_name: table_name.clone(),
             column_indexes: column_indexes.to_owned(),
             is_unique,
         };
-        let index_key = CatalogEntryKind::Index.key(&name);
-        let new = self.txn.insert(&index_key, &bincode::serialize(&index)?);
-        if !new {
-            return Err(CatalogError::DuplicateEntry(CatalogEntryKind::Index, name));
-        }
-        table.index_names.push(name);
+        self.insert_entry(CatalogEntryKind::Index, &name, &index_def)?;
 
-        let _ = self.txn.insert(&table_key, &bincode::serialize(&table)?);
+        table_def.index_names.push(name);
+        self.put_entry(CatalogEntryKind::Table, &table_name, &table_def)?;
 
         Ok(id)
     }
 
     pub fn drop_index(&self, name: &str) -> CatalogResult<()> {
-        let index_key = CatalogEntryKind::Index.key(name);
-        let bytes = self
-            .txn
-            .remove(&index_key)
-            .ok_or_else(|| CatalogError::UnknownEntry(CatalogEntryKind::Index, name.to_owned()))?;
-        let index: IndexDef = bincode::deserialize(&bytes)?;
-        let prefix = index.id.serialize();
+        let index_def: IndexDef = self.entry(CatalogEntryKind::Index, name)?;
+
+        let mut table_def: TableDef = self.entry(CatalogEntryKind::Table, &index_def.table_name)?;
+        table_def.index_names.retain(|n| n != name);
+        self.put_entry(CatalogEntryKind::Table, &index_def.table_name, &table_def)?;
+
+        let prefix = index_def.id.serialize();
         for (key, _) in self.txn.prefix_scan(prefix) {
             self.txn.remove(&key).unwrap();
         }
 
-        let table_key = CatalogEntryKind::Table.key(&index.table_name);
-        let mut table: TableDef = bincode::deserialize(&self.txn.get(&table_key).unwrap())?;
-        table.index_names.retain(|n| n != name);
-        let _ = self.txn.insert(&table_key, &bincode::serialize(&table)?);
-
-        Ok(())
+        self.remove_entry(CatalogEntryKind::Index, name)
     }
 
-    fn generate_object_id(&self) -> CatalogResult<ObjectId> {
-        let key = CatalogEntryKind::Metadata.key("next_id");
-        let mut next_id = match self.txn.get(&key) {
-            Some(bytes) => u64::from_be_bytes(
-                bytes
-                    .try_into()
-                    .map_err(|_| CatalogError::InvalidEncoding)?,
-            ),
-            None => 1,
-        };
-        assert!(next_id > ObjectId::CATALOG.0);
-        let id = ObjectId(next_id);
-        next_id += 1;
-        let _ = self.txn.insert(&key, &next_id.to_be_bytes());
-        Ok(id)
-    }
-}
-
-impl CatalogRef<'_> {
     pub fn functions(&self) -> impl Iterator<Item = Function> + '_ {
         let scalar = self.catalog.scalar_functions.values().map(Function::Scalar);
         let aggregate = self
