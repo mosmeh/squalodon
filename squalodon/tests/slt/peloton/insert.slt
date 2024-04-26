@@ -20,7 +20,7 @@ CREATE TABLE test4 (
     g TEXT,
     i CHAR,
     j VARCHAR,
-    k VARCHAR,
+    k BYTEA,
     l BOOLEAN
 );
 
@@ -35,7 +35,7 @@ CREATE TABLE test5 (
     g TEXT,
     i CHAR,
     j VARCHAR,
-    k TEXT,
+    k BYTEA,
     l BOOLEAN
 );
 
@@ -172,20 +172,20 @@ DELETE FROM test5;
 statement ok
 INSERT INTO test5 SELECT * FROM test4;
 
-query IIIIRRTTTTB
+query IIIIRRTTTLB
 SELECT * FROM test4 WHERE a=1;
 ----
-1 2 3 4 5.1 6.1 2017-10-10 00:00:00-00 A a 1 t
+1 2 3 4 5.1 6.1 2017-10-10 00:00:00-00 A a \x31 t
 
-query IIIIRRTTTTB
+query IIIIRRTTTLB
 SELECT * FROM test5 WHERE a=1;
 ----
-1 2 3 4 5.1 6.1 2017-10-10 00:00:00-00 A a 1 t
+1 2 3 4 5.1 6.1 2017-10-10 00:00:00-00 A a \x31 t
 
-query IIIIRRTTTTB
+query IIIIRRTTTLB
 SELECT * FROM test5 WHERE a=11;
 ----
-11 12 13 14 15.1 16.1 2017-10-11 00:00:00-00 B b 2 f
+11 12 13 14 15.1 16.1 2017-10-11 00:00:00-00 B b \x32 f
 
 # InsertIntoSelectColumn
 

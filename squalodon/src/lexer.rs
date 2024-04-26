@@ -104,9 +104,11 @@ keywords! {
     Asc
     Begin
     BigInt
+    Blob
     Boolean
     BpChar
     By
+    ByteA
     Case
     Cast
     Char

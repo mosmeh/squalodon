@@ -210,6 +210,7 @@ impl<'a> Parser<'a> {
             Token::Real | Token::Decimal => Type::Real,
             Token::Boolean => Type::Boolean,
             Token::Text | Token::Char | Token::BpChar | Token::VarChar => Type::Text,
+            Token::Blob | Token::ByteA => Type::Blob,
             token => return Err(unexpected(&token)),
         };
         Ok(ty)

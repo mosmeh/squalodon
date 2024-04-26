@@ -17,6 +17,7 @@ const INTEGER_TAG: u8 = 1;
 const REAL_TAG: u8 = 2;
 const BOOLEAN_TAG: u8 = 3;
 const TEXT_TAG: u8 = 4;
+const BLOB_TAG: u8 = 5;
 
 const CHUNK_SIZE: usize = 8;
 const UNIT_SIZE: usize = CHUNK_SIZE + 1;
@@ -85,20 +86,11 @@ impl MemcomparableSerde {
             }
             Value::Text(s) => {
                 buf.push(TEXT_TAG);
-                buf.push(u8::from(!s.is_empty()));
-                let mut len = 0;
-                for chunk in s.as_bytes().chunks(CHUNK_SIZE) {
-                    buf.extend_from_slice(chunk);
-                    for _ in chunk.len()..CHUNK_SIZE {
-                        buf.push(0);
-                    }
-                    len += chunk.len();
-                    buf.push(if len == s.len() {
-                        chunk.len() as u8
-                    } else {
-                        UNIT_SIZE_U8
-                    });
-                }
+                serialize_bytes_into(buf, s.as_bytes());
+            }
+            Value::Blob(b) => {
+                buf.push(BLOB_TAG);
+                serialize_bytes_into(buf, b);
             }
         }
         match self.order {
@@ -170,33 +162,59 @@ impl MemcomparableSerde {
             (BOOLEAN_TAG, [1, ..]) => Some((Value::Boolean(true), TAG_SIZE + 1)),
             (TEXT_TAG, [0, ..]) => Some((Value::Text(String::new()), TAG_SIZE + 1)),
             (TEXT_TAG, [1, serialized @ ..]) => {
-                let mut s = Vec::new();
-                let mut serialized = serialized;
-                let mut consumed_len = TAG_SIZE + 1;
-                loop {
-                    if serialized.len() < UNIT_SIZE {
-                        return None;
-                    }
-                    let (unit, rest) = serialized.split_at(UNIT_SIZE);
-                    consumed_len += UNIT_SIZE;
-                    match unit[CHUNK_SIZE] {
-                        len @ 1..=CHUNK_SIZE_U8 => {
-                            s.extend_from_slice(&unit[..len as usize]);
-                            break;
-                        }
-                        UNIT_SIZE_U8 => {
-                            s.extend_from_slice(&unit[..CHUNK_SIZE]);
-                            serialized = rest;
-                        }
-                        _ => return None,
-                    }
-                }
+                let (s, len) = deserialize_bytes_from(serialized)?;
                 let s = String::from_utf8(s).ok()?;
-                Some((Value::Text(s), consumed_len))
+                Some((Value::Text(s), len))
+            }
+            (BLOB_TAG, [0, ..]) => Some((Value::Blob(Vec::new()), TAG_SIZE + 1)),
+            (BLOB_TAG, [1, serialized @ ..]) => {
+                let (b, len) = deserialize_bytes_from(serialized)?;
+                Some((Value::Blob(b), len))
             }
             _ => None,
         }
     }
+}
+
+fn serialize_bytes_into(buf: &mut Vec<u8>, bytes: &[u8]) {
+    buf.push(u8::from(!bytes.is_empty()));
+    let mut len = 0;
+    for chunk in bytes.chunks(CHUNK_SIZE) {
+        buf.extend_from_slice(chunk);
+        for _ in chunk.len()..CHUNK_SIZE {
+            buf.push(0);
+        }
+        len += chunk.len();
+        buf.push(if len == bytes.len() {
+            chunk.len() as u8
+        } else {
+            UNIT_SIZE_U8
+        });
+    }
+}
+
+fn deserialize_bytes_from(mut buf: &[u8]) -> Option<(Vec<u8>, usize)> {
+    let mut s = Vec::new();
+    let mut consumed_len = TAG_SIZE + 1;
+    loop {
+        if buf.len() < UNIT_SIZE {
+            return None;
+        }
+        let (unit, rest) = buf.split_at(UNIT_SIZE);
+        consumed_len += UNIT_SIZE;
+        match unit[CHUNK_SIZE] {
+            len @ 1..=CHUNK_SIZE_U8 => {
+                s.extend_from_slice(&unit[..len as usize]);
+                break;
+            }
+            UNIT_SIZE_U8 => {
+                s.extend_from_slice(&unit[..CHUNK_SIZE]);
+                buf = rest;
+            }
+            _ => return None,
+        }
+    }
+    Some((s, consumed_len))
 }
 
 #[derive(Debug, thiserror::Error)]

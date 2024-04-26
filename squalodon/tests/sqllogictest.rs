@@ -54,6 +54,7 @@ impl sqllogictest::ColumnType for ColumnType {
             'R' => Type::Real,
             'B' => Type::Boolean,
             'T' => Type::Text,
+            'L' => Type::Blob,
             _ => return None,
         }))
     }
@@ -64,6 +65,7 @@ impl sqllogictest::ColumnType for ColumnType {
             Type::Real => 'R',
             Type::Boolean => 'B',
             Type::Text => 'T',
+            Type::Blob => 'L',
         }
     }
 }

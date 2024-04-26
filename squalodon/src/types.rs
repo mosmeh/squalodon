@@ -7,6 +7,7 @@ pub enum Type {
     Real,
     Boolean,
     Text,
+    Blob,
 }
 
 impl Type {
@@ -17,12 +18,7 @@ impl Type {
 
 impl std::fmt::Debug for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::Integer => f.write_str("INTEGER"),
-            Self::Real => f.write_str("REAL"),
-            Self::Boolean => f.write_str("BOOLEAN"),
-            Self::Text => f.write_str("TEXT"),
-        }
+        std::fmt::Display::fmt(self, f)
     }
 }
 
@@ -33,6 +29,7 @@ impl std::fmt::Display for Type {
             Self::Real => f.write_str("REAL"),
             Self::Boolean => f.write_str("BOOLEAN"),
             Self::Text => f.write_str("TEXT"),
+            Self::Blob => f.write_str("BLOB"),
         }
     }
 }
@@ -85,6 +82,7 @@ pub enum Value {
     Real(f64),
     Boolean(bool),
     Text(String),
+    Blob(Vec<u8>),
 }
 
 impl std::fmt::Debug for Value {
@@ -93,8 +91,13 @@ impl std::fmt::Debug for Value {
             Self::Null => f.write_str("NULL"),
             Self::Integer(i) => i.fmt(f),
             Self::Real(r) => r.fmt(f),
-            Self::Boolean(b) => b.fmt(f),
+            Self::Boolean(b) => f.write_str(if *b { "TRUE" } else { "FALSE" }),
             Self::Text(s) => std::fmt::Display::fmt(&lexer::quote(s, '\''), f),
+            Self::Blob(v) => std::iter::once("E'\\x".to_owned())
+                .chain(v.iter().map(|b| format!("{b:02X}")))
+                .chain(std::iter::once("'".to_owned()))
+                .collect::<String>()
+                .fmt(f),
         }
     }
 }
@@ -107,6 +110,10 @@ impl std::fmt::Display for Value {
             Self::Real(r) => r.fmt(f),
             Self::Boolean(b) => f.write_str(if *b { "t" } else { "f" }),
             Self::Text(s) => s.fmt(f),
+            Self::Blob(v) => std::iter::once("\\x".to_owned())
+                .chain(v.iter().map(|b| format!("{b:02x}")))
+                .collect::<String>()
+                .fmt(f),
         }
     }
 }
@@ -119,6 +126,7 @@ impl Value {
             Self::Real(_) => Type::Real.into(),
             Self::Boolean(_) => Type::Boolean.into(),
             Self::Text(_) => Type::Text.into(),
+            Self::Blob(_) => Type::Blob.into(),
         }
     }
 
@@ -128,7 +136,8 @@ impl Value {
             (Self::Integer(_), Type::Integer)
             | (Self::Real(_), Type::Real)
             | (Self::Boolean(_), Type::Boolean)
-            | (Self::Text(_), Type::Text) => Some(self.clone()),
+            | (Self::Text(_), Type::Text)
+            | (Self::Blob(_), Type::Blob) => Some(self.clone()),
             (Self::Integer(i), Type::Real) => Some(Self::Real(*i as f64)),
             (Self::Integer(i), Type::Boolean) => Some(Self::Boolean(*i != 0)),
             (Self::Integer(i), Type::Text) => Some(Self::Text(i.to_string())),
@@ -159,6 +168,8 @@ impl Value {
                     None
                 }
             }
+            (Self::Text(s), Type::Blob) => Some(Self::Blob(s.as_bytes().to_vec())),
+            (Self::Blob(b), Type::Text) => String::from_utf8(b.clone()).ok().map(Self::Text),
             _ => None,
         }
     }
@@ -171,6 +182,7 @@ impl PartialOrd for Value {
             (Self::Real(a), Self::Real(b)) => a.partial_cmp(b),
             (Self::Boolean(a), Self::Boolean(b)) => a.partial_cmp(b),
             (Self::Text(a), Self::Text(b)) => a.partial_cmp(b),
+            (Self::Blob(a), Self::Blob(b)) => a.partial_cmp(b),
             _ => None,
         }
     }
@@ -187,6 +199,7 @@ impl std::hash::Hash for Value {
             Self::Real(r) => r.to_bits().hash(state),
             Self::Boolean(b) => b.hash(state),
             Self::Text(s) => s.hash(state),
+            Self::Blob(b) => b.hash(state),
         }
     }
 }
@@ -283,7 +296,7 @@ impl_try_from_value!(usize, Integer);
 impl_try_from_value!(f64, Real);
 impl_try_from_value!(bool, Boolean);
 impl_try_from_value!(String, Text);
-impl_try_from_value!(Vec<u8>, Text);
+impl_try_from_value!(Vec<u8>, Blob);
 
 impl TryFrom<Value> for Null {
     type Error = TryFromValueError;
