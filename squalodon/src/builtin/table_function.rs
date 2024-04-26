@@ -11,27 +11,25 @@ pub fn load() -> impl Iterator<Item = TableFunction> {
             name: "squalodon_columns",
             fn_ptr: |ctx, _| {
                 #[derive(Clone, Default)]
-                struct ColumnConstraint {
+                struct ColumnProperties {
                     is_nullable: bool,
                     is_primary_key: bool,
                 }
                 let mut rows = Vec::new();
                 for table in ctx.catalog().tables() {
                     let table = table?;
-                    let mut constraints = vec![ColumnConstraint::default(); table.columns().len()];
+                    let mut properties = vec![ColumnProperties::default(); table.columns().len()];
+                    for column in table.primary_keys() {
+                        properties[column.0].is_primary_key = true;
+                    }
                     for constraint in table.constraints() {
                         match constraint {
                             Constraint::NotNull(column) => {
-                                constraints[column.0].is_nullable = false;
-                            }
-                            Constraint::PrimaryKey(columns) => {
-                                for column in columns {
-                                    constraints[column.0].is_primary_key = true;
-                                }
+                                properties[column.0].is_nullable = false;
                             }
                         }
                     }
-                    for (column, constraint) in table.columns().iter().zip(constraints) {
+                    for (column, properties) in table.columns().iter().zip(properties) {
                         let default_value = column
                             .default_value
                             .as_ref()
@@ -41,8 +39,8 @@ pub fn load() -> impl Iterator<Item = TableFunction> {
                             table.name().into(),
                             column.name.clone().into(),
                             column.ty.to_string().into(),
-                            constraint.is_nullable.into(),
-                            constraint.is_primary_key.into(),
+                            properties.is_nullable.into(),
+                            properties.is_primary_key.into(),
                             default_value,
                         ]));
                     }

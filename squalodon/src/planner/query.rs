@@ -1,11 +1,12 @@
 use super::{
     aggregate::AggregateCollection,
     expression::{ExpressionBinder, TypedExpression},
+    scan::Scan,
     sort::TopN,
     Column, ColumnId, ColumnMap, ExplainFormatter, Node, PlanNode, Planner, PlannerResult, Sort,
 };
 use crate::{
-    catalog::{AggregateFunction, Aggregator, Table, TableFunction},
+    catalog::{AggregateFunction, Aggregator},
     connection::ConnectionContext,
     executor::ExecutorResult,
     parser,
@@ -13,7 +14,7 @@ use crate::{
     types::NullableType,
     PlannerError, Row, Type, Value,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct Values<'a> {
     pub rows: Vec<Vec<planner::Expression<'a, ColumnId>>>,
@@ -31,43 +32,6 @@ impl Node for Values<'_> {
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
         columns.extend(self.outputs.iter());
-    }
-}
-
-pub enum Scan<'a> {
-    SeqScan {
-        table: Table<'a>,
-        outputs: Vec<ColumnId>,
-    },
-    FunctionScan {
-        source: Box<PlanNode<'a>>,
-        function: &'a TableFunction,
-        outputs: Vec<ColumnId>,
-    },
-}
-
-impl Node for Scan<'_> {
-    fn fmt_explain(&self, f: &ExplainFormatter) {
-        match self {
-            Self::SeqScan { table, .. } => {
-                f.node("SeqScan").field("table", table.name());
-            }
-            Self::FunctionScan {
-                source, function, ..
-            } => {
-                f.node("FunctionScan")
-                    .field("function", function.name)
-                    .child(source);
-            }
-        }
-    }
-
-    fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
-        match self {
-            Self::SeqScan { outputs, .. } | Self::FunctionScan { outputs, .. } => {
-                columns.extend(outputs.iter());
-            }
-        }
     }
 }
 
@@ -180,22 +144,6 @@ impl<'a> PlanNode<'a> {
         })
     }
 
-    fn function_scan(self, column_map: &mut ColumnMap, function: &'a TableFunction) -> Self {
-        if self.produces_no_rows() {
-            return self;
-        }
-        let outputs = function
-            .result_columns
-            .iter()
-            .map(|column| column_map.insert(column.clone()))
-            .collect();
-        Self::Scan(Scan::FunctionScan {
-            source: Box::new(self),
-            function,
-            outputs,
-        })
-    }
-
     pub(super) fn project(
         self,
         column_map: &mut ColumnMap,
@@ -205,19 +153,20 @@ impl<'a> PlanNode<'a> {
             return self;
         }
         let outputs: Vec<_> = exprs
-            .into_iter()
+            .iter()
             .map(|expr| {
                 let TypedExpression { expr, ty } = expr;
                 let id = match expr {
-                    planner::Expression::ColumnRef(id) => id,
+                    planner::Expression::ColumnRef(id) => *id,
                     _ => column_map.insert(Column::new(
                         expr.clone().into_display(&column_map.view()).to_string(),
-                        ty,
+                        *ty,
                     )),
                 };
-                (id, expr)
+                (id, expr.clone())
             })
             .collect();
+
         if self
             .outputs()
             .into_iter()
@@ -226,8 +175,42 @@ impl<'a> PlanNode<'a> {
             // Identity projection
             return self;
         }
+
+        let plan = match self {
+            PlanNode::Scan(Scan::Index {
+                index,
+                range,
+                outputs,
+                ..
+            }) => {
+                let indexed_column_ids: Vec<_> = index
+                    .column_indexes()
+                    .iter()
+                    .map(|i| outputs[i.0])
+                    .collect();
+                let indexed: HashSet<_> = indexed_column_ids.iter().copied().collect();
+                let is_covered = exprs
+                    .iter()
+                    .all(|expr| expr.expr.referenced_columns().is_subset(&indexed));
+                if is_covered {
+                    return PlanNode::Scan(Scan::IndexOnly {
+                        index,
+                        range,
+                        outputs: indexed_column_ids,
+                    })
+                    .project(column_map, exprs);
+                }
+                PlanNode::Scan(Scan::Index {
+                    index,
+                    range,
+                    outputs,
+                })
+            }
+            plan => plan,
+        };
+
         Self::Project(Project {
-            source: Box::new(self),
+            source: Box::new(plan),
             outputs,
         })
     }
@@ -352,23 +335,6 @@ impl<'a> PlanNode<'a> {
             right: Box::new(other),
             outputs,
         }))
-    }
-}
-
-impl<'a> PlanNode<'a> {
-    fn new_seq_scan(column_map: &mut ColumnMap, table: Table<'a>) -> Self {
-        let outputs = table
-            .columns()
-            .iter()
-            .map(|column| {
-                column_map.insert(Column {
-                    table_name: Some(table.name().to_owned()),
-                    column_name: column.name.clone(),
-                    ty: column.ty.into(),
-                })
-            })
-            .collect();
-        Self::Scan(Scan::SeqScan { table, outputs })
     }
 }
 
@@ -640,10 +606,6 @@ impl<'a> Planner<'a> {
         }
     }
 
-    pub fn plan_base_table(&self, table: Table<'a>) -> PlanNode<'a> {
-        PlanNode::new_seq_scan(&mut self.column_map(), table)
-    }
-
     fn plan_join(
         &self,
         expr_binder: &ExpressionBinder<'_, 'a>,
@@ -671,23 +633,6 @@ impl<'a> Planner<'a> {
             }
         };
         plan.filter(self.ctx, condition)
-    }
-
-    fn plan_table_function(
-        &self,
-        expr_binder: &ExpressionBinder<'_, 'a>,
-        name: String,
-        args: Vec<parser::Expression>,
-    ) -> PlannerResult<PlanNode<'a>> {
-        let function = self.ctx.catalog().table_function(&name)?;
-        let exprs = args
-            .into_iter()
-            .map(|expr| expr_binder.bind_without_source(expr))
-            .collect::<PlannerResult<_>>()?;
-        let mut column_map = self.column_map();
-        Ok(PlanNode::new_empty_row()
-            .project(&mut column_map, exprs)
-            .function_scan(&mut column_map, function))
     }
 
     fn plan_values(

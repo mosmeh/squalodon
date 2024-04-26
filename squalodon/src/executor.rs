@@ -10,8 +10,9 @@ use crate::{
 };
 use mutation::{Delete, Insert, Update};
 use query::{
-    AggregateOp, ApplyAggregateOp, CrossProduct, Filter, FunctionScan, HashAggregate, Limit,
-    Project, SeqScan, Sort, TopN, UngroupedAggregate, Union, Values,
+    AggregateOp, ApplyAggregateOp, CrossProduct, Filter, FunctionScan, HashAggregate,
+    IndexOnlyScan, IndexScan, Limit, Project, SeqScan, Sort, TopN, UngroupedAggregate, Union,
+    Values,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -122,6 +123,8 @@ impl Iterator for Executor<'_> {
 enum ExecutorNode<'a> {
     Values(Values<'a>),
     SeqScan(SeqScan<'a>),
+    IndexScan(IndexScan<'a>),
+    IndexOnlyScan(IndexOnlyScan<'a>),
     FunctionScan(FunctionScan<'a>),
     Project(Project<'a>),
     Filter(Filter<'a>),
@@ -153,6 +156,7 @@ impl<'a> ExecutorNode<'a> {
                 let result = ctx.catalog().create_table(
                     &create_table.name,
                     &create_table.columns,
+                    &create_table.primary_keys,
                     &create_table.constraints,
                 );
                 match result {
@@ -203,10 +207,22 @@ impl<'a> ExecutorNode<'a> {
                     .collect();
                 Self::Values(Values::new(ctx, rows))
             }
-            PlanNode::Scan(planner::Scan::SeqScan { table, .. }) => {
-                Self::SeqScan(SeqScan::new(table))
+            PlanNode::Scan(planner::Scan::Seq { table, .. }) => Self::SeqScan(SeqScan::new(table)),
+            PlanNode::Scan(planner::Scan::Index { index, range, .. }) => {
+                let range = (
+                    range.0.as_ref().map(Vec::as_slice),
+                    range.1.as_ref().map(Vec::as_slice),
+                );
+                Self::IndexScan(IndexScan::new(index, range))
             }
-            PlanNode::Scan(planner::Scan::FunctionScan {
+            PlanNode::Scan(planner::Scan::IndexOnly { index, range, .. }) => {
+                let range = (
+                    range.0.as_ref().map(Vec::as_slice),
+                    range.1.as_ref().map(Vec::as_slice),
+                );
+                Self::IndexOnlyScan(IndexOnlyScan::new(index, range))
+            }
+            PlanNode::Scan(planner::Scan::Function {
                 source, function, ..
             }) => {
                 let source = Self::new(ctx, *source)?;
@@ -320,6 +336,8 @@ impl Node for ExecutorNode<'_> {
         match self {
             Self::Values(e) => e.next_row(),
             Self::SeqScan(e) => e.next_row(),
+            Self::IndexScan(e) => e.next_row(),
+            Self::IndexOnlyScan(e) => e.next_row(),
             Self::FunctionScan(e) => e.next_row(),
             Self::Project(e) => e.next_row(),
             Self::Filter(e) => e.next_row(),

@@ -1,13 +1,16 @@
 use super::{ConnectionContext, ExecutorNode, ExecutorResult, IntoOutput, Node, NodeError, Output};
 use crate::{
-    catalog::{AggregateInitFnPtr, Aggregator, Table, TableFnPtr},
+    catalog::{AggregateInitFnPtr, Aggregator, Index, Table, TableFnPtr},
     memcomparable::MemcomparableSerde,
     planner::{self, ColumnId, Expression, OrderBy},
     rows::ColumnIndex,
     storage::StorageResult,
     ExecutorError, Row, Value,
 };
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::{
+    collections::{BinaryHeap, HashMap, HashSet},
+    ops::RangeBounds,
+};
 
 pub struct Values<'a> {
     rows: Box<dyn Iterator<Item = ExecutorResult<Row>> + 'a>,
@@ -56,6 +59,42 @@ impl<'a> SeqScan<'a> {
 }
 
 impl Node for SeqScan<'_> {
+    fn next_row(&mut self) -> Output {
+        self.iter.next().into_output()
+    }
+}
+
+pub struct IndexScan<'a> {
+    iter: Box<dyn Iterator<Item = StorageResult<Row>> + 'a>,
+}
+
+impl<'a> IndexScan<'a> {
+    pub fn new<'r, R: RangeBounds<&'r [Value]>>(index: Index<'a>, range: R) -> Self {
+        Self {
+            iter: Box::new(index.scan(range)),
+        }
+    }
+}
+
+impl Node for IndexScan<'_> {
+    fn next_row(&mut self) -> Output {
+        self.iter.next().into_output()
+    }
+}
+
+pub struct IndexOnlyScan<'a> {
+    iter: Box<dyn Iterator<Item = StorageResult<Row>> + 'a>,
+}
+
+impl<'a> IndexOnlyScan<'a> {
+    pub fn new<'r, R: RangeBounds<&'r [Value]>>(index: Index<'a>, range: R) -> Self {
+        Self {
+            iter: Box::new(index.scan_index_only(range).map(|r| r.map(Row::new))),
+        }
+    }
+}
+
+impl Node for IndexOnlyScan<'_> {
     fn next_row(&mut self) -> Output {
         self.iter.next().into_output()
     }

@@ -6,6 +6,7 @@ pub struct CreateTable {
     pub name: String,
     pub if_not_exists: bool,
     pub columns: Vec<catalog::Column>,
+    pub primary_keys: Vec<ColumnIndex>,
     pub constraints: Vec<catalog::Constraint>,
     pub create_indexes: Vec<CreateIndex>,
 }
@@ -81,22 +82,21 @@ impl<'a> Planner<'a> {
                 return Err(PlannerError::DuplicateColumn(column.name.clone()));
             }
         }
+        let mut primary_keys = None;
         let mut bound_constraints = HashSet::new();
-        let mut has_primary_key = false;
         let mut create_indexes = Vec::new();
         for constraint in create_table.constraints {
             match constraint {
                 parser::Constraint::PrimaryKey(column_names) => {
-                    if has_primary_key {
+                    if primary_keys.is_some() {
                         return Err(PlannerError::MultiplePrimaryKeys);
                     }
-                    has_primary_key = true;
                     let column_indexes =
                         column_indexes_from_names(&create_table.columns, &column_names)?;
                     for column_index in &column_indexes {
                         bound_constraints.insert(catalog::Constraint::NotNull(*column_index));
                     }
-                    bound_constraints.insert(catalog::Constraint::PrimaryKey(column_indexes));
+                    primary_keys = Some(column_indexes.clone());
                 }
                 parser::Constraint::NotNull(column_name) => {
                     let index = create_table
@@ -125,13 +125,14 @@ impl<'a> Planner<'a> {
                 }
             }
         }
-        if !has_primary_key {
+        if primary_keys.is_none() {
             return Err(PlannerError::NoPrimaryKey);
         }
         let create_table = CreateTable {
             name: create_table.name,
             if_not_exists: create_table.if_not_exists,
             columns: create_table.columns,
+            primary_keys: primary_keys.unwrap(),
             constraints: bound_constraints.into_iter().collect(),
             create_indexes,
         };

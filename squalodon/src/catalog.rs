@@ -5,7 +5,7 @@ use crate::{
     parser::Expression,
     planner::{self, PlannerResult},
     rows::ColumnIndex,
-    storage::{Transaction, TransactionExt},
+    storage::{StorageError, Transaction, TransactionExt},
     types::{NullableType, Type},
     Row, Value,
 };
@@ -22,6 +22,12 @@ pub enum CatalogError {
 
     #[error("Invalid encoding")]
     InvalidEncoding,
+
+    #[error("Catalog is in an inconsistent state")]
+    Inconsistent,
+
+    #[error("Storage error: {0}")]
+    Storage(#[from] StorageError),
 
     #[error("Bincode error: {0}")]
     Bincode(#[from] bincode::Error),
@@ -65,10 +71,12 @@ impl CatalogEntryKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectId(u64);
 
 impl ObjectId {
+    pub const SERIALIZED_LEN: usize = std::mem::size_of::<u64>();
+
     const CATALOG: Self = Self(0);
 
     pub fn serialize(self) -> Vec<u8> {
@@ -80,22 +88,10 @@ impl ObjectId {
 pub struct Table<'a> {
     txn: &'a dyn Transaction,
     def: TableDef,
-    indexes: Vec<Index>,
+    index_defs: Vec<IndexDef>,
 }
 
 impl<'a> Table<'a> {
-    fn new(txn: &'a dyn Transaction, def: TableDef, indexes: Vec<IndexDef>) -> Self {
-        let indexes = indexes
-            .into_iter()
-            .zip(def.index_names.iter())
-            .map(|(def, name)| Index {
-                name: name.clone(),
-                def,
-            })
-            .collect();
-        Self { txn, def, indexes }
-    }
-
     pub fn id(&self) -> ObjectId {
         self.def.id
     }
@@ -108,12 +104,19 @@ impl<'a> Table<'a> {
         &self.def.columns
     }
 
+    pub fn primary_keys(&self) -> &[ColumnIndex] {
+        &self.def.primary_keys
+    }
+
     pub fn constraints(&self) -> &[Constraint] {
         &self.def.constraints
     }
 
-    pub fn indexes(&self) -> &[Index] {
-        &self.indexes
+    pub fn indexes(&self) -> impl Iterator<Item = Index<'a>> + '_ {
+        self.index_defs.iter().map(|def| Index {
+            def: def.clone(),
+            table: self.clone(),
+        })
     }
 
     pub fn transaction(&self) -> &'a dyn Transaction {
@@ -126,6 +129,7 @@ struct TableDef {
     id: ObjectId,
     name: String,
     columns: Vec<Column>,
+    primary_keys: Vec<ColumnIndex>,
     constraints: Vec<Constraint>,
     index_names: Vec<String>,
 }
@@ -139,19 +143,22 @@ pub struct Column {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Constraint {
-    PrimaryKey(Vec<ColumnIndex>),
     NotNull(ColumnIndex),
 }
 
 #[derive(Clone)]
-pub struct Index {
-    name: String,
+pub struct Index<'a> {
     def: IndexDef,
+    table: Table<'a>,
 }
 
-impl Index {
+impl<'a> Index<'a> {
+    pub fn id(&self) -> ObjectId {
+        self.def.id
+    }
+
     pub fn name(&self) -> &str {
-        &self.name
+        &self.def.name
     }
 
     pub fn column_indexes(&self) -> &[ColumnIndex] {
@@ -161,11 +168,20 @@ impl Index {
     pub fn is_unique(&self) -> bool {
         self.def.is_unique
     }
+
+    pub fn table(&self) -> &Table<'a> {
+        &self.table
+    }
+
+    pub fn transaction(&self) -> &'a dyn Transaction {
+        self.table.transaction()
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 struct IndexDef {
     id: ObjectId,
+    name: String,
     table_name: String,
     column_indexes: Vec<ColumnIndex>,
     is_unique: bool,
@@ -320,8 +336,8 @@ impl<'a> CatalogRef<'a> {
     }
 
     fn generate_object_id(&self) -> CatalogResult<ObjectId> {
-        const KEY: &str = "next_id";
-        let mut next_id: u64 = match self.entry(CatalogEntryKind::Metadata, KEY) {
+        const NAME: &str = "next_id";
+        let mut next_id: u64 = match self.entry(CatalogEntryKind::Metadata, NAME) {
             Ok(id) => id,
             Err(CatalogError::UnknownEntry(_, _)) => 1,
             Err(e) => return Err(e),
@@ -329,7 +345,7 @@ impl<'a> CatalogRef<'a> {
         assert!(next_id > ObjectId::CATALOG.0);
         let id = ObjectId(next_id);
         next_id += 1;
-        self.put_entry(CatalogEntryKind::Metadata, KEY, &next_id)?;
+        self.put_entry(CatalogEntryKind::Metadata, NAME, &next_id)?;
         Ok(id)
     }
 
@@ -344,17 +360,22 @@ impl<'a> CatalogRef<'a> {
     }
 
     fn read_table(&self, def: TableDef) -> CatalogResult<Table<'a>> {
-        let mut indexes = Vec::with_capacity(def.index_names.len());
+        let mut index_defs = Vec::with_capacity(def.index_names.len());
         for index_name in &def.index_names {
-            indexes.push(self.entry(CatalogEntryKind::Index, index_name)?);
+            index_defs.push(self.entry(CatalogEntryKind::Index, index_name)?);
         }
-        Ok(Table::new(self.txn, def, indexes))
+        Ok(Table {
+            txn: self.txn,
+            def,
+            index_defs,
+        })
     }
 
     pub fn create_table(
         &self,
         name: &str,
         columns: &[Column],
+        primary_keys: &[ColumnIndex],
         constraints: &[Constraint],
     ) -> CatalogResult<ObjectId> {
         let id = self.generate_object_id()?;
@@ -362,6 +383,7 @@ impl<'a> CatalogRef<'a> {
             id,
             name: name.to_owned(),
             columns: columns.to_owned(),
+            primary_keys: primary_keys.to_owned(),
             constraints: constraints.to_owned(),
             index_names: Vec::new(),
         };
@@ -370,13 +392,10 @@ impl<'a> CatalogRef<'a> {
     }
 
     pub fn drop_table(&self, name: &str) -> CatalogResult<()> {
-        let table_def: TableDef = self.entry(CatalogEntryKind::Table, name)?;
-        let prefix = table_def.id.serialize();
-        for (key, _) in self.txn.prefix_scan(prefix) {
-            self.txn.remove(&key).unwrap();
-        }
-        for index_name in table_def.index_names {
-            self.drop_index(&index_name)?;
+        let table = self.table(name)?;
+        table.truncate()?;
+        for index in table.indexes() {
+            self.drop_index(index.name())?;
         }
         self.remove_entry(CatalogEntryKind::Table, name)
     }
@@ -390,20 +409,29 @@ impl<'a> CatalogRef<'a> {
     ) -> CatalogResult<ObjectId> {
         assert!(!column_indexes.is_empty());
 
-        let mut table_def: TableDef = self.entry(CatalogEntryKind::Table, &table_name)?;
-        assert!(column_indexes.iter().all(|i| i.0 < table_def.columns.len()));
-
         let id = self.generate_object_id()?;
         let index_def = IndexDef {
             id,
+            name: name.clone(),
             table_name: table_name.clone(),
             column_indexes: column_indexes.to_owned(),
             is_unique,
         };
         self.insert_entry(CatalogEntryKind::Index, &name, &index_def)?;
 
+        let mut table_def: TableDef = self.entry(CatalogEntryKind::Table, &table_name)?;
+        assert!(column_indexes.iter().all(|i| i.0 < table_def.columns.len()));
         table_def.index_names.push(name);
         self.put_entry(CatalogEntryKind::Table, &table_name, &table_def)?;
+
+        // Now the catalog is ready but the index is empty.
+
+        let table = self.read_table(table_def.clone())?;
+        let index = table
+            .indexes()
+            .find(|i| i.id() == id)
+            .ok_or(CatalogError::Inconsistent)?;
+        index.reindex()?;
 
         Ok(id)
     }
@@ -417,7 +445,7 @@ impl<'a> CatalogRef<'a> {
 
         let prefix = index_def.id.serialize();
         for (key, _) in self.txn.prefix_scan(prefix) {
-            self.txn.remove(&key).unwrap();
+            self.txn.remove(&key).ok_or(CatalogError::Inconsistent)?;
         }
 
         self.remove_entry(CatalogEntryKind::Index, name)

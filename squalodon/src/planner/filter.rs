@@ -1,7 +1,7 @@
 use super::{
     explain::ExplainFormatter,
     expression::{ExpressionBinder, TypedExpression},
-    ColumnId, Node, PlanNode, Planner, PlannerResult,
+    ColumnId, Node, PlanNode, Planner, PlannerResult, Scan,
 };
 use crate::{
     connection::ConnectionContext,
@@ -9,7 +9,7 @@ use crate::{
     planner::{self, CrossProduct},
     Row, Type, Value,
 };
-use std::collections::HashSet;
+use std::{collections::HashSet, ops::Bound};
 
 pub struct Filter<'a> {
     pub source: Box<PlanNode<'a>>,
@@ -91,6 +91,52 @@ impl<'a> PlanNode<'a> {
                     }
                 }
                 PlanNode::CrossProduct(CrossProduct { left, right })
+            }
+            PlanNode::Scan(Scan::Seq { table, outputs }) => {
+                for conjunct in &normalized_conjuncts {
+                    let planner::Expression::BinaryOp { op, lhs, rhs } = conjunct else {
+                        continue;
+                    };
+                    let (planner::Expression::ColumnRef(id), planner::Expression::Constant(value)) =
+                        (lhs.as_ref(), rhs.as_ref())
+                    else {
+                        continue;
+                    };
+                    for index in table.indexes() {
+                        let [column_index] = index.column_indexes() else {
+                            // TODO: Make use of multi-column indexes
+                            continue;
+                        };
+                        if *id != outputs[column_index.0] {
+                            continue;
+                        }
+
+                        let value = vec![value.clone()];
+                        let range = match op {
+                            BinaryOp::Eq => {
+                                (Bound::Included(value.clone()), Bound::Included(value))
+                            }
+                            BinaryOp::Gt => (Bound::Excluded(value), Bound::Unbounded),
+                            BinaryOp::Ge => (Bound::Included(value), Bound::Unbounded),
+                            BinaryOp::Lt => (Bound::Unbounded, Bound::Excluded(value)),
+                            BinaryOp::Le => (Bound::Unbounded, Bound::Included(value)),
+                            _ => continue,
+                        };
+
+                        let index = index.clone();
+                        let conjunct = conjunct.clone();
+                        normalized_conjuncts.remove(&conjunct);
+
+                        // TODO: support pushing down more than one conjunct
+                        return PlanNode::Scan(Scan::Index {
+                            index,
+                            range,
+                            outputs,
+                        })
+                        .filter_inner(ctx, normalized_conjuncts);
+                    }
+                }
+                PlanNode::Scan(Scan::Seq { table, outputs })
             }
             plan => plan,
         };

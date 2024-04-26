@@ -5,10 +5,11 @@ pub use blackhole::Blackhole;
 pub use memory::Memory;
 
 use crate::{
-    catalog::{Constraint, Index, Table},
+    catalog::{Constraint, Index, ObjectId, Table},
     memcomparable::MemcomparableSerde,
     Row, Value,
 };
+use std::ops::{Bound, RangeBounds};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
@@ -17,6 +18,12 @@ pub enum StorageError {
 
     #[error("NOT NULL constraint violated at column {0:?}")]
     NotNullConstraintViolation(String),
+
+    #[error("Invalid encoding")]
+    InvalidEncoding,
+
+    #[error("Storage is in an inconsistent state")]
+    Inconsistent,
 
     #[error("Bincode error: {0}")]
     Bincode(#[from] bincode::Error),
@@ -66,6 +73,11 @@ pub trait Transaction {
 
 pub(crate) trait TransactionExt {
     fn prefix_scan(&self, prefix: Vec<u8>) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_;
+    fn prefix_range_scan<R: RangeBounds<Vec<u8>>>(
+        &self,
+        prefix: Vec<u8>,
+        range: R,
+    ) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_;
 }
 
 impl<T: ?Sized + Transaction> TransactionExt for T {
@@ -76,23 +88,54 @@ impl<T: ?Sized + Transaction> TransactionExt for T {
         }
         self.scan(prefix, end)
     }
+
+    fn prefix_range_scan<R: RangeBounds<Vec<u8>>>(
+        &self,
+        prefix: Vec<u8>,
+        range: R,
+    ) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_ {
+        let mut start = prefix.clone();
+        if let Bound::Included(s) | Bound::Excluded(s) = range.start_bound() {
+            start.extend_from_slice(s);
+        }
+        if let Bound::Excluded(_) = range.start_bound() {
+            if let Some(last) = start.last_mut() {
+                *last += 1;
+            }
+        }
+
+        let mut end = prefix;
+        if let Bound::Included(e) | Bound::Excluded(e) = range.end_bound() {
+            end.extend_from_slice(e);
+        }
+        if let Bound::Included(_) | Bound::Unbounded = range.end_bound() {
+            if let Some(last) = end.last_mut() {
+                *last += 1;
+            }
+        }
+
+        self.scan(start, end)
+    }
 }
 
 impl<'a> Table<'a> {
     pub fn scan(&self) -> impl Iterator<Item = StorageResult<Row>> + 'a {
-        let prefix = self.id().serialize();
+        let row_key_prefix = self.id().serialize();
         self.transaction()
-            .prefix_scan(prefix)
+            .prefix_scan(row_key_prefix)
             .map(|(_, v)| bincode::deserialize(&v).map_err(Into::into))
     }
 
     pub fn insert<'r, R: Into<&'r [Value]>>(&self, row: R) -> StorageResult<()> {
         let row = row.into();
-        let key = self.prepare_for_write(row)?;
-        if !self.transaction().insert(&key, &bincode::serialize(row)?) {
+        let row_key = self.prepare_for_write(row)?;
+        if !self
+            .transaction()
+            .insert(&row_key, &bincode::serialize(row)?)
+        {
             return Err(StorageError::DuplicateKey);
         }
-        self.update_indexes(None, Some((row, &key)))
+        self.update_indexes(None, Some((row, &row_key)))
     }
 
     pub fn update<'r1, 'r2, R, S>(&self, old_row: R, new_row: S) -> StorageResult<()>
@@ -101,52 +144,52 @@ impl<'a> Table<'a> {
         S: Into<&'r2 [Value]>,
     {
         let old_row = old_row.into();
-        let old_key = self.prepare_for_write(old_row)?;
+        let old_row_key = self.prepare_for_write(old_row)?;
         let new_row = new_row.into();
-        let new_key = self.prepare_for_write(new_row)?;
+        let new_row_key = self.prepare_for_write(new_row)?;
 
         let serialized = bincode::serialize(new_row)?;
-        if new_key == old_key {
-            let new = self.transaction().insert(&new_key, &serialized);
+        if new_row_key == old_row_key {
+            let new = self.transaction().insert(&new_row_key, &serialized);
             assert!(!new);
         } else {
-            self.transaction().remove(&old_key).unwrap();
-            if !self.transaction().insert(&new_key, &serialized) {
+            self.transaction()
+                .remove(&old_row_key)
+                .ok_or(StorageError::Inconsistent)?;
+            if !self.transaction().insert(&new_row_key, &serialized) {
                 return Err(StorageError::DuplicateKey);
             }
         }
 
-        self.update_indexes(Some((old_row, &old_key)), Some((new_row, &new_key)))
+        self.update_indexes(Some((old_row, &old_row_key)), Some((new_row, &new_row_key)))
     }
 
     pub fn delete<'r, R: Into<&'r [Value]>>(&self, row: R) -> StorageResult<()> {
         let row = row.into();
-        let key = self.prepare_for_write(row)?;
-        self.transaction().remove(&key).unwrap();
-        self.update_indexes(Some((row, &key)), None)
+        let row_key = self.prepare_for_write(row)?;
+        self.transaction()
+            .remove(&row_key)
+            .ok_or(StorageError::Inconsistent)?;
+        self.update_indexes(Some((row, &row_key)), None)
+    }
+
+    pub fn truncate(&self) -> StorageResult<()> {
+        for row in self.scan() {
+            self.delete(&row?)?;
+        }
+        Ok(())
     }
 
     /// Performs integrity checks before writing a row to the storage.
     ///
-    /// Returns the serialized key if the row passes the checks.
+    /// Returns the serialized row key if the row passes the checks.
     fn prepare_for_write(&self, row: &[Value]) -> StorageResult<Vec<u8>> {
         assert_eq!(row.len(), self.columns().len());
         for (value, column) in row.iter().zip(self.columns()) {
             assert!(value.ty().is_compatible_with(column.ty));
         }
-        let mut key = self.id().serialize();
-        let mut has_primary_key = false;
         for constraint in self.constraints() {
             match constraint {
-                Constraint::PrimaryKey(columns) => {
-                    assert!(!has_primary_key);
-                    has_primary_key = true;
-                    let serde = MemcomparableSerde::new();
-                    for column in columns {
-                        serde.serialize_into(&row[column.0], &mut key);
-                    }
-                    // Uniqueness of primary key is checked when inserting
-                }
                 Constraint::NotNull(column) => {
                     if matches!(row[column.0], Value::Null) {
                         return Err(StorageError::NotNullConstraintViolation(
@@ -156,8 +199,13 @@ impl<'a> Table<'a> {
                 }
             }
         }
-        assert!(has_primary_key);
-        Ok(key)
+
+        let serde = MemcomparableSerde::new();
+        let mut row_key = self.id().serialize();
+        for column in self.primary_keys() {
+            serde.serialize_into(&row[column.0], &mut row_key);
+        }
+        Ok(row_key)
     }
 
     fn update_indexes(
@@ -166,48 +214,147 @@ impl<'a> Table<'a> {
         new: Option<(&[Value], &[u8])>,
     ) -> StorageResult<()> {
         for index in self.indexes() {
-            let old_index_key = old
-                .map(|(row, table_key)| index.encode_key(row, table_key))
-                .unwrap_or_default();
-            let new_index_key = new
-                .map(|(row, table_key)| index.encode_key(row, table_key))
-                .unwrap_or_default();
-            if old_index_key == new_index_key {
-                // No change in the indexed columns
-                continue;
+            if let Some((row, row_key)) = old {
+                index.remove(row, row_key)?;
             }
-            if old.is_some() {
-                self.transaction().remove(&old_index_key).unwrap();
-            }
-            if let Some((_, new_table_key)) = new {
-                let value = if index.is_unique() {
-                    new_table_key.to_vec()
-                } else {
-                    // For non-unique indexes, the table key is a part of
-                    // the index key.
-                    Vec::new()
-                };
-                if !self.transaction().insert(&new_index_key, &value) {
-                    return Err(StorageError::DuplicateKey);
-                }
+            if let Some((row, row_key)) = new {
+                index.insert(row, row_key)?;
             }
         }
         Ok(())
     }
 }
 
-impl Index {
-    fn encode_key(&self, row: &[Value], table_key: &[u8]) -> Vec<u8> {
+impl<'a> Index<'a> {
+    /// Scans the index in `range`, returning the table rows.
+    pub fn scan<'r, R: RangeBounds<&'r [Value]>>(
+        &self,
+        range: R,
+    ) -> impl Iterator<Item = StorageResult<Row>> + 'a {
+        let txn = self.transaction();
+        self.scan_inner(range).map(move |row| {
+            let (_, row_key) = row?;
+            let bytes = txn.get(&row_key).ok_or(StorageError::Inconsistent)?;
+            bincode::deserialize(&bytes).map_err(Into::into)
+        })
+    }
+
+    /// Scans the index in `range`, returning the indexed columns.
+    pub fn scan_index_only<'r, R: RangeBounds<&'r [Value]>>(
+        &self,
+        range: R,
+    ) -> impl Iterator<Item = StorageResult<Vec<Value>>> + 'a {
+        self.scan_inner(range).map(move |row| {
+            let (indexed, _) = row?;
+            Ok(indexed)
+        })
+    }
+
+    /// Scans the index in `range`, returning (indexed column values, row key)
+    fn scan_inner<'r, R: RangeBounds<&'r [Value]>>(
+        &self,
+        range: R,
+    ) -> impl Iterator<Item = StorageResult<(Vec<Value>, Vec<u8>)>> + 'a {
+        fn encode_key(key: &[Value]) -> Vec<u8> {
+            let serde = MemcomparableSerde::new();
+            let mut buf = Vec::new();
+            for value in key {
+                serde.serialize_into(value, &mut buf);
+            }
+            buf
+        }
+
+        let start = range.start_bound().map(|v| {
+            assert_eq!(v.len(), self.column_indexes().len());
+            encode_key(v)
+        });
+        let end = range.end_bound().map(|v| {
+            assert_eq!(v.len(), self.column_indexes().len());
+            encode_key(v)
+        });
+
+        let is_unique = self.is_unique();
+        let column_indexes = self.column_indexes().to_vec();
+        self.transaction()
+            .prefix_range_scan(self.id().serialize(), (start, end))
+            .map(move |(k, v)| {
+                let serde = MemcomparableSerde::new();
+                let mut indexed = Vec::with_capacity(column_indexes.len());
+                let mut slice = &k[ObjectId::SERIALIZED_LEN..];
+                for _ in &column_indexes {
+                    let (value, len) = serde
+                        .deserialize_from(slice)
+                        .map_err(|_| StorageError::InvalidEncoding)?;
+                    indexed.push(value);
+                    slice = &slice[len..];
+                }
+
+                let row_key = if is_unique {
+                    assert!(slice.is_empty());
+                    v
+                } else {
+                    assert!(v.is_empty());
+                    slice.to_vec()
+                };
+                Ok((indexed, row_key))
+            })
+    }
+
+    fn insert(&self, row: &[Value], row_key: &[u8]) -> StorageResult<()> {
+        let key = self.key(row, row_key);
+        let value = if self.is_unique() {
+            row_key.to_vec()
+        } else {
+            // For non-unique indexes, the row key is a part of the key of
+            // the index.
+            Vec::new()
+        };
+        if self.transaction().insert(&key, &value) {
+            Ok(())
+        } else {
+            Err(StorageError::DuplicateKey)
+        }
+    }
+
+    fn remove(&self, row: &[Value], row_key: &[u8]) -> StorageResult<()> {
+        let key = self.key(row, row_key);
+        match self.transaction().remove(&key) {
+            Some(_) => Ok(()),
+            None => Err(StorageError::Inconsistent),
+        }
+    }
+
+    pub fn reindex(&self) -> StorageResult<()> {
+        self.clear()?;
+        let table = self.table();
+        for row in table.scan() {
+            let row = row?;
+            let row_key = table.prepare_for_write(&row.0)?;
+            self.insert(&row.0, &row_key)?;
+        }
+        Ok(())
+    }
+
+    fn clear(&self) -> StorageResult<()> {
+        let prefix = self.id().serialize();
+        let txn = self.transaction();
+        for (k, _) in txn.prefix_scan(prefix) {
+            txn.remove(&k).ok_or(StorageError::Inconsistent)?;
+        }
+        Ok(())
+    }
+
+    fn key(&self, row: &[Value], row_key: &[u8]) -> Vec<u8> {
         let serde = MemcomparableSerde::new();
-        let mut index_key = Vec::new();
+        let mut key = self.id().serialize();
         for column_index in self.column_indexes() {
-            serde.serialize_into(&row[column_index.0], &mut index_key);
+            serde.serialize_into(&row[column_index.0], &mut key);
         }
         if !self.is_unique() {
-            // If the indexed columns are not unique, append the primary key
+            // If the indexed columns are not unique, append the row key
             // to make the key unique.
-            index_key.extend_from_slice(table_key);
+            key.extend_from_slice(row_key);
         }
-        index_key
+        key
     }
 }

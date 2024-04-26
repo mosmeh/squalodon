@@ -6,6 +6,7 @@ mod expression;
 mod filter;
 mod mutation;
 mod query;
+mod scan;
 mod sort;
 
 pub use aggregate::{Aggregate, AggregateOp, ApplyAggregateOp};
@@ -13,7 +14,8 @@ pub use column::{Column, ColumnId};
 pub use expression::{CaseBranch, Expression};
 pub use filter::Filter;
 pub use mutation::{Delete, Insert, Update};
-pub use query::{CrossProduct, Limit, Project, Scan, Union, Values};
+pub use query::{CrossProduct, Limit, Project, Union, Values};
+pub use scan::Scan;
 pub use sort::{OrderBy, Sort, TopN};
 
 use crate::{

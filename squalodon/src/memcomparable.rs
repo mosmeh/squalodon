@@ -103,6 +103,13 @@ impl MemcomparableSerde {
         }
     }
 
+    /// Deserialize a value at the beginning of the buffer.
+    ///
+    /// When successful, returns the value and the number of bytes consumed.
+    pub fn deserialize_from(&self, buf: &[u8]) -> Result<(Value, usize), DeserializeError> {
+        self.deserialize_from_inner(buf).ok_or(DeserializeError)
+    }
+
     /// Deserialize a sequence of values from the buffer.
     ///
     /// Invalid or incomplete trailing bytes are ignored.
@@ -115,20 +122,20 @@ impl MemcomparableSerde {
             if buf.is_empty() {
                 return None;
             }
-            if let Some((value, len)) = self.deserialize_from(buf) {
-                buf = &buf[len..];
-                Some(Ok(value))
-            } else {
-                buf = &[];
-                Some(Err(DeserializeError))
+            match self.deserialize_from(buf) {
+                Ok((value, len)) => {
+                    buf = &buf[len..];
+                    Some(Ok(value))
+                }
+                Err(DeserializeError) => {
+                    buf = &[];
+                    Some(Err(DeserializeError))
+                }
             }
         })
     }
 
-    /// Deserialize a value at the beginning of the buffer.
-    ///
-    /// When successful, returns the value and the number of bytes consumed.
-    fn deserialize_from(&self, buf: &[u8]) -> Option<(Value, usize)> {
+    fn deserialize_from_inner(&self, buf: &[u8]) -> Option<(Value, usize)> {
         let (&tag, buf) = buf.split_first()?;
         let buf = match self.order {
             Order::Desc if !buf.is_empty() => Cow::Owned(buf.iter().map(|i| !i).collect()),
