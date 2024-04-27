@@ -14,20 +14,20 @@ use std::collections::HashSet;
 
 pub struct Project<'a> {
     pub source: Box<PlanNode<'a>>,
-    pub outputs: Vec<(ColumnId, planner::Expression<'a, ColumnId>)>,
+    pub projections: Vec<(ColumnId, planner::Expression<'a, ColumnId>)>,
 }
 
 impl Node for Project<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
         let mut node = f.node("Project");
-        for (output, _) in &self.outputs {
-            node.field("expression", f.column_map()[output].name());
+        for (id, _) in &self.projections {
+            node.field("expression", f.column_map()[id].name());
         }
         node.child(&self.source);
     }
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
-        columns.extend(self.outputs.iter().map(|(id, _)| *id));
+        columns.extend(self.projections.iter().map(|(id, _)| *id));
     }
 }
 
@@ -40,7 +40,8 @@ impl<'a> PlanNode<'a> {
         if self.produces_no_rows() {
             return self;
         }
-        let outputs: Vec<_> = exprs
+
+        let projections: Vec<_> = exprs
             .iter()
             .map(|expr| {
                 let TypedExpression { expr, ty } = expr;
@@ -58,19 +59,34 @@ impl<'a> PlanNode<'a> {
         if self
             .outputs()
             .into_iter()
-            .eq(outputs.iter().map(|(output, _)| *output))
+            .eq(projections.iter().map(|(output, _)| *output))
         {
             // Identity projection
             return self;
         }
 
         let plan = match self {
+            PlanNode::Scan(Scan::Expression { rows, outputs })
+                if rows.len() == 1 && outputs.is_empty() =>
+            {
+                // Merge ExpressionScan + Project into an ExpressionScan if
+                // ExpressionScan produces a single empty row.
+                // In other cases, it's not necessarily beneficial to merge
+                // them because it may increase the size of the plan tree.
+                let (column_types, exprs): (Vec<_>, Vec<_>) = projections
+                    .into_iter()
+                    .map(|(id, expr)| (column_map[id].ty, expr))
+                    .unzip();
+                return PlanNode::new_expression_scan(column_map, vec![exprs], column_types);
+            }
             PlanNode::Scan(Scan::Index {
                 index,
                 range,
                 outputs,
                 ..
             }) => {
+                // If projection references only columns that are indexed,
+                // we can use an index-only scan.
                 let indexed_column_ids: Vec<_> = index
                     .column_indexes()
                     .iter()
@@ -99,7 +115,7 @@ impl<'a> PlanNode<'a> {
 
         Self::Project(Project {
             source: Box::new(plan),
-            outputs,
+            projections,
         })
     }
 }

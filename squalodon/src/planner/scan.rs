@@ -133,7 +133,7 @@ impl<'a> PlanNode<'a> {
         Self::Scan(Scan::Seq { table, outputs })
     }
 
-    fn new_expression_scan(
+    pub(super) fn new_expression_scan(
         column_map: &mut ColumnMap,
         rows: Vec<Vec<planner::Expression<'a, ColumnId>>>,
         column_types: Vec<NullableType>,

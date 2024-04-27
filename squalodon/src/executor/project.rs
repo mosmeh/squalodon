@@ -26,10 +26,12 @@ impl Node for Project<'_> {
 impl<'a> ExecutorNode<'a> {
     pub fn project(ctx: &'a ConnectionContext, plan: planner::Project<'a>) -> ExecutorResult<Self> {
         let planner::Project {
-            source, outputs, ..
+            source,
+            projections,
+            ..
         } = plan;
         let source_outputs = source.outputs();
-        let exprs = outputs
+        let exprs = projections
             .into_iter()
             .map(|(_, expr)| expr.into_executable(&source_outputs))
             .collect();

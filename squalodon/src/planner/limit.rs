@@ -68,10 +68,14 @@ impl<'a> PlanNode<'a> {
         }
 
         // Push down
-        if let PlanNode::Project(Project { source, outputs }) = self {
+        if let PlanNode::Project(Project {
+            source,
+            projections,
+        }) = self
+        {
             let limit = limit.map(|limit| limit.into_typed(Type::Integer));
             let offset = offset.map(|offset| offset.into_typed(Type::Integer));
-            let exprs = outputs
+            let exprs = projections
                 .into_iter()
                 .map(|(id, expr)| expr.into_typed(column_map[id].ty))
                 .collect();
