@@ -1,7 +1,7 @@
 use super::{
     explain::ExplainFormatter,
     expression::{ExpressionBinder, TypedExpression},
-    ColumnId, Node, PlanNode, Planner, PlannerResult, Scan,
+    ColumnId, CompareOp, Node, PlanNode, Planner, PlannerResult, Scan,
 };
 use crate::{
     connection::ConnectionContext,
@@ -91,37 +91,59 @@ impl<'a> PlanNode<'a> {
                     }
                 }
 
-                // Hash join
-                let (eq_conjuncts, keys): (Vec<_>, Vec<_>) = normalized_conjuncts
+                // Nested loop join or hash join
+                let comparisons: Vec<_> = normalized_conjuncts
                     .iter()
                     .filter_map(|conjunct| {
-                        let planner::Expression::BinaryOp {
-                            op: BinaryOp::Eq,
-                            lhs,
-                            rhs,
-                        } = conjunct
-                        else {
+                        let planner::Expression::BinaryOp { op, lhs, rhs } = conjunct else {
                             return None;
                         };
+                        let op = CompareOp::from_binary_op(*op)?;
                         let lhs_refs = lhs.referenced_columns();
                         let rhs_refs = rhs.referenced_columns();
-                        if lhs_refs.is_subset(&left_outputs) && rhs_refs.is_subset(&right_outputs) {
-                            Some((conjunct.clone(), ((**lhs).clone(), (**rhs).clone())))
+                        let (op, left, right) = if lhs_refs.is_subset(&left_outputs)
+                            && rhs_refs.is_subset(&right_outputs)
+                        {
+                            (op, lhs, rhs)
                         } else if lhs_refs.is_subset(&right_outputs)
                             && rhs_refs.is_subset(&left_outputs)
                         {
-                            Some((conjunct.clone(), ((**rhs).clone(), (**lhs).clone())))
+                            (op.flip(), rhs, lhs)
                         } else {
-                            None
-                        }
+                            return None;
+                        };
+                        Some((conjunct.clone(), op, (**left).clone(), (**right).clone()))
                     })
-                    .unzip();
-                if !eq_conjuncts.is_empty() {
-                    for conjunct in eq_conjuncts {
-                        normalized_conjuncts.remove(&conjunct);
+                    .collect();
+                if !comparisons.is_empty() {
+                    for (conjunct, _, _, _) in &comparisons {
+                        normalized_conjuncts.remove(conjunct);
                     }
-                    return PlanNode::Join(planner::Join::Hash { left, right, keys })
-                        .filter_inner(ctx, normalized_conjuncts);
+                    let has_inequality =
+                        comparisons.iter().any(|(_, op, _, _)| *op != CompareOp::Eq);
+                    let join = if has_inequality {
+                        // TODO: compare costs of NestedLoopJoin and
+                        //       HashJoin + Filter when some of the conjuncts
+                        //       are equalities and others are inequalities
+                        planner::Join::NestedLoop {
+                            left,
+                            right,
+                            comparisons: comparisons
+                                .into_iter()
+                                .map(|(_, op, left, right)| (op, left, right))
+                                .collect(),
+                        }
+                    } else {
+                        planner::Join::Hash {
+                            left,
+                            right,
+                            keys: comparisons
+                                .into_iter()
+                                .map(|(_, _, left, right)| (left, right))
+                                .collect(),
+                        }
+                    };
+                    return PlanNode::Join(join).filter_inner(ctx, normalized_conjuncts);
                 }
 
                 PlanNode::CrossProduct(planner::CrossProduct { left, right })

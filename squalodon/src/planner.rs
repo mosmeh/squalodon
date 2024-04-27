@@ -18,7 +18,7 @@ pub use column::{Column, ColumnId};
 pub use ddl::{Analyze, Constraint, CreateIndex, CreateTable, DropObject, Reindex, Truncate};
 pub use expression::{CaseBranch, Expression};
 pub use filter::Filter;
-pub use join::{CrossProduct, Join};
+pub use join::{CompareOp, CrossProduct, Join};
 pub use limit::Limit;
 pub use mutation::{Delete, Insert, Update};
 pub use project::Project;

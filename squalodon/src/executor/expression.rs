@@ -97,6 +97,13 @@ impl BinaryOp {
         if rhs == Value::Null {
             return Ok(Value::Null);
         }
+        self.eval_const(&lhs, &rhs)
+    }
+
+    pub fn eval_const(self, lhs: &Value, rhs: &Value) -> ExecutorResult<Value> {
+        if lhs.is_null() || rhs.is_null() {
+            return Ok(Value::Null);
+        }
         match self {
             Self::Add | Self::Sub | Self::Mul | Self::Div | Self::Mod => self.eval_number(lhs, rhs),
             Self::Eq => Ok(Value::Boolean(lhs == rhs)),
@@ -107,21 +114,21 @@ impl BinaryOp {
             Self::Ge => Ok(Value::Boolean(lhs >= rhs)),
             Self::And => {
                 if let (Value::Boolean(lhs), Value::Boolean(rhs)) = (lhs, rhs) {
-                    Ok(Value::Boolean(lhs && rhs))
+                    Ok(Value::Boolean(*lhs && *rhs))
                 } else {
                     Err(ExecutorError::TypeError)
                 }
             }
             Self::Or => {
                 if let (Value::Boolean(lhs), Value::Boolean(rhs)) = (lhs, rhs) {
-                    Ok(Value::Boolean(lhs || rhs))
+                    Ok(Value::Boolean(*lhs || *rhs))
                 } else {
                     Err(ExecutorError::TypeError)
                 }
             }
             Self::Concat => {
                 if let (Value::Text(lhs), Value::Text(rhs)) = (lhs, rhs) {
-                    Ok(Value::Text(lhs + &rhs))
+                    Ok(Value::Text(lhs.to_owned() + rhs))
                 } else {
                     Err(ExecutorError::TypeError)
                 }
@@ -129,12 +136,12 @@ impl BinaryOp {
         }
     }
 
-    fn eval_number(self, lhs: Value, rhs: Value) -> ExecutorResult<Value> {
+    fn eval_number(self, lhs: &Value, rhs: &Value) -> ExecutorResult<Value> {
         match (lhs, rhs) {
-            (Value::Integer(lhs), Value::Integer(rhs)) => self.eval_integer(lhs, rhs),
-            (Value::Real(lhs), Value::Real(rhs)) => Ok(self.eval_real(lhs, rhs)),
-            (Value::Real(lhs), Value::Integer(rhs)) => Ok(self.eval_real(lhs, rhs as f64)),
-            (Value::Integer(lhs), Value::Real(rhs)) => Ok(self.eval_real(lhs as f64, rhs)),
+            (Value::Integer(lhs), Value::Integer(rhs)) => self.eval_integer(*lhs, *rhs),
+            (Value::Real(lhs), Value::Real(rhs)) => Ok(self.eval_real(*lhs, *rhs)),
+            (Value::Real(lhs), Value::Integer(rhs)) => Ok(self.eval_real(*lhs, *rhs as f64)),
+            (Value::Integer(lhs), Value::Real(rhs)) => Ok(self.eval_real(*lhs as f64, *rhs)),
             _ => Err(ExecutorError::TypeError),
         }
     }

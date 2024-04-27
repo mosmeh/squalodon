@@ -3,7 +3,10 @@ use super::{
     expression::{ExpressionBinder, TypedExpression},
     ColumnId, Node, PlanNode, Planner, PlannerResult,
 };
-use crate::{parser, planner, Value};
+use crate::{
+    parser::{self, BinaryOp},
+    planner, Value,
+};
 
 pub struct CrossProduct<'a> {
     pub left: Box<PlanNode<'a>>,
@@ -22,6 +25,15 @@ impl Node for CrossProduct<'_> {
 }
 
 pub enum Join<'a> {
+    NestedLoop {
+        left: Box<PlanNode<'a>>,
+        right: Box<PlanNode<'a>>,
+        comparisons: Vec<(
+            CompareOp,
+            planner::Expression<'a, ColumnId>,
+            planner::Expression<'a, ColumnId>,
+        )>,
+    },
     Hash {
         left: Box<PlanNode<'a>>,
         right: Box<PlanNode<'a>>,
@@ -35,6 +47,20 @@ pub enum Join<'a> {
 impl Node for Join<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
         match self {
+            Self::NestedLoop {
+                left,
+                right,
+                comparisons,
+            } => {
+                let mut node = f.node("NestedLoopJoin");
+                let column_map = f.column_map();
+                for (op, left_key, right_key) in comparisons {
+                    let left_key = left_key.display(&column_map);
+                    let right_key = right_key.display(&column_map);
+                    node.field("condition", format!("{left_key} {op} {right_key}"));
+                }
+                node.child(left).child(right);
+            }
             Self::Hash { left, right, keys } => {
                 let mut node = f.node("HashJoin");
                 let column_map = f.column_map();
@@ -50,11 +76,63 @@ impl Node for Join<'_> {
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
         match self {
-            Self::Hash { left, right, .. } => {
+            Self::NestedLoop { left, right, .. } | Self::Hash { left, right, .. } => {
                 left.append_outputs(columns);
                 right.append_outputs(columns);
             }
         }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CompareOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl CompareOp {
+    pub fn from_binary_op(op: BinaryOp) -> Option<Self> {
+        match op {
+            BinaryOp::Eq => Some(Self::Eq),
+            BinaryOp::Ne => Some(Self::Ne),
+            BinaryOp::Lt => Some(Self::Lt),
+            BinaryOp::Le => Some(Self::Le),
+            BinaryOp::Gt => Some(Self::Gt),
+            BinaryOp::Ge => Some(Self::Ge),
+            _ => None,
+        }
+    }
+
+    pub fn to_binary_op(self) -> BinaryOp {
+        match self {
+            Self::Eq => BinaryOp::Eq,
+            Self::Ne => BinaryOp::Ne,
+            Self::Lt => BinaryOp::Lt,
+            Self::Le => BinaryOp::Le,
+            Self::Gt => BinaryOp::Gt,
+            Self::Ge => BinaryOp::Ge,
+        }
+    }
+
+    pub fn flip(self) -> Self {
+        match self {
+            Self::Eq => Self::Eq,
+            Self::Ne => Self::Ne,
+            Self::Lt => Self::Gt,
+            Self::Le => Self::Ge,
+            Self::Gt => Self::Lt,
+            Self::Ge => Self::Le,
+        }
+    }
+}
+
+impl std::fmt::Display for CompareOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        self.to_binary_op().fmt(f)
     }
 }
 

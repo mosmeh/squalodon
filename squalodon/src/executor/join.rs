@@ -1,9 +1,10 @@
 use super::{ConnectionContext, ExecutorNode, ExecutorResult, Node, NodeError, Output};
 use crate::{
     memcomparable::MemcomparableSerde,
-    planner::{self, Expression, Join},
+    parser::BinaryOp,
+    planner::{self, CompareOp, Expression, Join},
     rows::ColumnIndex,
-    Row,
+    Row, Value,
 };
 use std::collections::HashMap;
 
@@ -45,6 +46,99 @@ impl Node for CrossProduct<'_> {
             self.inner_cursor = 0;
         }
     }
+}
+
+pub struct NestedLoopJoin<'a> {
+    ctx: &'a ConnectionContext<'a>,
+    outer_source: Box<ExecutorNode<'a>>,
+    outer_row: Option<JoinRow>,
+    inner_rows: Vec<JoinRow>,
+    inner_cursor: usize,
+    comparisons: Vec<(BinaryOp, Expression<'a, ColumnIndex>)>,
+}
+
+impl<'a> NestedLoopJoin<'a> {
+    pub fn new(
+        ctx: &'a ConnectionContext<'a>,
+        outer_source: ExecutorNode<'a>,
+        inner_source: ExecutorNode<'a>,
+        comparisons: Vec<(
+            CompareOp,
+            Expression<'a, ColumnIndex>,
+            Expression<'a, ColumnIndex>,
+        )>,
+    ) -> ExecutorResult<Self> {
+        Ok(Self {
+            ctx,
+            outer_source: outer_source.into(),
+            outer_row: None,
+            inner_rows: inner_source
+                .map(|row| {
+                    let row = row?;
+                    let keys = comparisons
+                        .iter()
+                        .map(|(_, _, k)| k.eval(ctx, &row))
+                        .collect::<ExecutorResult<_>>()?;
+                    Ok(JoinRow { row, keys })
+                })
+                .collect::<ExecutorResult<_>>()?,
+            inner_cursor: 0,
+            comparisons: comparisons
+                .into_iter()
+                .map(|(op, k, _)| (op.to_binary_op(), k))
+                .collect(),
+        })
+    }
+}
+
+impl Node for NestedLoopJoin<'_> {
+    fn next_row(&mut self) -> Output {
+        if self.inner_rows.is_empty() {
+            return Err(NodeError::EndOfRows);
+        }
+        'outer: loop {
+            let outer_row = match &self.outer_row {
+                Some(row) => row,
+                None => {
+                    let row = self.outer_source.next_row()?;
+                    let keys = self
+                        .comparisons
+                        .iter()
+                        .map(|(_, k)| k.eval(self.ctx, &row))
+                        .collect::<ExecutorResult<_>>()?;
+                    self.outer_row.insert(JoinRow { row, keys })
+                }
+            };
+            if let Some(inner_row) = self.inner_rows.get(self.inner_cursor) {
+                for ((lhs, rhs), (op, _)) in outer_row
+                    .keys
+                    .iter()
+                    .zip(inner_row.keys.iter())
+                    .zip(&self.comparisons)
+                {
+                    match op.eval_const(lhs, rhs)? {
+                        Value::Boolean(true) => (),
+                        Value::Null | Value::Boolean(false) => {
+                            self.inner_cursor += 1;
+                            continue 'outer;
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                let mut row = outer_row.row.0.clone().into_vec();
+                row.extend(inner_row.row.0.iter().cloned());
+                self.inner_cursor += 1;
+                return Ok(Row::new(row));
+            }
+            self.outer_row = None;
+            self.inner_cursor = 0;
+        }
+    }
+}
+
+struct JoinRow {
+    row: Row,
+    keys: Box<[Value]>,
 }
 
 pub struct HashJoin<'a> {
@@ -135,6 +229,30 @@ impl<'a> ExecutorNode<'a> {
 
     pub fn join(ctx: &'a ConnectionContext, plan: Join<'a>) -> ExecutorResult<Self> {
         match plan {
+            Join::NestedLoop {
+                left,
+                right,
+                comparisons,
+            } => {
+                let left_outputs = left.outputs();
+                let right_outputs = right.outputs();
+                let comparisons = comparisons
+                    .into_iter()
+                    .map(|(op, left_key, right_key)| {
+                        (
+                            op,
+                            left_key.into_executable(&left_outputs),
+                            right_key.into_executable(&right_outputs),
+                        )
+                    })
+                    .collect();
+                Ok(Self::NestedLoopJoin(NestedLoopJoin::new(
+                    ctx,
+                    Self::new(ctx, *left)?,
+                    Self::new(ctx, *right)?,
+                    comparisons,
+                )?))
+            }
             Join::Hash { left, right, keys } => {
                 let left_outputs = left.outputs();
                 let right_outputs = right.outputs();

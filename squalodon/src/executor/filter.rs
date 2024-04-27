@@ -2,7 +2,7 @@ use super::{ConnectionContext, ExecutorNode, ExecutorResult, Node, Output};
 use crate::{
     planner::{self, Expression},
     rows::ColumnIndex,
-    ExecutorError, Row, Value,
+    Row, Value,
 };
 
 pub struct Filter<'a> {
@@ -28,7 +28,7 @@ impl Filter<'_> {
             match conjunct.eval(ctx, row)? {
                 Value::Boolean(true) => {}
                 Value::Null | Value::Boolean(false) => return Ok(false),
-                _ => return Err(ExecutorError::TypeError),
+                _ => unreachable!(),
             }
         }
         Ok(true)

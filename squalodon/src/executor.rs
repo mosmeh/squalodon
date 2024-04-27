@@ -17,7 +17,7 @@ use crate::{
 };
 use aggregate::{HashAggregate, UngroupedAggregate};
 use filter::Filter;
-use join::{CrossProduct, HashJoin};
+use join::{CrossProduct, HashJoin, NestedLoopJoin};
 use limit::Limit;
 use mutation::{Delete, Insert, Update};
 use project::Project;
@@ -158,6 +158,7 @@ nodes! {
     Limit<'a>
     TopN
     CrossProduct<'a>
+    NestedLoopJoin<'a>
     HashJoin<'a>
     UngroupedAggregate
     HashAggregate
