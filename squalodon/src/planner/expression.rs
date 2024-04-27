@@ -244,11 +244,11 @@ impl<'a> Expression<'a, ColumnId> {
         self.map_column_ref(|id| id.to_index(columns))
     }
 
-    pub(super) fn into_display<'b>(
-        self,
+    pub(super) fn display<'b>(
+        &self,
         column_map: &'b ColumnMapView,
     ) -> Expression<'a, Cow<'b, str>> {
-        self.map_column_ref(|id| column_map[id].name())
+        self.clone().map_column_ref(|id| column_map[id].name())
     }
 
     fn map_column_ref<T, F>(self, f: F) -> Expression<'a, T>

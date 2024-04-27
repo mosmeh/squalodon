@@ -20,7 +20,7 @@ impl Node for Sort<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
         let mut node = f.node("Sort");
         for order_by in &self.order_by {
-            node.field("key", order_by.clone().into_display(&f.column_map()));
+            node.field("key", order_by.clone().display(&f.column_map()));
         }
         node.child(&self.source);
     }
@@ -40,12 +40,13 @@ pub struct TopN<'a> {
 impl Node for TopN<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
         let mut node = f.node("TopN");
-        node.field("limit", self.limit.clone().into_display(&f.column_map()));
+        let column_map = f.column_map();
+        node.field("limit", self.limit.display(&column_map));
         if let Some(offset) = &self.offset {
-            node.field("offset", offset.clone().into_display(&f.column_map()));
+            node.field("offset", offset.display(&column_map));
         }
         for order_by in &self.order_by {
-            node.field("key", order_by.clone().into_display(&f.column_map()));
+            node.field("key", order_by.display(&column_map));
         }
         node.child(&self.source);
     }
@@ -84,12 +85,9 @@ impl<'a> OrderBy<'a, ColumnId> {
         }
     }
 
-    pub(super) fn into_display<'b>(
-        self,
-        column_map: &'b ColumnMapView,
-    ) -> OrderBy<'a, Cow<'b, str>> {
+    pub(super) fn display<'b>(&self, column_map: &'b ColumnMapView) -> OrderBy<'a, Cow<'b, str>> {
         OrderBy {
-            expr: self.expr.into_display(column_map),
+            expr: self.expr.display(column_map),
             order: self.order,
             null_order: self.null_order,
         }

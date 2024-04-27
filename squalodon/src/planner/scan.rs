@@ -4,7 +4,10 @@ use super::{
 };
 use crate::{
     catalog::{Index, Table, TableFunction},
-    parser, Value,
+    parser,
+    planner::{self, expression::TypedExpression},
+    types::NullableType,
+    PlannerError, Value,
 };
 use std::ops::Bound;
 
@@ -26,6 +29,10 @@ pub enum Scan<'a> {
     Function {
         source: Box<PlanNode<'a>>,
         function: &'a TableFunction,
+        outputs: Vec<ColumnId>,
+    },
+    Expression {
+        rows: Vec<Vec<planner::Expression<'a, ColumnId>>>,
         outputs: Vec<ColumnId>,
     },
 }
@@ -53,6 +60,11 @@ impl Node for Scan<'_> {
                     .field("function", function.name)
                     .child(source);
             }
+            Self::Expression { rows, outputs } => {
+                f.node("ExpressionScan")
+                    .field("columns", outputs.len())
+                    .field("rows", rows.len());
+            }
         }
     }
 
@@ -61,7 +73,8 @@ impl Node for Scan<'_> {
             Self::Seq { outputs, .. }
             | Self::Index { outputs, .. }
             | Self::IndexOnly { outputs, .. }
-            | Self::Function { outputs, .. } => {
+            | Self::Function { outputs, .. }
+            | Self::Expression { outputs, .. } => {
                 columns.extend(outputs.iter());
             }
         }
@@ -120,6 +133,33 @@ impl<'a> PlanNode<'a> {
         Self::Scan(Scan::Seq { table, outputs })
     }
 
+    fn new_expression_scan(
+        column_map: &mut ColumnMap,
+        rows: Vec<Vec<planner::Expression<'a, ColumnId>>>,
+        column_types: Vec<NullableType>,
+    ) -> Self {
+        let outputs = column_types
+            .into_iter()
+            .enumerate()
+            .map(|(i, ty)| column_map.insert(Column::new(format!("column{}", i + 1), ty)))
+            .collect();
+        Self::Scan(Scan::Expression { rows, outputs })
+    }
+
+    pub(super) fn new_empty_row() -> Self {
+        Self::Scan(Scan::Expression {
+            rows: vec![Vec::new()],
+            outputs: Vec::new(),
+        })
+    }
+
+    pub(super) fn new_no_rows(outputs: Vec<ColumnId>) -> Self {
+        Self::Scan(Scan::Expression {
+            rows: Vec::new(),
+            outputs,
+        })
+    }
+
     pub(super) fn function_scan(
         self,
         column_map: &mut ColumnMap,
@@ -137,6 +177,13 @@ impl<'a> PlanNode<'a> {
             source: Box::new(self),
             function,
             outputs,
+        })
+    }
+
+    pub(super) fn into_no_rows(self) -> Self {
+        Self::Scan(Scan::Expression {
+            rows: Vec::new(),
+            outputs: self.outputs(),
         })
     }
 }
@@ -161,5 +208,40 @@ impl<'a> Planner<'a> {
         Ok(PlanNode::new_empty_row()
             .project(&mut column_map, exprs)
             .function_scan(&mut column_map, function))
+    }
+
+    pub fn plan_values(
+        &self,
+        expr_binder: &ExpressionBinder<'_, 'a>,
+        values: parser::Values,
+    ) -> PlannerResult<PlanNode<'a>> {
+        if values.rows.is_empty() {
+            return Ok(PlanNode::new_empty_row());
+        }
+
+        let mut rows = Vec::with_capacity(values.rows.len());
+        let num_columns = values.rows[0].len();
+        let mut column_types = vec![NullableType::Null; num_columns];
+        for row in values.rows {
+            assert_eq!(row.len(), num_columns);
+            let mut exprs = Vec::with_capacity(num_columns);
+            for (expr, column_type) in row.into_iter().zip(column_types.iter_mut()) {
+                let TypedExpression { expr, ty } = expr_binder.bind_without_source(expr)?;
+                if !ty.is_compatible_with(*column_type) {
+                    return Err(PlannerError::TypeError);
+                }
+                if matches!(column_type, NullableType::Null) {
+                    *column_type = ty;
+                }
+                exprs.push(expr);
+            }
+            rows.push(exprs);
+        }
+
+        Ok(PlanNode::new_expression_scan(
+            &mut self.column_map(),
+            rows,
+            column_types,
+        ))
     }
 }

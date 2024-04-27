@@ -39,8 +39,8 @@ impl Node for Join<'_> {
                 let mut node = f.node("HashJoin");
                 let column_map = f.column_map();
                 for (left_key, right_key) in keys {
-                    let left_key = left_key.clone().into_display(&column_map);
-                    let right_key = right_key.clone().into_display(&column_map);
+                    let left_key = left_key.display(&column_map);
+                    let right_key = right_key.display(&column_map);
                     node.field("condition", format!("{left_key} = {right_key}"));
                 }
                 node.child(left).child(right);

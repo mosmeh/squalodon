@@ -19,7 +19,7 @@ impl Node for Filter<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
         let mut node = f.node("Filter");
         for conjunct in &self.conjuncts {
-            node.field("filter", conjunct.clone().into_display(&f.column_map()));
+            node.field("filter", conjunct.display(&f.column_map()));
         }
         node.child(&self.source);
     }

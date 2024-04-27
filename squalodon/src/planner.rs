@@ -5,30 +5,31 @@ mod explain;
 mod expression;
 mod filter;
 mod join;
+mod limit;
 mod mutation;
+mod project;
 mod query;
 mod scan;
 mod sort;
+mod union;
 
 pub use aggregate::{Aggregate, AggregateOp, ApplyAggregateOp};
 pub use column::{Column, ColumnId};
-pub use ddl::{Reindex, Truncate};
+pub use ddl::{CreateIndex, CreateTable, DropObject, Reindex, Truncate};
 pub use expression::{CaseBranch, Expression};
 pub use filter::Filter;
 pub use join::{CrossProduct, Join};
+pub use limit::Limit;
 pub use mutation::{Delete, Insert, Update};
-pub use query::{Limit, Project, Union, Values};
+pub use project::Project;
 pub use scan::Scan;
 pub use sort::{OrderBy, Sort, TopN};
+pub use union::Union;
 
 use crate::{
-    connection::ConnectionContext,
-    parser,
-    types::{Params, Type},
-    CatalogError, StorageError, Value,
+    connection::ConnectionContext, parser, types::Params, CatalogError, StorageError, Value,
 };
 use column::{ColumnMap, ColumnRef};
-use ddl::{CreateIndex, CreateTable, DropObject};
 use explain::{Explain, ExplainFormatter};
 use expression::{ExpressionBinder, TypedExpression};
 use std::{cell::RefCell, num::NonZeroUsize, rc::Rc};
@@ -147,7 +148,6 @@ nodes! {
     Drop: DropObject
     Truncate: Truncate<'a>
     Reindex: Reindex<'a>
-    Values: Values<'a>
     Scan: Scan<'a>
     Project: Project<'a>
     Filter: Filter<'a>
@@ -204,19 +204,11 @@ impl<'a> PlanNode<'a> {
     }
 
     fn produces_no_rows(&self) -> bool {
-        if let Self::Values(Values { rows, .. }) = self {
+        if let Self::Scan(Scan::Expression { rows, .. }) = self {
             rows.is_empty()
         } else {
             false
         }
-    }
-
-    fn explain(self, planner: &Planner<'a>) -> Self {
-        Self::Explain(Explain {
-            source: Box::new(self),
-            output: planner.column_map().insert(Column::new("plan", Type::Text)),
-            column_map: planner.column_map.clone(),
-        })
     }
 
     fn spool(self) -> Self {
@@ -305,9 +297,5 @@ impl<'a> Planner<'a> {
         let statement = parser.next().unwrap().unwrap();
         assert!(parser.next().is_none());
         self.with_params(params.into_values()).plan(statement)
-    }
-
-    fn plan_explain(&self, statement: parser::Statement) -> PlannerResult<PlanNode<'a>> {
-        Ok(self.plan(statement)?.explain(self))
     }
 }

@@ -1,12 +1,12 @@
 use super::{ExecutorNode, ExecutorResult, IntoOutput, Node, Output};
-use crate::{catalog::Table, Row};
+use crate::{catalog::Table, connection::ConnectionContext, planner, Row};
 
 pub struct Insert {
     row: Option<Row>,
 }
 
 impl Insert {
-    pub fn new(source: ExecutorNode, table: Table) -> ExecutorResult<Self> {
+    fn new(source: ExecutorNode, table: Table) -> ExecutorResult<Self> {
         let mut count = 0;
         for row in source {
             table.insert(&row?)?;
@@ -29,7 +29,7 @@ pub struct Update {
 }
 
 impl Update {
-    pub fn new(source: ExecutorNode, table: Table) -> ExecutorResult<Self> {
+    fn new(source: ExecutorNode, table: Table) -> ExecutorResult<Self> {
         let num_columns = table.columns().len();
         let mut count = 0;
         for row in source {
@@ -56,7 +56,7 @@ pub struct Delete {
 }
 
 impl Delete {
-    pub fn new(source: ExecutorNode, table: Table) -> ExecutorResult<Self> {
+    fn new(source: ExecutorNode, table: Table) -> ExecutorResult<Self> {
         let mut count = 0;
         for row in source {
             table.delete(&row?)?;
@@ -71,5 +71,22 @@ impl Delete {
 impl Node for Delete {
     fn next_row(&mut self) -> Output {
         self.row.take().into_output()
+    }
+}
+
+impl<'a> ExecutorNode<'a> {
+    pub fn insert(ctx: &'a ConnectionContext, plan: planner::Insert<'a>) -> ExecutorResult<Self> {
+        let planner::Insert { source, table, .. } = plan;
+        Ok(Self::Insert(Insert::new(Self::new(ctx, *source)?, table)?))
+    }
+
+    pub fn update(ctx: &'a ConnectionContext, plan: planner::Update<'a>) -> ExecutorResult<Self> {
+        let planner::Update { source, table, .. } = plan;
+        Ok(Self::Update(Update::new(Self::new(ctx, *source)?, table)?))
+    }
+
+    pub fn delete(ctx: &'a ConnectionContext, plan: planner::Delete<'a>) -> ExecutorResult<Self> {
+        let planner::Delete { source, table, .. } = plan;
+        Ok(Self::Delete(Delete::new(Self::new(ctx, *source)?, table)?))
     }
 }

@@ -1,4 +1,5 @@
-use super::{column::ColumnMapView, Column, ColumnId, Node, PlanNode};
+use super::{column::ColumnMapView, Column, ColumnId, Node, PlanNode, Planner, PlannerResult};
+use crate::{parser, Type};
 use std::{cell::RefCell, rc::Rc};
 
 pub struct Explain<'a> {
@@ -18,10 +19,26 @@ impl Node for Explain<'_> {
 }
 
 impl Explain<'_> {
-    pub fn dump(&self) -> Vec<String> {
+    pub fn explain(&self) -> Vec<String> {
         let f = ExplainFormatter::new(self.column_map.borrow().clone());
         self.source.fmt_explain(&f);
         f.finish()
+    }
+}
+
+impl<'a> Planner<'a> {
+    pub fn plan_explain(&self, statement: parser::Statement) -> PlannerResult<PlanNode<'a>> {
+        Ok(self.plan(statement)?.explain(self))
+    }
+}
+
+impl<'a> PlanNode<'a> {
+    pub(super) fn explain(self, planner: &Planner<'a>) -> Self {
+        Self::Explain(Explain {
+            source: Box::new(self),
+            output: planner.column_map().insert(Column::new("plan", Type::Text)),
+            column_map: planner.column_map.clone(),
+        })
     }
 }
 
