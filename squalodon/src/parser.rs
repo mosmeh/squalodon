@@ -43,6 +43,7 @@ pub enum Statement {
     CreateTable(CreateTable),
     CreateIndex(CreateIndex),
     Drop(DropObject),
+    Truncate(String),
     Reindex(Reindex),
     Query(Query),
     Insert(Insert),
@@ -161,6 +162,7 @@ impl<'a> Parser<'a> {
             }
             Token::Create => self.parse_create(),
             Token::Drop => self.parse_drop().map(Statement::Drop),
+            Token::Truncate => self.parse_truncate().map(Statement::Truncate),
             Token::Reindex => self.parse_reindex().map(Statement::Reindex),
             Token::Select | Token::Values | Token::LeftParen => {
                 self.parse_query().map(Statement::Query)

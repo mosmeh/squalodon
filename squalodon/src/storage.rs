@@ -174,8 +174,14 @@ impl<'a> Table<'a> {
     }
 
     pub fn truncate(&self) -> StorageResult<()> {
+        let txn = self.transaction();
         for row in self.scan() {
-            self.delete(&row?)?;
+            let row = row?;
+            let row_key = self.prepare_for_write(&row.0)?;
+            txn.remove(&row_key).ok_or(StorageError::Inconsistent)?;
+        }
+        for index in self.indexes() {
+            index.clear()?;
         }
         Ok(())
     }

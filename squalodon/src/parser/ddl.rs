@@ -180,6 +180,12 @@ impl Parser<'_> {
         })
     }
 
+    pub fn parse_truncate(&mut self) -> ParserResult<String> {
+        self.expect(Token::Truncate)?;
+        self.lexer.consume_if_eq(Token::Table)?;
+        self.expect_identifier()
+    }
+
     pub fn parse_reindex(&mut self) -> ParserResult<Reindex> {
         self.expect(Token::Reindex)?;
         let kind = self.parse_object_kind()?;

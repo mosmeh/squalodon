@@ -196,6 +196,10 @@ impl<'a> ExecutorNode<'a> {
                 }
                 Self::Values(Values::one_empty_row())
             }
+            PlanNode::Truncate(planner::Truncate { table }) => {
+                table.truncate()?;
+                Self::Values(Values::one_empty_row())
+            }
             PlanNode::Reindex(reindex) => {
                 match reindex {
                     planner::Reindex::Table(table) => table.reindex()?,

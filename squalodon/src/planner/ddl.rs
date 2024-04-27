@@ -60,6 +60,18 @@ impl Node for DropObject {
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
 }
 
+pub struct Truncate<'a> {
+    pub table: Table<'a>,
+}
+
+impl Node for Truncate<'_> {
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        f.node("Truncate").field("table", self.table.name());
+    }
+
+    fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
+}
+
 pub enum Reindex<'a> {
     Table(Table<'a>),
     Index(Index<'a>),
@@ -88,6 +100,10 @@ impl<'a> PlanNode<'a> {
 
     fn new_drop(drop_object: parser::DropObject) -> Self {
         Self::Drop(DropObject(drop_object))
+    }
+
+    fn new_truncate(table: Table<'a>) -> Self {
+        Self::Truncate(Truncate { table })
     }
 
     fn new_reindex(reindex: Reindex<'a>) -> Self {
@@ -183,6 +199,11 @@ impl<'a> Planner<'a> {
     #[allow(clippy::unused_self)]
     pub fn plan_drop(&self, drop_object: parser::DropObject) -> PlanNode<'a> {
         PlanNode::new_drop(drop_object)
+    }
+
+    pub fn plan_truncate(&self, table_name: &str) -> PlannerResult<PlanNode<'a>> {
+        let table = self.ctx.catalog().table(table_name)?;
+        Ok(PlanNode::new_truncate(table))
     }
 
     pub fn plan_reindex(&self, reindex: parser::Reindex) -> PlannerResult<PlanNode<'a>> {

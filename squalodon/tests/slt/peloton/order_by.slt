@@ -133,7 +133,7 @@ SELECT (b * -1) AS val FROM test ORDER BY b DESC LIMIT 2;
 -22
 
 statement ok
-DELETE FROM test;
+TRUNCATE TABLE test;
 
 # OrderByWithNullCheck
 

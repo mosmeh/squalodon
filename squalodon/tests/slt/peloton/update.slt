@@ -53,7 +53,7 @@ SELECT salary, bonus FROM employees;
 # UpdateSQLCastTest
 
 statement ok
-DELETE FROM employees;
+TRUNCATE TABLE employees;
 
 statement ok
 INSERT INTO employees VALUES (0, 1, 0.5);
@@ -106,7 +106,7 @@ SELECT b FROM test;
 # MultiTileGroupUpdateSQLTest
 
 statement ok
-DELETE FROM test;
+TRUNCATE TABLE test;
 
 statement ok
 INSERT INTO test VALUES (0, 100);
@@ -130,7 +130,7 @@ SELECT a FROM test;
 # AttributeOrderUpdateSQLTest
 
 statement ok
-DELETE FROM test;
+TRUNCATE TABLE test;
 
 statement ok
 INSERT INTO test VALUES (1, 100);

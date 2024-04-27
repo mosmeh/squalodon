@@ -168,6 +168,7 @@ keywords! {
     Then
     Transaction
     True
+    Truncate
     Union
     Unique
     Update

@@ -55,7 +55,7 @@ CREATE TABLE test8 (
 # InsertOneValue
 
 statement ok
-DELETE FROM test;
+TRUNCATE TABLE test;
 
 statement ok
 INSERT INTO test VALUES
@@ -75,7 +75,7 @@ SELECT * FROM test WHERE a=5;
 # InsertMultipleValues
 
 statement ok
-DELETE FROM test;
+TRUNCATE TABLE test;
 
 statement ok
 INSERT INTO test VALUES
@@ -100,7 +100,7 @@ SELECT * FROM test WHERE a=7;
 # InsertSpecifyColumns
 
 statement ok
-DELETE FROM test8;
+TRUNCATE TABLE test8;
 
 statement ok
 INSERT INTO test8 (num3, num2, num1) VALUES (99, 8, 111);
@@ -113,7 +113,7 @@ SELECT * FROM test8 WHERE num2=8;
 # InsertIntoSelectSimple
 
 statement ok
-DELETE FROM test;
+TRUNCATE TABLE test;
 
 statement ok
 INSERT INTO test VALUES
@@ -123,7 +123,7 @@ INSERT INTO test VALUES
     (4, 00, 555);
 
 statement ok
-DELETE FROM test2;
+TRUNCATE TABLE test2;
 
 statement ok
 INSERT INTO test2 VALUES
@@ -159,7 +159,7 @@ SELECT * FROM test2 WHERE a=11;
 # InsertIntoSelectSimpleAllType
 
 statement ok
-DELETE FROM test4;
+TRUNCATE TABLE test4;
 
 statement ok
 INSERT INTO test4 VALUES
@@ -167,7 +167,7 @@ INSERT INTO test4 VALUES
     (11, 12, 13, 14, 15.1, 16.1, '2017-10-11 00:00:00-00', 'B', 'b', '2', 'false');
 
 statement ok
-DELETE FROM test5;
+TRUNCATE TABLE test5;
 
 statement ok
 INSERT INTO test5 SELECT * FROM test4;
@@ -190,7 +190,7 @@ SELECT * FROM test5 WHERE a=11;
 # InsertIntoSelectColumn
 
 statement ok
-DELETE FROM test6;
+TRUNCATE TABLE test6;
 
 statement ok
 INSERT INTO test6 VALUES
@@ -200,7 +200,7 @@ INSERT INTO test6 VALUES
     (4, 00, 555);
 
 statement ok
-DELETE FROM test7;
+TRUNCATE TABLE test7;
 
 statement ok
 INSERT INTO test7 VALUES
@@ -280,7 +280,7 @@ INSERT INTO NonExistentTable VALUES(3);
 # BadInserts
 
 statement ok
-DELETE FROM test8;
+TRUNCATE TABLE test8;
 
 statement error
 INSERT INTO test8 VALUES(1, 2, 3, 4);
