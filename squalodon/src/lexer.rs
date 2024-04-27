@@ -258,10 +258,10 @@ impl<'a> Iterator for Segmenter<'a> {
     type Item = Result<Segment<'a>, (LexerError, &'a str)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let prev_pos = self.inner.pos();
+        let prev_byte_pos = self.inner.byte_pos();
         let token = match self.inner.consume_token() {
             Ok(token) => token,
-            Err(e) => return Some(Err((e, &self.sql[prev_pos..]))),
+            Err(e) => return Some(Err((e, &self.sql[prev_byte_pos..]))),
         };
         let kind = match token {
             token if token.is_literal() => SegmentKind::Literal,
@@ -273,7 +273,7 @@ impl<'a> Iterator for Segmenter<'a> {
             _ => SegmentKind::Operator,
         };
         Some(Ok(Segment {
-            slice: &self.sql[prev_pos..self.inner.pos()],
+            slice: &self.sql[prev_byte_pos..self.inner.byte_pos()],
             kind,
         }))
     }
@@ -307,7 +307,7 @@ pub enum SegmentKind {
 struct Inner<'a> {
     chars: Chars<'a>,
     peeked: Option<char>,
-    pos: usize,
+    byte_pos: usize,
 }
 
 impl<'a> Inner<'a> {
@@ -315,12 +315,12 @@ impl<'a> Inner<'a> {
         Self {
             chars: s.chars(),
             peeked: None,
-            pos: 0,
+            byte_pos: 0,
         }
     }
 
-    fn pos(&self) -> usize {
-        self.pos
+    fn byte_pos(&self) -> usize {
+        self.byte_pos
     }
 
     fn consume_token(&mut self) -> LexerResult<Token> {
@@ -347,7 +347,7 @@ impl<'a> Inner<'a> {
                 let ident = self.consume_string('"')?;
                 Ok(Token::Identifier(ident))
             }
-            _ if ch.is_alphabetic() => {
+            _ if ch.is_alphanumeric() => {
                 let mut s = self.consume_while(is_valid_identifier_char);
                 Ok(Token::parse_keyword(&s).unwrap_or_else(|| {
                     s.make_ascii_lowercase();
@@ -450,8 +450,8 @@ impl<'a> Inner<'a> {
 
     fn consume(&mut self) -> Option<char> {
         let ch = self.peeked.take().or_else(|| self.chars.next());
-        if ch.is_some() {
-            self.pos += 1;
+        if let Some(ch) = ch {
+            self.byte_pos += ch.len_utf8();
         }
         ch
     }
@@ -492,10 +492,10 @@ impl<'a> Inner<'a> {
 }
 
 pub fn is_valid_identifier_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '$' || ch == '_'
+    ch.is_alphanumeric() || ch == '$' || ch == '_'
 }
 
-pub fn quote(s: &str, quote: char) -> String {
+pub(crate) fn quote(s: &str, quote: char) -> String {
     let mut quoted = String::new();
     quoted.push(quote);
     for ch in s.chars() {
