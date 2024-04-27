@@ -53,7 +53,7 @@ struct Average {
 
 impl Aggregator for Average {
     fn update(&mut self, value: &Value) -> ExecutorResult<()> {
-        if !matches!(value, Value::Null) {
+        if !value.is_null() {
             self.sum.checked_update(value, i64::checked_add, f64::add)?;
             self.count = self.count.checked_add(1).ok_or(ExecutorError::OutOfRange)?;
         }
@@ -74,7 +74,7 @@ struct Count {
 
 impl Aggregator for Count {
     fn update(&mut self, value: &Value) -> ExecutorResult<()> {
-        if !matches!(value, Value::Null) {
+        if !value.is_null() {
             self.count = self.count.checked_add(1).ok_or(ExecutorError::OutOfRange)?;
         }
         Ok(())
@@ -97,7 +97,7 @@ impl Default for Max {
 
 impl Aggregator for Max {
     fn update(&mut self, value: &Value) -> ExecutorResult<()> {
-        if !matches!(value, Value::Null) && (matches!(self.max, Value::Null) || value > &self.max) {
+        if !value.is_null() && (self.max.is_null() || value > &self.max) {
             self.max = value.clone();
         }
         Ok(())
@@ -120,7 +120,7 @@ impl Default for Min {
 
 impl Aggregator for Min {
     fn update(&mut self, value: &Value) -> ExecutorResult<()> {
-        if !matches!(value, Value::Null) && (matches!(self.min, Value::Null) || value < &self.min) {
+        if !value.is_null() && (self.min.is_null() || value < &self.min) {
             self.min = value.clone();
         }
         Ok(())
@@ -138,7 +138,7 @@ struct Sum {
 
 impl Aggregator for Sum {
     fn update(&mut self, value: &Value) -> ExecutorResult<()> {
-        if !matches!(value, Value::Null) {
+        if !value.is_null() {
             self.sum.checked_update(value, i64::checked_add, f64::add)?;
         }
         Ok(())

@@ -230,7 +230,7 @@ impl<'a> Planner<'a> {
                 if !ty.is_compatible_with(*column_type) {
                     return Err(PlannerError::TypeError);
                 }
-                if matches!(column_type, NullableType::Null) {
+                if column_type.is_null() {
                     *column_type = ty;
                 }
                 exprs.push(expr);

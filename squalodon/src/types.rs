@@ -56,6 +56,10 @@ impl std::fmt::Display for NullableType {
 }
 
 impl NullableType {
+    pub fn is_null(self) -> bool {
+        matches!(self, Self::Null)
+    }
+
     pub fn is_compatible_with<T: Into<Self>>(self, other: T) -> bool {
         match (self, other.into()) {
             (Self::Null, _) | (_, Self::Null) => true,
@@ -128,6 +132,10 @@ impl Value {
             Self::Text(_) => Type::Text.into(),
             Self::Blob(_) => Type::Blob.into(),
         }
+    }
+
+    pub(crate) fn is_null(&self) -> bool {
+        matches!(self, Self::Null)
     }
 
     pub(crate) fn cast(&self, ty: Type) -> Option<Self> {

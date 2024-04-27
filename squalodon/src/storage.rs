@@ -205,7 +205,7 @@ impl<'a> Table<'a> {
             if column.is_nullable {
                 continue;
             }
-            if matches!(value, Value::Null) {
+            if value.is_null() {
                 return Err(StorageError::NotNullConstraintViolation(
                     column.name.clone(),
                 ));

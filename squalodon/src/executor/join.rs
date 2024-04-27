@@ -3,7 +3,7 @@ use crate::{
     memcomparable::MemcomparableSerde,
     planner::{self, Expression, Join},
     rows::ColumnIndex,
-    Row, Value,
+    Row,
 };
 use std::collections::HashMap;
 
@@ -70,7 +70,7 @@ impl<'a> HashJoin<'a> {
             let mut key = Vec::new();
             for (_, expr) in &keys {
                 let value = expr.eval(ctx, &row)?;
-                if matches!(value, Value::Null) {
+                if value.is_null() {
                     continue 'row;
                 }
                 serde.serialize_into(&value, &mut key);
@@ -99,7 +99,7 @@ impl Node for HashJoin<'_> {
                     let mut key = Vec::new();
                     for expr in &self.keys {
                         let value = expr.eval(self.ctx, outer_row)?;
-                        if matches!(value, Value::Null) {
+                        if value.is_null() {
                             continue 'outer;
                         }
                         serde.serialize_into(&value, &mut key);

@@ -542,7 +542,7 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
                         },
                     ) = self.bind(plan, branch.condition)?;
                     plan = new_plan;
-                    if matches!(ty, NullableType::Null) {
+                    if ty.is_null() {
                         // This branch never matches.
                         continue;
                     }
@@ -599,8 +599,7 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
                         ty: pattern_ty,
                     },
                 ) = self.bind(plan, *pattern)?;
-                if matches!(expr_ty, NullableType::Null) || matches!(pattern_ty, NullableType::Null)
-                {
+                if expr_ty.is_null() || pattern_ty.is_null() {
                     return Ok((plan, Value::Null.into()));
                 }
                 if !matches!(expr_ty, NullableType::NonNull(Type::Text))
