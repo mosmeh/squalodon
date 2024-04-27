@@ -23,9 +23,6 @@ pub enum CatalogError {
     #[error("Invalid encoding")]
     InvalidEncoding,
 
-    #[error("Catalog is in an inconsistent state")]
-    Inconsistent,
-
     #[error("Storage error: {0}")]
     Storage(#[from] StorageError),
 
@@ -86,7 +83,7 @@ impl ObjectId {
 
 #[derive(Clone)]
 pub struct Table<'a> {
-    txn: &'a dyn Transaction,
+    catalog: CatalogRef<'a>,
     def: TableDef,
     index_defs: Vec<IndexDef>,
 }
@@ -108,10 +105,6 @@ impl<'a> Table<'a> {
         &self.def.primary_keys
     }
 
-    pub fn constraints(&self) -> &[Constraint] {
-        &self.def.constraints
-    }
-
     pub fn indexes(&self) -> impl Iterator<Item = Index<'a>> + '_ {
         self.index_defs.iter().map(|def| Index {
             def: def.clone(),
@@ -119,8 +112,61 @@ impl<'a> Table<'a> {
         })
     }
 
+    pub fn create_index(
+        &mut self,
+        name: String,
+        column_indexes: &[ColumnIndex],
+        is_unique: bool,
+    ) -> CatalogResult<ObjectId> {
+        assert!(!column_indexes.is_empty());
+
+        let id = self.catalog.generate_object_id()?;
+        let index_def = IndexDef {
+            id,
+            name: name.clone(),
+            table_name: self.name().to_owned(),
+            column_indexes: column_indexes.to_owned(),
+            is_unique,
+        };
+        self.catalog
+            .insert_entry(CatalogEntryKind::Index, &name, &index_def)?;
+
+        assert!(column_indexes.iter().all(|i| i.0 < self.columns().len()));
+        self.def.index_names.push(name);
+        self.catalog
+            .put_entry(CatalogEntryKind::Table, self.name(), &self.def)?;
+
+        let index = Index {
+            def: index_def,
+            table: self.clone(),
+        };
+        index.reindex()?;
+        Ok(id)
+    }
+
+    pub fn drop_index(&mut self, name: &str) -> CatalogResult<()> {
+        self.def.index_names.retain(|n| *n != name);
+        self.catalog
+            .put_entry(CatalogEntryKind::Table, self.name(), &self.def)?;
+
+        self.catalog.index(name)?.clear()?;
+        self.catalog.remove_entry(CatalogEntryKind::Index, name)
+    }
+
+    pub fn drop_it(mut self) -> CatalogResult<()> {
+        let index_names = self.def.index_names.clone();
+        for name in index_names {
+            self.drop_index(&name)?;
+        }
+        self.def.index_names.clear();
+
+        self.truncate()?;
+        self.catalog
+            .remove_entry(CatalogEntryKind::Table, self.name())
+    }
+
     pub fn transaction(&self) -> &'a dyn Transaction {
-        self.txn
+        self.catalog.txn
     }
 }
 
@@ -130,7 +176,6 @@ struct TableDef {
     name: String,
     columns: Vec<Column>,
     primary_keys: Vec<ColumnIndex>,
-    constraints: Vec<Constraint>,
     index_names: Vec<String>,
 }
 
@@ -138,12 +183,8 @@ struct TableDef {
 pub struct Column {
     pub name: String,
     pub ty: Type,
+    pub is_nullable: bool,
     pub default_value: Option<Expression>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum Constraint {
-    NotNull(ColumnIndex),
 }
 
 #[derive(Clone)]
@@ -275,6 +316,7 @@ impl Catalog {
     }
 }
 
+#[derive(Clone)]
 pub struct CatalogRef<'a> {
     catalog: &'a Catalog,
     txn: &'a dyn Transaction,
@@ -365,7 +407,7 @@ impl<'a> CatalogRef<'a> {
             index_defs.push(self.entry(CatalogEntryKind::Index, index_name)?);
         }
         Ok(Table {
-            txn: self.txn,
+            catalog: self.clone(),
             def,
             index_defs,
         })
@@ -376,7 +418,6 @@ impl<'a> CatalogRef<'a> {
         name: &str,
         columns: &[Column],
         primary_keys: &[ColumnIndex],
-        constraints: &[Constraint],
     ) -> CatalogResult<ObjectId> {
         let id = self.generate_object_id()?;
         let table_def = TableDef {
@@ -384,77 +425,16 @@ impl<'a> CatalogRef<'a> {
             name: name.to_owned(),
             columns: columns.to_owned(),
             primary_keys: primary_keys.to_owned(),
-            constraints: constraints.to_owned(),
             index_names: Vec::new(),
         };
         self.insert_entry(CatalogEntryKind::Table, name, &table_def)?;
         Ok(id)
     }
 
-    pub fn drop_table(&self, name: &str) -> CatalogResult<()> {
-        let table = self.table(name)?;
-        table.truncate()?;
-        for index in table.indexes() {
-            self.drop_index(index.name())?;
-        }
-        self.remove_entry(CatalogEntryKind::Table, name)
-    }
-
     pub fn index(&self, name: &str) -> CatalogResult<Index<'a>> {
         let def: IndexDef = self.entry(CatalogEntryKind::Index, name)?;
         let table = self.table(&def.table_name)?;
         Ok(Index { def, table })
-    }
-
-    pub fn create_index(
-        &self,
-        name: String,
-        table_name: String,
-        column_indexes: &[ColumnIndex],
-        is_unique: bool,
-    ) -> CatalogResult<ObjectId> {
-        assert!(!column_indexes.is_empty());
-
-        let id = self.generate_object_id()?;
-        let index_def = IndexDef {
-            id,
-            name: name.clone(),
-            table_name: table_name.clone(),
-            column_indexes: column_indexes.to_owned(),
-            is_unique,
-        };
-        self.insert_entry(CatalogEntryKind::Index, &name, &index_def)?;
-
-        let mut table_def: TableDef = self.entry(CatalogEntryKind::Table, &table_name)?;
-        assert!(column_indexes.iter().all(|i| i.0 < table_def.columns.len()));
-        table_def.index_names.push(name);
-        self.put_entry(CatalogEntryKind::Table, &table_name, &table_def)?;
-
-        // Now the catalog is ready but the index is empty.
-
-        let table = self.read_table(table_def.clone())?;
-        let index = table
-            .indexes()
-            .find(|i| i.id() == id)
-            .ok_or(CatalogError::Inconsistent)?;
-        index.reindex()?;
-
-        Ok(id)
-    }
-
-    pub fn drop_index(&self, name: &str) -> CatalogResult<()> {
-        let index_def: IndexDef = self.entry(CatalogEntryKind::Index, name)?;
-
-        let mut table_def: TableDef = self.entry(CatalogEntryKind::Table, &index_def.table_name)?;
-        table_def.index_names.retain(|n| n != name);
-        self.put_entry(CatalogEntryKind::Table, &index_def.table_name, &table_def)?;
-
-        let prefix = index_def.id.serialize();
-        for (key, _) in self.txn.prefix_scan(prefix) {
-            self.txn.remove(&key).ok_or(CatalogError::Inconsistent)?;
-        }
-
-        self.remove_entry(CatalogEntryKind::Index, name)
     }
 
     pub fn functions(&self) -> impl Iterator<Item = Function> + '_ {

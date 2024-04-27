@@ -180,8 +180,8 @@ impl<'a> ExecutorNode<'a> {
                 Ok(Self::ExpressionScan(ExpressionScan::new(ctx, rows)))
             }
             PlanNode::CreateTable(plan) => Self::create_table(ctx, plan),
-            PlanNode::CreateIndex(plan) => Self::create_index(ctx, plan),
-            PlanNode::Drop(plan) => Self::drop_object(ctx, plan),
+            PlanNode::CreateIndex(plan) => Self::create_index(plan),
+            PlanNode::Drop(plan) => Self::drop_object(plan),
             PlanNode::Truncate(plan) => Self::truncate(plan),
             PlanNode::Reindex(plan) => Self::reindex(plan),
             PlanNode::Scan(plan) => Self::scan(ctx, plan),

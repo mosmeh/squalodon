@@ -1,5 +1,5 @@
 use crate::{
-    catalog::{Constraint, Function, TableFunction},
+    catalog::{Function, TableFunction},
     lexer,
     planner::Column,
     Row, Type,
@@ -10,26 +10,14 @@ pub fn load() -> impl Iterator<Item = TableFunction> {
         TableFunction {
             name: "squalodon_columns",
             fn_ptr: |ctx, _| {
-                #[derive(Clone, Default)]
-                struct ColumnProperties {
-                    is_nullable: bool,
-                    is_primary_key: bool,
-                }
                 let mut rows = Vec::new();
                 for table in ctx.catalog().tables() {
                     let table = table?;
-                    let mut properties = vec![ColumnProperties::default(); table.columns().len()];
-                    for column in table.primary_keys() {
-                        properties[column.0].is_primary_key = true;
+                    let mut is_primary_key = vec![false; table.columns().len()];
+                    for column_index in table.primary_keys() {
+                        is_primary_key[column_index.0] = true;
                     }
-                    for constraint in table.constraints() {
-                        match constraint {
-                            Constraint::NotNull(column) => {
-                                properties[column.0].is_nullable = false;
-                            }
-                        }
-                    }
-                    for (column, properties) in table.columns().iter().zip(properties) {
+                    for (column, is_primary_key) in table.columns().iter().zip(is_primary_key) {
                         let default_value = column
                             .default_value
                             .as_ref()
@@ -39,8 +27,8 @@ pub fn load() -> impl Iterator<Item = TableFunction> {
                             table.name().into(),
                             column.name.clone().into(),
                             column.ty.to_string().into(),
-                            properties.is_nullable.into(),
-                            properties.is_primary_key.into(),
+                            column.is_nullable.into(),
+                            is_primary_key.into(),
                             default_value,
                         ]));
                     }

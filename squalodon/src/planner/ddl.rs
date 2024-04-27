@@ -3,6 +3,7 @@ use crate::{
     catalog::{self, Index, Table},
     parser,
     rows::ColumnIndex,
+    CatalogError,
 };
 use std::collections::HashSet;
 
@@ -11,8 +12,7 @@ pub struct CreateTable {
     pub if_not_exists: bool,
     pub columns: Vec<catalog::Column>,
     pub primary_keys: Vec<ColumnIndex>,
-    pub constraints: Vec<catalog::Constraint>,
-    pub create_indexes: Vec<CreateIndex>,
+    pub constraints: Vec<Constraint>,
 }
 
 impl Node for CreateTable {
@@ -27,20 +27,25 @@ impl Node for CreateTable {
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
 }
 
-pub struct CreateIndex {
+#[derive(PartialEq, Eq, Hash)]
+pub enum Constraint {
+    Unique(Vec<ColumnIndex>),
+}
+
+pub struct CreateIndex<'a> {
     pub name: String,
-    pub table_name: String,
+    pub table: Table<'a>,
     pub column_indexes: Vec<ColumnIndex>,
     pub is_unique: bool,
 }
 
-impl Node for CreateIndex {
+impl Node for CreateIndex<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
         let mut node = f.node("CreateIndex");
         node.field("name", &self.name)
-            .field("table", &self.table_name);
+            .field("table", self.table.name());
         for column_index in &self.column_indexes {
-            node.field("column", column_index);
+            node.field("column", &self.table.columns()[column_index.0].name);
         }
         node.field("unique", self.is_unique);
     }
@@ -48,13 +53,18 @@ impl Node for CreateIndex {
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
 }
 
-pub struct DropObject(pub parser::DropObject);
+pub enum DropObject<'a> {
+    Table(Table<'a>),
+    Index { table: Table<'a>, name: String },
+}
 
-impl Node for DropObject {
+impl Node for DropObject<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
-        f.node("Drop")
-            .field("kind", &self.0.kind)
-            .field("name", &self.0.name);
+        let name = match self {
+            Self::Table(table) => table.name(),
+            Self::Index { name, .. } => name,
+        };
+        f.node("Drop").field("name", name);
     }
 
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
@@ -94,12 +104,12 @@ impl<'a> PlanNode<'a> {
         Self::CreateTable(create_table)
     }
 
-    fn new_create_index(create_index: CreateIndex) -> Self {
+    fn new_create_index(create_index: CreateIndex<'a>) -> Self {
         Self::CreateIndex(create_index)
     }
 
-    fn new_drop(drop_object: parser::DropObject) -> Self {
-        Self::Drop(DropObject(drop_object))
+    fn new_drop(drop_object: DropObject<'a>) -> Self {
+        Self::Drop(drop_object)
     }
 
     fn new_truncate(table: Table<'a>) -> Self {
@@ -124,45 +134,23 @@ impl<'a> Planner<'a> {
             }
         }
         let mut primary_keys = None;
-        let mut bound_constraints = HashSet::new();
-        let mut create_indexes = Vec::new();
+        let mut constraints = HashSet::new();
+        let mut columns = create_table.columns.clone();
         for constraint in create_table.constraints {
             match constraint {
                 parser::Constraint::PrimaryKey(column_names) => {
                     if primary_keys.is_some() {
                         return Err(PlannerError::MultiplePrimaryKeys);
                     }
-                    let column_indexes =
-                        column_indexes_from_names(&create_table.columns, &column_names)?;
-                    for column_index in &column_indexes {
-                        bound_constraints.insert(catalog::Constraint::NotNull(*column_index));
-                    }
+                    let column_indexes = column_indexes_from_names(&columns, &column_names)?;
                     primary_keys = Some(column_indexes.clone());
-                }
-                parser::Constraint::NotNull(column_name) => {
-                    let index = create_table
-                        .columns
-                        .iter()
-                        .position(|def| def.name == column_name)
-                        .ok_or_else(|| PlannerError::UnknownColumn(column_name.clone()))?;
-                    bound_constraints.insert(catalog::Constraint::NotNull(ColumnIndex(index)));
+                    for column_index in &column_indexes {
+                        columns[column_index.0].is_nullable = false;
+                    }
                 }
                 parser::Constraint::Unique(column_names) => {
-                    let column_indexes =
-                        column_indexes_from_names(&create_table.columns, &column_names)?;
-                    let mut name = create_table.name.clone();
-                    name.push('_');
-                    for column_name in column_names {
-                        name.push_str(&column_name);
-                        name.push('_');
-                    }
-                    name.push_str("key");
-                    create_indexes.push(CreateIndex {
-                        name,
-                        table_name: create_table.name.clone(),
-                        column_indexes,
-                        is_unique: true,
-                    });
+                    let column_indexes = column_indexes_from_names(&columns, &column_names)?;
+                    constraints.insert(Constraint::Unique(column_indexes));
                 }
             }
         }
@@ -172,10 +160,9 @@ impl<'a> Planner<'a> {
         let create_table = CreateTable {
             name: create_table.name,
             if_not_exists: create_table.if_not_exists,
-            columns: create_table.columns,
+            columns,
             primary_keys: primary_keys.unwrap(),
-            constraints: bound_constraints.into_iter().collect(),
-            create_indexes,
+            constraints: constraints.into_iter().collect(),
         };
         Ok(PlanNode::new_create_table(create_table))
     }
@@ -189,16 +176,33 @@ impl<'a> Planner<'a> {
             column_indexes_from_names(table.columns(), &create_index.column_names)?;
         let create_index = CreateIndex {
             name: create_index.name,
-            table_name: table.name().to_owned(),
+            table,
             column_indexes,
             is_unique: create_index.is_unique,
         };
         Ok(PlanNode::new_create_index(create_index))
     }
 
-    #[allow(clippy::unused_self)]
-    pub fn plan_drop(&self, drop_object: parser::DropObject) -> PlanNode<'a> {
-        PlanNode::new_drop(drop_object)
+    pub fn plan_drop(&self, drop_object: parser::DropObject) -> PlannerResult<PlanNode<'a>> {
+        let catalog = self.ctx.catalog();
+        let result = match drop_object.kind {
+            parser::ObjectKind::Table => catalog.table(&drop_object.name).map(DropObject::Table),
+            parser::ObjectKind::Index => {
+                catalog
+                    .index(&drop_object.name)
+                    .map(|index| DropObject::Index {
+                        table: index.table().clone(),
+                        name: index.name().to_owned(),
+                    })
+            }
+        };
+        match result {
+            Ok(drop_object) => Ok(PlanNode::new_drop(drop_object)),
+            Err(CatalogError::UnknownEntry(_, _)) if drop_object.if_exists => {
+                Ok(PlanNode::new_empty_row())
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     pub fn plan_truncate(&self, table_name: &str) -> PlannerResult<PlanNode<'a>> {

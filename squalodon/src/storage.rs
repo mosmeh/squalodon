@@ -5,7 +5,7 @@ pub use blackhole::Blackhole;
 pub use memory::Memory;
 
 use crate::{
-    catalog::{Constraint, Index, ObjectId, Table},
+    catalog::{Index, ObjectId, Table},
     memcomparable::MemcomparableSerde,
     Row, Value,
 };
@@ -201,15 +201,14 @@ impl<'a> Table<'a> {
         for (value, column) in row.iter().zip(self.columns()) {
             assert!(value.ty().is_compatible_with(column.ty));
         }
-        for constraint in self.constraints() {
-            match constraint {
-                Constraint::NotNull(column) => {
-                    if matches!(row[column.0], Value::Null) {
-                        return Err(StorageError::NotNullConstraintViolation(
-                            self.columns()[column.0].name.clone(),
-                        ));
-                    }
-                }
+        for (value, column) in row.iter().zip(self.columns()) {
+            if column.is_nullable {
+                continue;
+            }
+            if matches!(value, Value::Null) {
+                return Err(StorageError::NotNullConstraintViolation(
+                    column.name.clone(),
+                ));
             }
         }
 
@@ -348,7 +347,7 @@ impl<'a> Index<'a> {
         Ok(())
     }
 
-    fn clear(&self) -> StorageResult<()> {
+    pub fn clear(&self) -> StorageResult<()> {
         let prefix = self.id().serialize();
         let txn = self.transaction();
         for (k, _) in txn.prefix_scan(prefix) {

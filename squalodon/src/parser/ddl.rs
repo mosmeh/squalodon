@@ -12,7 +12,6 @@ pub struct CreateTable {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Constraint {
     PrimaryKey(Vec<String>),
-    NotNull(String),
     Unique(Vec<String>),
 }
 
@@ -97,6 +96,7 @@ impl Parser<'_> {
                 Token::Identifier(_) => {
                     let name = self.expect_identifier()?;
                     let ty = self.parse_type()?;
+                    let mut is_nullable = true;
                     let mut default_value = None;
                     loop {
                         match self.lexer.peek()? {
@@ -112,7 +112,7 @@ impl Parser<'_> {
                             Token::Not => {
                                 self.lexer.consume()?;
                                 self.expect(Token::Null)?;
-                                constraints.push(Constraint::NotNull(name.clone()));
+                                is_nullable = false;
                             }
                             Token::Unique => {
                                 self.lexer.consume()?;
@@ -128,6 +128,7 @@ impl Parser<'_> {
                     columns.push(Column {
                         name,
                         ty,
+                        is_nullable,
                         default_value,
                     });
                 }

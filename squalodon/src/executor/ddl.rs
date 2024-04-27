@@ -1,8 +1,7 @@
 use super::{ExecutorNode, ExecutorResult};
 use crate::{
     connection::ConnectionContext,
-    parser::ObjectKind,
-    planner::{CreateIndex, CreateTable, DropObject, Reindex, Truncate},
+    planner::{Constraint, CreateIndex, CreateTable, DropObject, Reindex, Truncate},
     CatalogError,
 };
 
@@ -14,49 +13,48 @@ impl ExecutorNode<'_> {
             columns,
             primary_keys,
             constraints,
-            create_indexes,
         } = plan;
-        let result = ctx
-            .catalog()
-            .create_table(&name, &columns, &primary_keys, &constraints);
+        let result = ctx.catalog().create_table(&name, &columns, &primary_keys);
         match result {
             Ok(_) => (),
-            Err(CatalogError::DuplicateEntry(_, _)) if if_not_exists => (),
+            Err(CatalogError::DuplicateEntry(_, _)) if if_not_exists => {
+                return Ok(Self::empty_result())
+            }
             Err(e) => return Err(e.into()),
         }
-        for create_index in create_indexes {
-            ctx.catalog().create_index(
-                create_index.name,
-                create_index.table_name,
-                &create_index.column_indexes,
-                create_index.is_unique,
-            )?;
+        let mut table = ctx.catalog().table(&name)?;
+        for constraint in constraints {
+            match constraint {
+                Constraint::Unique(column_indexes) => {
+                    let mut name = name.clone();
+                    name.push('_');
+                    for column_index in &column_indexes {
+                        name.push_str(&columns[column_index.0].name);
+                        name.push('_');
+                    }
+                    name.push_str("key");
+                    table.create_index(name, &column_indexes, true)?;
+                }
+            }
         }
         Ok(Self::empty_result())
     }
 
-    pub fn create_index(ctx: &ConnectionContext, plan: CreateIndex) -> ExecutorResult<Self> {
+    pub fn create_index(plan: CreateIndex) -> ExecutorResult<Self> {
         let CreateIndex {
             name,
-            table_name,
+            mut table,
             column_indexes,
             is_unique,
         } = plan;
-        ctx.catalog()
-            .create_index(name, table_name, &column_indexes, is_unique)?;
+        table.create_index(name, &column_indexes, is_unique)?;
         Ok(Self::empty_result())
     }
 
-    pub fn drop_object(ctx: &ConnectionContext, plan: DropObject) -> ExecutorResult<Self> {
-        let catalog = ctx.catalog();
-        let result = match plan.0.kind {
-            ObjectKind::Table => catalog.drop_table(&plan.0.name),
-            ObjectKind::Index => catalog.drop_index(&plan.0.name),
-        };
-        match result {
-            Ok(()) => (),
-            Err(CatalogError::UnknownEntry(_, _)) if plan.0.if_exists => (),
-            Err(e) => return Err(e.into()),
+    pub fn drop_object(plan: DropObject) -> ExecutorResult<Self> {
+        match plan {
+            DropObject::Table(table) => table.drop_it()?,
+            DropObject::Index { mut table, name } => table.drop_index(&name)?,
         }
         Ok(Self::empty_result())
     }
