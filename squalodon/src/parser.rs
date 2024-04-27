@@ -3,7 +3,7 @@ mod expression;
 mod mutation;
 mod query;
 
-pub use ddl::{Constraint, CreateIndex, CreateTable, DropObject, ObjectKind};
+pub use ddl::{Constraint, CreateIndex, CreateTable, DropObject, ObjectKind, Reindex};
 pub use expression::{BinaryOp, ColumnRef, Expression, FunctionArgs, FunctionCall, UnaryOp};
 pub use mutation::{Delete, Insert, Update};
 pub use query::{
@@ -43,6 +43,7 @@ pub enum Statement {
     CreateTable(CreateTable),
     CreateIndex(CreateIndex),
     Drop(DropObject),
+    Reindex(Reindex),
     Query(Query),
     Insert(Insert),
     Update(Update),
@@ -160,6 +161,7 @@ impl<'a> Parser<'a> {
             }
             Token::Create => self.parse_create(),
             Token::Drop => self.parse_drop().map(Statement::Drop),
+            Token::Reindex => self.parse_reindex().map(Statement::Reindex),
             Token::Select | Token::Values | Token::LeftParen => {
                 self.parse_query().map(Statement::Query)
             }

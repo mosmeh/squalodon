@@ -180,6 +180,13 @@ impl<'a> Table<'a> {
         Ok(())
     }
 
+    pub fn reindex(&self) -> StorageResult<()> {
+        for index in self.indexes() {
+            index.reindex()?;
+        }
+        Ok(())
+    }
+
     /// Performs integrity checks before writing a row to the storage.
     ///
     /// Returns the serialized row key if the row passes the checks.

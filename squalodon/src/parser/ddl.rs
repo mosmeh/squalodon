@@ -32,6 +32,12 @@ pub struct DropObject {
 }
 
 #[derive(Debug, Clone)]
+pub struct Reindex {
+    pub name: String,
+    pub kind: ObjectKind,
+}
+
+#[derive(Debug, Clone)]
 pub enum ObjectKind {
     Table,
     Index,
@@ -159,13 +165,7 @@ impl Parser<'_> {
 
     pub fn parse_drop(&mut self) -> ParserResult<DropObject> {
         self.expect(Token::Drop)?;
-        let kind = if self.lexer.consume_if_eq(Token::Table)? {
-            ObjectKind::Table
-        } else if self.lexer.consume_if_eq(Token::Index)? {
-            ObjectKind::Index
-        } else {
-            return Err(unexpected(self.lexer.peek()?));
-        };
+        let kind = self.parse_object_kind()?;
         let if_exists = self
             .lexer
             .consume_if_eq(Token::If)?
@@ -178,5 +178,22 @@ impl Parser<'_> {
             kind,
             if_exists,
         })
+    }
+
+    pub fn parse_reindex(&mut self) -> ParserResult<Reindex> {
+        self.expect(Token::Reindex)?;
+        let kind = self.parse_object_kind()?;
+        let name = self.expect_identifier()?;
+        Ok(Reindex { name, kind })
+    }
+
+    fn parse_object_kind(&mut self) -> ParserResult<ObjectKind> {
+        if self.lexer.consume_if_eq(Token::Table)? {
+            Ok(ObjectKind::Table)
+        } else if self.lexer.consume_if_eq(Token::Index)? {
+            Ok(ObjectKind::Index)
+        } else {
+            Err(unexpected(self.lexer.peek()?))
+        }
     }
 }

@@ -156,6 +156,7 @@ keywords! {
     Prepare
     Primary
     Real
+    Reindex
     Rollback
     Select
     Set

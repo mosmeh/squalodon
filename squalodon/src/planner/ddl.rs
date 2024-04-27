@@ -1,5 +1,9 @@
 use super::{ColumnId, ExplainFormatter, Node, PlanNode, Planner, PlannerError, PlannerResult};
-use crate::{catalog, parser, rows::ColumnIndex};
+use crate::{
+    catalog::{self, Index, Table},
+    parser,
+    rows::ColumnIndex,
+};
 use std::collections::HashSet;
 
 pub struct CreateTable {
@@ -56,7 +60,24 @@ impl Node for DropObject {
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
 }
 
-impl PlanNode<'_> {
+pub enum Reindex<'a> {
+    Table(Table<'a>),
+    Index(Index<'a>),
+}
+
+impl Node for Reindex<'_> {
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        let mut node = f.node("Reindex");
+        match self {
+            Self::Table(table) => node.field("table", table.name()),
+            Self::Index(index) => node.field("index", index.name()),
+        };
+    }
+
+    fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
+}
+
+impl<'a> PlanNode<'a> {
     fn new_create_table(create_table: CreateTable) -> Self {
         Self::CreateTable(create_table)
     }
@@ -67,6 +88,10 @@ impl PlanNode<'_> {
 
     fn new_drop(drop_object: parser::DropObject) -> Self {
         Self::Drop(DropObject(drop_object))
+    }
+
+    fn new_reindex(reindex: Reindex<'a>) -> Self {
+        Self::Reindex(reindex)
     }
 }
 
@@ -139,13 +164,6 @@ impl<'a> Planner<'a> {
         Ok(PlanNode::new_create_table(create_table))
     }
 
-    #[allow(clippy::unused_self)]
-    pub fn plan_drop(&self, drop_object: parser::DropObject) -> PlanNode<'a> {
-        PlanNode::new_drop(drop_object)
-    }
-}
-
-impl<'a> Planner<'a> {
     pub fn plan_create_index(
         &self,
         create_index: parser::CreateIndex,
@@ -160,6 +178,26 @@ impl<'a> Planner<'a> {
             is_unique: create_index.is_unique,
         };
         Ok(PlanNode::new_create_index(create_index))
+    }
+
+    #[allow(clippy::unused_self)]
+    pub fn plan_drop(&self, drop_object: parser::DropObject) -> PlanNode<'a> {
+        PlanNode::new_drop(drop_object)
+    }
+
+    pub fn plan_reindex(&self, reindex: parser::Reindex) -> PlannerResult<PlanNode<'a>> {
+        let catalog = self.ctx.catalog();
+        let reindex = match reindex.kind {
+            parser::ObjectKind::Table => {
+                let table = catalog.table(&reindex.name)?;
+                Reindex::Table(table)
+            }
+            parser::ObjectKind::Index => {
+                let index = catalog.index(&reindex.name)?;
+                Reindex::Index(index)
+            }
+        };
+        Ok(PlanNode::new_reindex(reindex))
     }
 }
 

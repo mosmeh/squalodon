@@ -400,6 +400,12 @@ impl<'a> CatalogRef<'a> {
         self.remove_entry(CatalogEntryKind::Table, name)
     }
 
+    pub fn index(&self, name: &str) -> CatalogResult<Index<'a>> {
+        let def: IndexDef = self.entry(CatalogEntryKind::Index, name)?;
+        let table = self.table(&def.table_name)?;
+        Ok(Index { def, table })
+    }
+
     pub fn create_index(
         &self,
         name: String,

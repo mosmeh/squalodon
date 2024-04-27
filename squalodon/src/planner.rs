@@ -11,6 +11,7 @@ mod sort;
 
 pub use aggregate::{Aggregate, AggregateOp, ApplyAggregateOp};
 pub use column::{Column, ColumnId};
+pub use ddl::Reindex;
 pub use expression::{CaseBranch, Expression};
 pub use filter::Filter;
 pub use mutation::{Delete, Insert, Update};
@@ -120,6 +121,7 @@ pub enum PlanNode<'a> {
     CreateTable(CreateTable),
     CreateIndex(CreateIndex),
     Drop(DropObject),
+    Reindex(Reindex<'a>),
     Values(Values<'a>),
     Scan(Scan<'a>),
     Project(Project<'a>),
@@ -205,6 +207,7 @@ impl Node for PlanNode<'_> {
             Self::CreateTable(n) => n.fmt_explain(f),
             Self::CreateIndex(n) => n.fmt_explain(f),
             Self::Drop(n) => n.fmt_explain(f),
+            Self::Reindex(n) => n.fmt_explain(f),
             Self::Values(n) => n.fmt_explain(f),
             Self::Scan(n) => n.fmt_explain(f),
             Self::Project(n) => n.fmt_explain(f),
@@ -228,6 +231,7 @@ impl Node for PlanNode<'_> {
             Self::CreateTable(n) => n.append_outputs(columns),
             Self::CreateIndex(n) => n.append_outputs(columns),
             Self::Drop(n) => n.append_outputs(columns),
+            Self::Reindex(n) => n.append_outputs(columns),
             Self::Values(n) => n.append_outputs(columns),
             Self::Scan(n) => n.append_outputs(columns),
             Self::Project(n) => n.append_outputs(columns),
@@ -311,6 +315,7 @@ impl<'a> Planner<'a> {
             parser::Statement::CreateTable(create_table) => self.plan_create_table(create_table),
             parser::Statement::CreateIndex(create_index) => self.plan_create_index(create_index),
             parser::Statement::Drop(drop_object) => Ok(self.plan_drop(drop_object)),
+            parser::Statement::Reindex(reindex) => self.plan_reindex(reindex),
             parser::Statement::Query(query) => self.plan_query(query),
             parser::Statement::Insert(insert) => self.plan_insert(insert),
             parser::Statement::Update(update) => self.plan_update(update),

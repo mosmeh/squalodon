@@ -196,6 +196,13 @@ impl<'a> ExecutorNode<'a> {
                 }
                 Self::Values(Values::one_empty_row())
             }
+            PlanNode::Reindex(reindex) => {
+                match reindex {
+                    planner::Reindex::Table(table) => table.reindex()?,
+                    planner::Reindex::Index(index) => index.reindex()?,
+                }
+                Self::Values(Values::one_empty_row())
+            }
             PlanNode::Values(planner::Values { rows, .. }) => {
                 let rows = rows
                     .into_iter()
