@@ -4,6 +4,7 @@ mod ddl;
 mod explain;
 mod expression;
 mod filter;
+mod join;
 mod mutation;
 mod query;
 mod scan;
@@ -14,8 +15,9 @@ pub use column::{Column, ColumnId};
 pub use ddl::{Reindex, Truncate};
 pub use expression::{CaseBranch, Expression};
 pub use filter::Filter;
+pub use join::{CrossProduct, Join};
 pub use mutation::{Delete, Insert, Update};
-pub use query::{CrossProduct, Limit, Project, Union, Values};
+pub use query::{Limit, Project, Union, Values};
 pub use scan::Scan;
 pub use sort::{OrderBy, Sort, TopN};
 
@@ -116,27 +118,50 @@ trait Node {
     fn append_outputs(&self, columns: &mut Vec<ColumnId>);
 }
 
-pub enum PlanNode<'a> {
-    Explain(Explain<'a>),
-    CreateTable(CreateTable),
-    CreateIndex(CreateIndex),
-    Drop(DropObject),
-    Truncate(Truncate<'a>),
-    Reindex(Reindex<'a>),
-    Values(Values<'a>),
-    Scan(Scan<'a>),
-    Project(Project<'a>),
-    Filter(Filter<'a>),
-    Sort(Sort<'a>),
-    Limit(Limit<'a>),
-    TopN(TopN<'a>),
-    CrossProduct(CrossProduct<'a>),
-    Aggregate(Aggregate<'a>),
-    Union(Union<'a>),
-    Spool(Spool<'a>),
-    Insert(Insert<'a>),
-    Update(Update<'a>),
-    Delete(Delete<'a>),
+macro_rules! nodes {
+    ($($variant:ident: $ty:ty)*) => {
+        pub enum PlanNode<'a> {
+            $($variant($ty),)*
+        }
+
+        impl Node for PlanNode<'_> {
+            fn fmt_explain(&self, f: &ExplainFormatter) {
+                match self {
+                    $(Self::$variant(n) => n.fmt_explain(f),)*
+                }
+            }
+
+            fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
+                match self {
+                    $(Self::$variant(n) => n.append_outputs(columns),)*
+                }
+            }
+        }
+    }
+}
+
+nodes! {
+    Explain: Explain<'a>
+    CreateTable: CreateTable
+    CreateIndex: CreateIndex
+    Drop: DropObject
+    Truncate: Truncate<'a>
+    Reindex: Reindex<'a>
+    Values: Values<'a>
+    Scan: Scan<'a>
+    Project: Project<'a>
+    Filter: Filter<'a>
+    Sort: Sort<'a>
+    Limit: Limit<'a>
+    TopN: TopN<'a>
+    CrossProduct: CrossProduct<'a>
+    Join: Join<'a>
+    Aggregate: Aggregate<'a>
+    Union: Union<'a>
+    Spool: Spool<'a>
+    Insert: Insert<'a>
+    Update: Update<'a>
+    Delete: Delete<'a>
 }
 
 impl<'a> PlanNode<'a> {
@@ -198,58 +223,6 @@ impl<'a> PlanNode<'a> {
         Self::Spool(Spool {
             source: Box::new(self),
         })
-    }
-}
-
-impl Node for PlanNode<'_> {
-    fn fmt_explain(&self, f: &ExplainFormatter) {
-        match self {
-            Self::Explain(n) => n.fmt_explain(f),
-            Self::CreateTable(n) => n.fmt_explain(f),
-            Self::CreateIndex(n) => n.fmt_explain(f),
-            Self::Drop(n) => n.fmt_explain(f),
-            Self::Truncate(n) => n.fmt_explain(f),
-            Self::Reindex(n) => n.fmt_explain(f),
-            Self::Values(n) => n.fmt_explain(f),
-            Self::Scan(n) => n.fmt_explain(f),
-            Self::Project(n) => n.fmt_explain(f),
-            Self::Filter(n) => n.fmt_explain(f),
-            Self::Sort(n) => n.fmt_explain(f),
-            Self::Limit(n) => n.fmt_explain(f),
-            Self::TopN(n) => n.fmt_explain(f),
-            Self::CrossProduct(n) => n.fmt_explain(f),
-            Self::Aggregate(n) => n.fmt_explain(f),
-            Self::Union(n) => n.fmt_explain(f),
-            Self::Spool(n) => n.fmt_explain(f),
-            Self::Insert(n) => n.fmt_explain(f),
-            Self::Update(n) => n.fmt_explain(f),
-            Self::Delete(n) => n.fmt_explain(f),
-        }
-    }
-
-    fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
-        match self {
-            Self::Explain(n) => n.append_outputs(columns),
-            Self::CreateTable(n) => n.append_outputs(columns),
-            Self::CreateIndex(n) => n.append_outputs(columns),
-            Self::Drop(n) => n.append_outputs(columns),
-            Self::Truncate(n) => n.append_outputs(columns),
-            Self::Reindex(n) => n.append_outputs(columns),
-            Self::Values(n) => n.append_outputs(columns),
-            Self::Scan(n) => n.append_outputs(columns),
-            Self::Project(n) => n.append_outputs(columns),
-            Self::Filter(n) => n.append_outputs(columns),
-            Self::Sort(n) => n.append_outputs(columns),
-            Self::Limit(n) => n.append_outputs(columns),
-            Self::TopN(n) => n.append_outputs(columns),
-            Self::CrossProduct(n) => n.append_outputs(columns),
-            Self::Aggregate(n) => n.append_outputs(columns),
-            Self::Union(n) => n.append_outputs(columns),
-            Self::Spool(n) => n.append_outputs(columns),
-            Self::Insert(n) => n.append_outputs(columns),
-            Self::Update(n) => n.append_outputs(columns),
-            Self::Delete(n) => n.append_outputs(columns),
-        }
     }
 }
 

@@ -6,8 +6,7 @@ use super::{
 use crate::{
     connection::ConnectionContext,
     parser::{self, BinaryOp},
-    planner::{self, CrossProduct},
-    Row, Type, Value,
+    planner, Row, Type, Value,
 };
 use std::{collections::HashSet, ops::Bound};
 
@@ -69,10 +68,11 @@ impl<'a> PlanNode<'a> {
                 conjuncts.extend(normalized_conjuncts);
                 return source.filter_inner(ctx, conjuncts);
             }
-            PlanNode::CrossProduct(CrossProduct { left, right }) => {
-                // Push down filters
+            PlanNode::CrossProduct(planner::CrossProduct { left, right }) => {
                 let left_outputs = left.outputs().into_iter().collect();
                 let right_outputs = right.outputs().into_iter().collect();
+
+                // Push down filters
                 for conjunct in &normalized_conjuncts {
                     if conjunct.referenced_columns().is_subset(&left_outputs) {
                         let conjunct = conjunct.clone();
@@ -90,7 +90,41 @@ impl<'a> PlanNode<'a> {
                             .filter_inner(ctx, normalized_conjuncts);
                     }
                 }
-                PlanNode::CrossProduct(CrossProduct { left, right })
+
+                // Hash join
+                let (eq_conjuncts, keys): (Vec<_>, Vec<_>) = normalized_conjuncts
+                    .iter()
+                    .filter_map(|conjunct| {
+                        let planner::Expression::BinaryOp {
+                            op: BinaryOp::Eq,
+                            lhs,
+                            rhs,
+                        } = conjunct
+                        else {
+                            return None;
+                        };
+                        let lhs_refs = lhs.referenced_columns();
+                        let rhs_refs = rhs.referenced_columns();
+                        if lhs_refs.is_subset(&left_outputs) && rhs_refs.is_subset(&right_outputs) {
+                            Some((conjunct.clone(), ((**lhs).clone(), (**rhs).clone())))
+                        } else if lhs_refs.is_subset(&right_outputs)
+                            && rhs_refs.is_subset(&left_outputs)
+                        {
+                            Some((conjunct.clone(), ((**rhs).clone(), (**lhs).clone())))
+                        } else {
+                            None
+                        }
+                    })
+                    .unzip();
+                if !eq_conjuncts.is_empty() {
+                    for conjunct in eq_conjuncts {
+                        normalized_conjuncts.remove(&conjunct);
+                    }
+                    return PlanNode::Join(planner::Join::Hash { left, right, keys })
+                        .filter_inner(ctx, normalized_conjuncts);
+                }
+
+                PlanNode::CrossProduct(planner::CrossProduct { left, right })
             }
             PlanNode::Scan(Scan::Seq { table, outputs }) => {
                 for conjunct in &normalized_conjuncts {

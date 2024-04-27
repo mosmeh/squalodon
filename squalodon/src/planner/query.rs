@@ -77,22 +77,6 @@ impl Node for Limit<'_> {
     }
 }
 
-pub struct CrossProduct<'a> {
-    pub left: Box<PlanNode<'a>>,
-    pub right: Box<PlanNode<'a>>,
-}
-
-impl Node for CrossProduct<'_> {
-    fn fmt_explain(&self, f: &ExplainFormatter) {
-        f.node("CrossProduct").child(&self.left).child(&self.right);
-    }
-
-    fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
-        self.left.append_outputs(columns);
-        self.right.append_outputs(columns);
-    }
-}
-
 pub struct Union<'a> {
     pub left: Box<PlanNode<'a>>,
     pub right: Box<PlanNode<'a>>,
@@ -286,24 +270,6 @@ impl<'a> PlanNode<'a> {
             limit,
             offset,
         }))
-    }
-
-    pub(super) fn cross_product(self, other: Self) -> Self {
-        if self.produces_no_rows() || other.produces_no_rows() {
-            let mut outputs = self.outputs();
-            outputs.append(&mut other.outputs());
-            return PlanNode::new_no_rows(outputs);
-        }
-        if self.outputs().is_empty() {
-            return other;
-        }
-        if other.outputs().is_empty() {
-            return self;
-        }
-        Self::CrossProduct(CrossProduct {
-            left: Box::new(self),
-            right: Box::new(other),
-        })
     }
 
     fn union(self, column_map: &mut ColumnMap, other: Self) -> PlannerResult<Self> {
@@ -588,7 +554,7 @@ impl<'a> Planner<'a> {
         source.limit(self.ctx, &mut self.column_map(), limit, offset)
     }
 
-    fn plan_table_ref(
+    pub fn plan_table_ref(
         &self,
         expr_binder: &ExpressionBinder<'_, 'a>,
         table_ref: parser::TableRef,
@@ -604,35 +570,6 @@ impl<'a> Planner<'a> {
             }
             parser::TableRef::Values(values) => self.plan_values(expr_binder, values),
         }
-    }
-
-    fn plan_join(
-        &self,
-        expr_binder: &ExpressionBinder<'_, 'a>,
-        join: parser::Join,
-    ) -> PlannerResult<PlanNode<'a>> {
-        let left = self.plan_table_ref(expr_binder, join.left)?;
-        let right = self.plan_table_ref(expr_binder, join.right)?;
-
-        let (plan, condition) = match join.condition {
-            parser::JoinCondition::On(condition) => {
-                let plan = left.cross_product(right);
-                expr_binder.bind(plan, condition)?
-            }
-            parser::JoinCondition::Using(column_names) => {
-                let column_map = self.column_map();
-                let mut condition = TypedExpression::from(Value::from(true));
-                for column_name in column_names {
-                    let left_column_ref = left.resolve_column(&column_map, &column_name)?;
-                    let right_column_ref = right.resolve_column(&column_map, &column_name)?;
-                    condition =
-                        condition.and(self.ctx, left_column_ref.eq(self.ctx, right_column_ref)?)?;
-                }
-                let plan = left.cross_product(right);
-                (plan, condition)
-            }
-        };
-        plan.filter(self.ctx, condition)
     }
 
     fn plan_values(

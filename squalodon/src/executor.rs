@@ -10,7 +10,7 @@ use crate::{
 };
 use mutation::{Delete, Insert, Update};
 use query::{
-    AggregateOp, ApplyAggregateOp, CrossProduct, Filter, FunctionScan, HashAggregate,
+    AggregateOp, ApplyAggregateOp, CrossProduct, Filter, FunctionScan, HashAggregate, HashJoin,
     IndexOnlyScan, IndexScan, Limit, Project, SeqScan, Sort, TopN, UngroupedAggregate, Union,
     Values,
 };
@@ -120,25 +120,42 @@ impl Iterator for Executor<'_> {
     }
 }
 
-enum ExecutorNode<'a> {
-    Values(Values<'a>),
-    SeqScan(SeqScan<'a>),
-    IndexScan(IndexScan<'a>),
-    IndexOnlyScan(IndexOnlyScan<'a>),
-    FunctionScan(FunctionScan<'a>),
-    Project(Project<'a>),
-    Filter(Filter<'a>),
-    Sort(Sort),
-    Limit(Limit<'a>),
-    TopN(TopN),
-    CrossProduct(CrossProduct<'a>),
-    UngroupedAggregate(UngroupedAggregate),
-    HashAggregate(HashAggregate),
-    Union(Union<'a>),
-    Spool(Spool),
-    Insert(Insert),
-    Update(Update),
-    Delete(Delete),
+macro_rules! nodes {
+    ($($variant:ident$(<$lt:lifetime>)?)*) => {
+        enum ExecutorNode<'a> {
+            $($variant($variant$(<$lt>)?),)*
+        }
+
+        impl Node for ExecutorNode<'_> {
+            fn next_row(&mut self) -> Output {
+                match self {
+                    $(Self::$variant(e) => e.next_row(),)*
+                }
+            }
+        }
+    }
+}
+
+nodes! {
+    Values<'a>
+    SeqScan<'a>
+    IndexScan<'a>
+    IndexOnlyScan<'a>
+    FunctionScan<'a>
+    Project<'a>
+    Filter<'a>
+    Sort
+    Limit<'a>
+    TopN
+    CrossProduct<'a>
+    HashJoin<'a>
+    UngroupedAggregate
+    HashAggregate
+    Union<'a>
+    Spool
+    Insert
+    Update
+    Delete
 }
 
 impl<'a> ExecutorNode<'a> {
@@ -305,6 +322,25 @@ impl<'a> ExecutorNode<'a> {
             PlanNode::CrossProduct(planner::CrossProduct { left, right }) => Self::CrossProduct(
                 CrossProduct::new(Self::new(ctx, *left)?, Self::new(ctx, *right)?)?,
             ),
+            PlanNode::Join(planner::Join::Hash { left, right, keys }) => {
+                let left_outputs = left.outputs();
+                let right_outputs = right.outputs();
+                let keys = keys
+                    .into_iter()
+                    .map(|(left_key, right_key)| {
+                        (
+                            left_key.into_executable(&left_outputs),
+                            right_key.into_executable(&right_outputs),
+                        )
+                    })
+                    .collect();
+                Self::HashJoin(HashJoin::new(
+                    ctx,
+                    Self::new(ctx, *left)?,
+                    Self::new(ctx, *right)?,
+                    keys,
+                )?)
+            }
             PlanNode::Aggregate(planner::Aggregate::Ungrouped { source, ops, .. }) => {
                 let outputs = source.outputs();
                 let ops = ops
@@ -339,31 +375,6 @@ impl<'a> ExecutorNode<'a> {
             }
         };
         Ok(executor)
-    }
-}
-
-impl Node for ExecutorNode<'_> {
-    fn next_row(&mut self) -> Output {
-        match self {
-            Self::Values(e) => e.next_row(),
-            Self::SeqScan(e) => e.next_row(),
-            Self::IndexScan(e) => e.next_row(),
-            Self::IndexOnlyScan(e) => e.next_row(),
-            Self::FunctionScan(e) => e.next_row(),
-            Self::Project(e) => e.next_row(),
-            Self::Filter(e) => e.next_row(),
-            Self::Sort(e) => e.next_row(),
-            Self::Limit(e) => e.next_row(),
-            Self::TopN(e) => e.next_row(),
-            Self::CrossProduct(e) => e.next_row(),
-            Self::UngroupedAggregate(e) => e.next_row(),
-            Self::HashAggregate(e) => e.next_row(),
-            Self::Union(e) => e.next_row(),
-            Self::Spool(e) => e.next_row(),
-            Self::Insert(e) => e.next_row(),
-            Self::Update(e) => e.next_row(),
-            Self::Delete(e) => e.next_row(),
-        }
     }
 }
 
