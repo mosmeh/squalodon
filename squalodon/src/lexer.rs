@@ -99,6 +99,7 @@ macro_rules! keywords {
 
 keywords! {
     All
+    Analyze
     And
     As
     Asc

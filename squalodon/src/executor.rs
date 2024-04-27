@@ -183,6 +183,7 @@ impl<'a> ExecutorNode<'a> {
             PlanNode::CreateIndex(plan) => Self::create_index(plan),
             PlanNode::Drop(plan) => Self::drop_object(plan),
             PlanNode::Truncate(plan) => Self::truncate(plan),
+            PlanNode::Analyze(plan) => Self::analyze(ctx, plan),
             PlanNode::Reindex(plan) => Self::reindex(plan),
             PlanNode::Scan(plan) => Self::scan(ctx, plan),
             PlanNode::Project(plan) => Self::project(ctx, plan),

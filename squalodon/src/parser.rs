@@ -3,7 +3,7 @@ mod expression;
 mod mutation;
 mod query;
 
-pub use ddl::{Constraint, CreateIndex, CreateTable, DropObject, ObjectKind, Reindex};
+pub use ddl::{Analyze, Constraint, CreateIndex, CreateTable, DropObject, ObjectKind, Reindex};
 pub use expression::{BinaryOp, ColumnRef, Expression, FunctionArgs, FunctionCall, UnaryOp};
 pub use mutation::{Delete, Insert, Update};
 pub use query::{
@@ -44,6 +44,7 @@ pub enum Statement {
     CreateIndex(CreateIndex),
     Drop(DropObject),
     Truncate(String),
+    Analyze(Analyze),
     Reindex(Reindex),
     Query(Query),
     Insert(Insert),
@@ -139,6 +140,11 @@ impl<'a> Parser<'a> {
                 self.lexer.consume()?;
                 self.lexer.consume_if_eq(Token::Transaction)?;
                 Ok(Statement::Transaction(TransactionControl::Rollback))
+            }
+            Token::Analyze => {
+                // To avoid ambiguity with EXPLAIN ANALYZE, we require
+                // the ANALYZE statement to be top-level.
+                self.parse_analyze().map(Statement::Analyze)
             }
             _ => self.parse_statement_inner(),
         }

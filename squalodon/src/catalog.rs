@@ -133,8 +133,7 @@ impl<'a> Table<'a> {
 
         assert!(column_indexes.iter().all(|i| i.0 < self.columns().len()));
         self.def.index_names.push(name);
-        self.catalog
-            .put_entry(CatalogEntryKind::Table, self.name(), &self.def)?;
+        self.save()?;
 
         let index = Index {
             def: index_def,
@@ -146,8 +145,7 @@ impl<'a> Table<'a> {
 
     pub fn drop_index(&mut self, name: &str) -> CatalogResult<()> {
         self.def.index_names.retain(|n| *n != name);
-        self.catalog
-            .put_entry(CatalogEntryKind::Table, self.name(), &self.def)?;
+        self.save()?;
 
         self.catalog.index(name)?.clear()?;
         self.catalog.remove_entry(CatalogEntryKind::Index, name)
@@ -165,8 +163,23 @@ impl<'a> Table<'a> {
             .remove_entry(CatalogEntryKind::Table, self.name())
     }
 
+    pub fn analyze(&mut self) -> CatalogResult<()> {
+        let mut num_rows = 0;
+        for row in self.scan() {
+            row?;
+            num_rows += 1;
+        }
+        self.def.statistics = Statistics { num_rows };
+        self.save()
+    }
+
     pub fn transaction(&self) -> &'a dyn Transaction {
         self.catalog.txn
+    }
+
+    fn save(&self) -> CatalogResult<()> {
+        self.catalog
+            .put_entry(CatalogEntryKind::Table, self.name(), &self.def)
     }
 }
 
@@ -177,6 +190,7 @@ struct TableDef {
     columns: Vec<Column>,
     primary_keys: Vec<ColumnIndex>,
     index_names: Vec<String>,
+    statistics: Statistics,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,6 +240,11 @@ struct IndexDef {
     table_name: String,
     column_indexes: Vec<ColumnIndex>,
     is_unique: bool,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct Statistics {
+    num_rows: u64,
 }
 
 pub enum Function<'a> {
@@ -426,6 +445,7 @@ impl<'a> CatalogRef<'a> {
             columns: columns.to_owned(),
             primary_keys: primary_keys.to_owned(),
             index_names: Vec::new(),
+            statistics: Statistics::default(),
         };
         self.insert_entry(CatalogEntryKind::Table, name, &table_def)?;
         Ok(id)

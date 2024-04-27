@@ -1,6 +1,6 @@
 use super::{ColumnId, ExplainFormatter, Node, PlanNode, Planner, PlannerError, PlannerResult};
 use crate::{
-    catalog::{self, Index, Table},
+    catalog::{self, CatalogResult, Index, Table},
     parser,
     rows::ColumnIndex,
     CatalogError,
@@ -82,6 +82,29 @@ impl Node for Truncate<'_> {
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
 }
 
+pub enum Analyze<'a> {
+    AllTables,
+    Tables(Vec<Table<'a>>),
+}
+
+impl Node for Analyze<'_> {
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        let mut node = f.node("Analyze");
+        match self {
+            Self::AllTables => {
+                node.field("all tables", true);
+            }
+            Self::Tables(tables) => {
+                for table in tables {
+                    node.field("table", table.name());
+                }
+            }
+        }
+    }
+
+    fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
+}
+
 pub enum Reindex<'a> {
     Table(Table<'a>),
     Index(Index<'a>),
@@ -114,6 +137,10 @@ impl<'a> PlanNode<'a> {
 
     fn new_truncate(table: Table<'a>) -> Self {
         Self::Truncate(Truncate { table })
+    }
+
+    fn new_analyze(analyze: Analyze<'a>) -> Self {
+        Self::Analyze(analyze)
     }
 
     fn new_reindex(reindex: Reindex<'a>) -> Self {
@@ -208,6 +235,22 @@ impl<'a> Planner<'a> {
     pub fn plan_truncate(&self, table_name: &str) -> PlannerResult<PlanNode<'a>> {
         let table = self.ctx.catalog().table(table_name)?;
         Ok(PlanNode::new_truncate(table))
+    }
+
+    pub fn plan_analyze(&self, analyze: parser::Analyze) -> PlannerResult<PlanNode<'a>> {
+        let analyze = match analyze.table_names {
+            Some(mut table_names) => {
+                table_names.sort_unstable();
+                table_names.dedup();
+                let tables = table_names
+                    .iter()
+                    .map(|name| self.ctx.catalog().table(name))
+                    .collect::<CatalogResult<_>>()?;
+                Analyze::Tables(tables)
+            }
+            None => Analyze::AllTables,
+        };
+        Ok(PlanNode::new_analyze(analyze))
     }
 
     pub fn plan_reindex(&self, reindex: parser::Reindex) -> PlannerResult<PlanNode<'a>> {

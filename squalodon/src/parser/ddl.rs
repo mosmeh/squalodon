@@ -31,6 +31,11 @@ pub struct DropObject {
 }
 
 #[derive(Debug, Clone)]
+pub struct Analyze {
+    pub table_names: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Reindex {
     pub name: String,
     pub kind: ObjectKind,
@@ -185,6 +190,14 @@ impl Parser<'_> {
         self.expect(Token::Truncate)?;
         self.lexer.consume_if_eq(Token::Table)?;
         self.expect_identifier()
+    }
+
+    pub fn parse_analyze(&mut self) -> ParserResult<Analyze> {
+        self.expect(Token::Analyze)?;
+        let table_names = matches!(self.lexer.peek()?, Token::Identifier(_))
+            .then(|| self.parse_comma_separated(Self::expect_identifier))
+            .transpose()?;
+        Ok(Analyze { table_names })
     }
 
     pub fn parse_reindex(&mut self) -> ParserResult<Reindex> {

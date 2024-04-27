@@ -1,7 +1,7 @@
 use super::{ExecutorNode, ExecutorResult};
 use crate::{
     connection::ConnectionContext,
-    planner::{Constraint, CreateIndex, CreateTable, DropObject, Reindex, Truncate},
+    planner::{Analyze, Constraint, CreateIndex, CreateTable, DropObject, Reindex, Truncate},
     CatalogError,
 };
 
@@ -62,6 +62,22 @@ impl ExecutorNode<'_> {
     pub fn truncate(plan: Truncate) -> ExecutorResult<Self> {
         let Truncate { table } = plan;
         table.truncate()?;
+        Ok(Self::empty_result())
+    }
+
+    pub fn analyze(ctx: &ConnectionContext, plan: Analyze) -> ExecutorResult<Self> {
+        match plan {
+            Analyze::AllTables => {
+                for table in ctx.catalog().tables() {
+                    table?.analyze()?;
+                }
+            }
+            Analyze::Tables(tables) => {
+                for mut table in tables {
+                    table.analyze()?;
+                }
+            }
+        }
         Ok(Self::empty_result())
     }
 

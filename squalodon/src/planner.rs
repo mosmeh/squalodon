@@ -15,7 +15,7 @@ mod union;
 
 pub use aggregate::{Aggregate, AggregateOp, ApplyAggregateOp};
 pub use column::{Column, ColumnId};
-pub use ddl::{Constraint, CreateIndex, CreateTable, DropObject, Reindex, Truncate};
+pub use ddl::{Analyze, Constraint, CreateIndex, CreateTable, DropObject, Reindex, Truncate};
 pub use expression::{CaseBranch, Expression};
 pub use filter::Filter;
 pub use join::{CrossProduct, Join};
@@ -147,6 +147,7 @@ nodes! {
     CreateIndex: CreateIndex<'a>
     Drop: DropObject<'a>
     Truncate: Truncate<'a>
+    Analyze: Analyze<'a>
     Reindex: Reindex<'a>
     Scan: Scan<'a>
     Project: Project<'a>
@@ -284,6 +285,7 @@ impl<'a> Planner<'a> {
             parser::Statement::CreateIndex(create_index) => self.plan_create_index(create_index),
             parser::Statement::Drop(drop_object) => self.plan_drop(drop_object),
             parser::Statement::Truncate(table_name) => self.plan_truncate(&table_name),
+            parser::Statement::Analyze(analyze) => self.plan_analyze(analyze),
             parser::Statement::Reindex(reindex) => self.plan_reindex(reindex),
             parser::Statement::Query(query) => self.plan_query(query),
             parser::Statement::Insert(insert) => self.plan_insert(insert),
