@@ -1,7 +1,7 @@
 use super::{
     column::ColumnMapView,
     explain::ExplainFormatter,
-    expression::{ExpressionBinder, TypedExpression},
+    expression::{ExpressionBinder, PlanExpression, TypedExpression},
     ColumnId, Node, PlanNode, Planner, PlannerResult,
 };
 use crate::{
@@ -13,7 +13,7 @@ use std::borrow::Cow;
 
 pub struct Sort<'a> {
     pub source: Box<PlanNode<'a>>,
-    pub order_by: Vec<OrderBy<'a, ColumnId>>,
+    pub order_by: Vec<PlanOrderBy<'a>>,
 }
 
 impl Node for Sort<'_> {
@@ -32,9 +32,9 @@ impl Node for Sort<'_> {
 
 pub struct TopN<'a> {
     pub source: Box<PlanNode<'a>>,
-    pub limit: planner::Expression<'a, ColumnId>,
-    pub offset: Option<planner::Expression<'a, ColumnId>>,
-    pub order_by: Vec<OrderBy<'a, ColumnId>>,
+    pub limit: PlanExpression<'a>,
+    pub offset: Option<PlanExpression<'a>>,
+    pub order_by: Vec<PlanOrderBy<'a>>,
 }
 
 impl Node for TopN<'_> {
@@ -56,6 +56,10 @@ impl Node for TopN<'_> {
     }
 }
 
+pub type PlanOrderBy<'a> = OrderBy<'a, ColumnId>;
+pub type ExecutableOrderBy<'a> = OrderBy<'a, ColumnIndex>;
+pub type OrderByDisplay<'a, 'b> = OrderBy<'a, Cow<'b, str>>;
+
 #[derive(Clone)]
 pub struct OrderBy<'a, C> {
     pub expr: planner::Expression<'a, C>,
@@ -63,7 +67,7 @@ pub struct OrderBy<'a, C> {
     pub null_order: NullOrder,
 }
 
-impl std::fmt::Display for OrderBy<'_, Cow<'_, str>> {
+impl std::fmt::Display for OrderByDisplay<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.expr.fmt(f)?;
         if self.order != Default::default() {
@@ -76,17 +80,17 @@ impl std::fmt::Display for OrderBy<'_, Cow<'_, str>> {
     }
 }
 
-impl<'a> OrderBy<'a, ColumnId> {
-    pub fn into_executable(self, columns: &[ColumnId]) -> OrderBy<'a, ColumnIndex> {
-        OrderBy {
+impl<'a> PlanOrderBy<'a> {
+    pub fn into_executable(self, columns: &[ColumnId]) -> ExecutableOrderBy<'a> {
+        ExecutableOrderBy {
             expr: self.expr.into_executable(columns),
             order: self.order,
             null_order: self.null_order,
         }
     }
 
-    pub(super) fn display<'b>(&self, column_map: &'b ColumnMapView) -> OrderBy<'a, Cow<'b, str>> {
-        OrderBy {
+    pub(super) fn display<'b>(&self, column_map: &'b ColumnMapView) -> OrderByDisplay<'a, 'b> {
+        OrderByDisplay {
             expr: self.expr.display(column_map),
             order: self.order,
             null_order: self.null_order,
@@ -95,7 +99,7 @@ impl<'a> OrderBy<'a, ColumnId> {
 }
 
 impl<'a> PlanNode<'a> {
-    fn sort(self, order_by: Vec<OrderBy<'a, ColumnId>>) -> Self {
+    fn sort(self, order_by: Vec<PlanOrderBy<'a>>) -> Self {
         if self.produces_no_rows() {
             return self;
         }
@@ -122,7 +126,7 @@ impl<'a> Planner<'a> {
         for item in order_by {
             let (new_plan, TypedExpression { expr, .. }) = expr_binder.bind(plan, item.expr)?;
             plan = new_plan;
-            bound_order_by.push(planner::OrderBy {
+            bound_order_by.push(PlanOrderBy {
                 expr,
                 order: item.order,
                 null_order: item.null_order,

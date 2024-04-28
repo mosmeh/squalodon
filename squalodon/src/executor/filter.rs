@@ -1,14 +1,13 @@
 use super::{ConnectionContext, ExecutorNode, ExecutorResult, Node, Output};
 use crate::{
-    planner::{self, Expression},
-    rows::ColumnIndex,
+    planner::{self, ExecutableExpression},
     Row, Value,
 };
 
 pub struct Filter<'a> {
     ctx: &'a ConnectionContext<'a>,
     source: Box<ExecutorNode<'a>>,
-    conjuncts: Vec<Expression<'a, ColumnIndex>>,
+    conjuncts: Vec<ExecutableExpression<'a>>,
 }
 
 impl Node for Filter<'_> {

@@ -1,14 +1,13 @@
 use super::{ConnectionContext, ExecutorNode, ExecutorResult, Node, Output};
 use crate::{
-    planner::{self, Expression},
-    rows::ColumnIndex,
+    planner::{self, ExecutableExpression},
     Row,
 };
 
 pub struct Project<'a> {
     ctx: &'a ConnectionContext<'a>,
     source: Box<ExecutorNode<'a>>,
-    exprs: Vec<Expression<'a, ColumnIndex>>,
+    exprs: Vec<ExecutableExpression<'a>>,
 }
 
 impl Node for Project<'_> {

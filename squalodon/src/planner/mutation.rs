@@ -1,9 +1,9 @@
 use super::{
-    expression::{ExpressionBinder, TypedExpression},
+    expression::{ExpressionBinder, PlanExpression, TypedExpression},
     Column, ColumnId, ColumnMap, ExplainFormatter, Node, PlanNode, Planner, PlannerError,
     PlannerResult,
 };
-use crate::{catalog::Table, parser, planner, Type};
+use crate::{catalog::Table, parser, Type};
 
 pub struct Insert<'a> {
     pub source: Box<PlanNode<'a>>,
@@ -137,7 +137,7 @@ impl<'a> Planner<'a> {
         let mut column_map = self.column_map();
         for (source_column_id, dest_column) in column_mapping.into_iter().zip(table.columns()) {
             let TypedExpression { mut expr, ty } = if let Some(id) = source_column_id {
-                planner::Expression::ColumnRef(id).into_typed(column_map[id].ty)
+                PlanExpression::ColumnRef(id).into_typed(column_map[id].ty)
             } else {
                 let default_value = dest_column.default_value.clone().unwrap();
                 let (new_plan, expr) = ExpressionBinder::new(self).bind(plan, default_value)?;
@@ -204,7 +204,7 @@ impl<'a> Planner<'a> {
         let mut column_map = self.column_map();
         let old = outputs
             .into_iter()
-            .map(|id| planner::Expression::ColumnRef(id).into_typed(column_map[id].ty));
+            .map(|id| PlanExpression::ColumnRef(id).into_typed(column_map[id].ty));
         let new = exprs
             .into_iter()
             .zip(old.clone())

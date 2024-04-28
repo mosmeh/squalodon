@@ -2,8 +2,7 @@ use super::{ConnectionContext, ExecutorNode, ExecutorResult, Node, NodeError, Ou
 use crate::{
     memcomparable::MemcomparableSerde,
     parser::BinaryOp,
-    planner::{self, CompareOp, Expression, Join},
-    rows::ColumnIndex,
+    planner::{self, CompareOp, ExecutableExpression, Join},
     Row, Value,
 };
 use std::collections::HashMap;
@@ -54,7 +53,7 @@ pub struct NestedLoopJoin<'a> {
     outer_row: Option<JoinRow>,
     inner_rows: Vec<JoinRow>,
     inner_cursor: usize,
-    comparisons: Vec<(BinaryOp, Expression<'a, ColumnIndex>)>,
+    comparisons: Vec<(BinaryOp, ExecutableExpression<'a>)>,
 }
 
 impl<'a> NestedLoopJoin<'a> {
@@ -64,8 +63,8 @@ impl<'a> NestedLoopJoin<'a> {
         inner_source: ExecutorNode<'a>,
         comparisons: Vec<(
             CompareOp,
-            Expression<'a, ColumnIndex>,
-            Expression<'a, ColumnIndex>,
+            ExecutableExpression<'a>,
+            ExecutableExpression<'a>,
         )>,
     ) -> ExecutorResult<Self> {
         Ok(Self {
@@ -145,7 +144,7 @@ pub struct HashJoin<'a> {
     ctx: &'a ConnectionContext<'a>,
     outer_source: Box<ExecutorNode<'a>>,
     map: HashMap<Vec<u8>, Vec<Row>>,
-    keys: Vec<Expression<'a, ColumnIndex>>,
+    keys: Vec<ExecutableExpression<'a>>,
     outer_row: Option<Row>,
     inner_rows: std::vec::IntoIter<Row>,
 }
@@ -155,7 +154,7 @@ impl<'a> HashJoin<'a> {
         ctx: &'a ConnectionContext,
         outer_source: ExecutorNode<'a>,
         inner_source: ExecutorNode<'a>,
-        keys: Vec<(Expression<'a, ColumnIndex>, Expression<'a, ColumnIndex>)>,
+        keys: Vec<(ExecutableExpression<'a>, ExecutableExpression<'a>)>,
     ) -> ExecutorResult<Self> {
         let mut map = HashMap::new();
         let serde = MemcomparableSerde::new();

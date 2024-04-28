@@ -1,7 +1,6 @@
 use super::{ConnectionContext, ExecutorNode, ExecutorResult, Node, NodeError, Output};
 use crate::{
-    planner::{self, Expression},
-    rows::ColumnIndex,
+    planner::{self, ExecutableExpression},
     ExecutorError, Row, Value,
 };
 
@@ -16,12 +15,12 @@ impl<'a> Limit<'a> {
     fn new(
         ctx: &'a ConnectionContext,
         source: ExecutorNode<'a>,
-        limit: Option<Expression<ColumnIndex>>,
-        offset: Option<Expression<ColumnIndex>>,
+        limit: Option<ExecutableExpression>,
+        offset: Option<ExecutableExpression>,
     ) -> ExecutorResult<Self> {
         fn eval(
             ctx: &ConnectionContext,
-            expr: Option<Expression<ColumnIndex>>,
+            expr: Option<ExecutableExpression>,
         ) -> ExecutorResult<Option<usize>> {
             let Some(expr) = expr else {
                 return Ok(None);

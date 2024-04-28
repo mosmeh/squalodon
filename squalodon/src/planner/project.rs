@@ -1,5 +1,5 @@
 use super::{
-    expression::{ExpressionBinder, TypedExpression},
+    expression::{ExpressionBinder, PlanExpression, TypedExpression},
     scan::Scan,
     Column, ColumnId, ColumnMap, ExplainFormatter, Node, PlanNode, Planner, PlannerResult,
 };
@@ -14,7 +14,7 @@ use std::collections::HashSet;
 
 pub struct Project<'a> {
     pub source: Box<PlanNode<'a>>,
-    pub projections: Vec<(ColumnId, planner::Expression<'a, ColumnId>)>,
+    pub projections: Vec<(ColumnId, PlanExpression<'a>)>,
 }
 
 impl Node for Project<'_> {
@@ -46,7 +46,7 @@ impl<'a> PlanNode<'a> {
             .map(|expr| {
                 let TypedExpression { expr, ty } = expr;
                 let id = match expr {
-                    planner::Expression::ColumnRef(id) => *id,
+                    PlanExpression::ColumnRef(id) => *id,
                     _ => column_map.insert(Column::new(
                         expr.display(&column_map.view()).to_string(),
                         *ty,
@@ -189,7 +189,7 @@ impl<'a> Planner<'a> {
                 let exprs = outputs
                     .into_iter()
                     .take(num_projected_columns)
-                    .map(|id| planner::Expression::ColumnRef(id).into_typed(column_map[id].ty))
+                    .map(|id| PlanExpression::ColumnRef(id).into_typed(column_map[id].ty))
                     .collect();
                 Ok(plan.project(&mut column_map, exprs))
             }

@@ -1,11 +1,11 @@
 use super::{
     explain::ExplainFormatter,
-    expression::{ExpressionBinder, TypedExpression},
+    expression::{ExpressionBinder, PlanExpression, TypedExpression},
     ColumnId, Node, PlanNode, Planner, PlannerResult,
 };
 use crate::{
     parser::{self, BinaryOp},
-    planner, Value,
+    Value,
 };
 
 pub struct CrossProduct<'a> {
@@ -28,19 +28,12 @@ pub enum Join<'a> {
     NestedLoop {
         left: Box<PlanNode<'a>>,
         right: Box<PlanNode<'a>>,
-        comparisons: Vec<(
-            CompareOp,
-            planner::Expression<'a, ColumnId>,
-            planner::Expression<'a, ColumnId>,
-        )>,
+        comparisons: Vec<(CompareOp, PlanExpression<'a>, PlanExpression<'a>)>,
     },
     Hash {
         left: Box<PlanNode<'a>>,
         right: Box<PlanNode<'a>>,
-        keys: Vec<(
-            planner::Expression<'a, ColumnId>,
-            planner::Expression<'a, ColumnId>,
-        )>,
+        keys: Vec<(PlanExpression<'a>, PlanExpression<'a>)>,
     },
 }
 

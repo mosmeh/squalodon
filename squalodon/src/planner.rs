@@ -16,14 +16,14 @@ mod union;
 pub use aggregate::{Aggregate, AggregateOp, ApplyAggregateOp};
 pub use column::{Column, ColumnId};
 pub use ddl::{Analyze, Constraint, CreateIndex, CreateTable, DropObject, Reindex, Truncate};
-pub use expression::{CaseBranch, Expression};
+pub use expression::{CaseBranch, ExecutableExpression, Expression};
 pub use filter::Filter;
 pub use join::{CompareOp, CrossProduct, Join};
 pub use limit::Limit;
 pub use mutation::{Delete, Insert, Update};
 pub use project::Project;
 pub use scan::Scan;
-pub use sort::{OrderBy, Sort, TopN};
+pub use sort::{ExecutableOrderBy, Sort, TopN};
 pub use union::Union;
 
 use crate::{
@@ -31,7 +31,7 @@ use crate::{
 };
 use column::{ColumnMap, ColumnRef};
 use explain::{Explain, ExplainFormatter};
-use expression::{ExpressionBinder, TypedExpression};
+use expression::{ExpressionBinder, PlanExpression, TypedExpression};
 use std::{cell::RefCell, num::NonZeroUsize, rc::Rc};
 
 #[derive(Debug, thiserror::Error)]
@@ -87,7 +87,7 @@ pub type PlannerResult<T> = std::result::Result<T, PlannerError>;
 pub fn plan_expr<'a>(
     ctx: &'a ConnectionContext<'a>,
     expr: parser::Expression,
-) -> PlannerResult<Expression<'a, ColumnId>> {
+) -> PlannerResult<PlanExpression<'a>> {
     let planner = Planner::new(ctx);
     let TypedExpression { expr, .. } = ExpressionBinder::new(&planner).bind_without_source(expr)?;
     Ok(expr)
@@ -201,7 +201,7 @@ impl<'a> PlanNode<'a> {
                 column_ref.column_name().to_owned(),
             ));
         }
-        Ok(Expression::ColumnRef(id).into_typed(column.ty))
+        Ok(PlanExpression::ColumnRef(id).into_typed(column.ty))
     }
 
     fn produces_no_rows(&self) -> bool {

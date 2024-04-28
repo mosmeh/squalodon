@@ -1,14 +1,14 @@
 use super::{
-    expression::{ExpressionBinder, TypedExpression},
+    expression::{ExpressionBinder, PlanExpression, TypedExpression},
     sort::TopN,
     ColumnId, ColumnMap, ExplainFormatter, Node, PlanNode, Planner, PlannerResult, Project, Sort,
 };
-use crate::{connection::ConnectionContext, parser, planner, PlannerError, Row, Type, Value};
+use crate::{connection::ConnectionContext, parser, PlannerError, Row, Type, Value};
 
 pub struct Limit<'a> {
     pub source: Box<PlanNode<'a>>,
-    pub limit: Option<planner::Expression<'a, ColumnId>>,
-    pub offset: Option<planner::Expression<'a, ColumnId>>,
+    pub limit: Option<PlanExpression<'a>>,
+    pub offset: Option<PlanExpression<'a>>,
 }
 
 impl Node for Limit<'_> {

@@ -1,8 +1,7 @@
 use super::{ConnectionContext, ExecutorNode, ExecutorResult, IntoOutput, Node, Output};
 use crate::{
     catalog::{Index, Table, TableFnPtr},
-    planner::{Expression, Scan},
-    rows::ColumnIndex,
+    planner::{ExecutableExpression, Scan},
     storage::StorageResult,
     Row, Value,
 };
@@ -97,10 +96,7 @@ pub struct ExpressionScan<'a> {
 }
 
 impl<'a> ExpressionScan<'a> {
-    pub fn new(
-        ctx: &'a ConnectionContext<'a>,
-        rows: Vec<Vec<Expression<'a, ColumnIndex>>>,
-    ) -> Self {
+    pub fn new(ctx: &'a ConnectionContext<'a>, rows: Vec<Vec<ExecutableExpression<'a>>>) -> Self {
         let rows = rows.into_iter().map(|row| {
             let columns = row
                 .into_iter()

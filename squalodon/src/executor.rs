@@ -12,7 +12,7 @@ mod union;
 
 use crate::{
     connection::ConnectionContext,
-    planner::{self, Expression, PlanNode},
+    planner::{self, ExecutableExpression, PlanNode},
     storage, CatalogError, Row, StorageError, Value,
 };
 use aggregate::{HashAggregate, UngroupedAggregate};
@@ -176,7 +176,7 @@ impl<'a> ExecutorNode<'a> {
                 let rows = plan
                     .explain()
                     .into_iter()
-                    .map(|row| vec![Expression::Constant(Value::Text(row))])
+                    .map(|row| vec![ExecutableExpression::Constant(Value::Text(row))])
                     .collect();
                 Ok(Self::ExpressionScan(ExpressionScan::new(ctx, rows)))
             }

@@ -1,8 +1,8 @@
 use super::{
-    expression::ExpressionBinder, Column, ColumnId, ExplainFormatter, Node, PlanNode, Planner,
-    PlannerError, PlannerResult,
+    expression::{ExpressionBinder, PlanExpression},
+    Column, ColumnId, ExplainFormatter, Node, PlanNode, Planner, PlannerError, PlannerResult,
 };
-use crate::{catalog::AggregateFunction, parser, planner, CatalogError, Type};
+use crate::{catalog::AggregateFunction, parser, CatalogError, Type};
 use std::collections::HashMap;
 
 pub enum Aggregate<'a> {
@@ -189,8 +189,7 @@ impl<'a, 'b> AggregateCollection<'a, 'b> {
                                 // `count(*)` is a special case equivalent to `count(1)`.
                                 (
                                     source,
-                                    planner::Expression::Constant(1.into())
-                                        .into_typed(Type::Integer),
+                                    PlanExpression::Constant(1.into()).into_typed(Type::Integer),
                                 )
                             }
                             parser::FunctionArgs::Expressions(args) if args.len() == 1 => {
@@ -333,6 +332,6 @@ impl<'a> AggregatePlanner<'_, 'a> {
 }
 struct BoundAggregate<'a> {
     function: &'a AggregateFunction,
-    arg: planner::Expression<'a, ColumnId>,
+    arg: PlanExpression<'a>,
     output: ColumnId,
 }

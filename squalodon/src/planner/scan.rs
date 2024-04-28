@@ -1,11 +1,13 @@
 use super::{
-    column::ColumnMap, explain::ExplainFormatter, expression::ExpressionBinder, Column, ColumnId,
-    Node, PlanNode, Planner, PlannerResult,
+    column::ColumnMap,
+    explain::ExplainFormatter,
+    expression::{ExpressionBinder, PlanExpression},
+    Column, ColumnId, Node, PlanNode, Planner, PlannerResult,
 };
 use crate::{
     catalog::{Index, Table, TableFunction},
     parser,
-    planner::{self, expression::TypedExpression},
+    planner::expression::TypedExpression,
     types::NullableType,
     PlannerError, Value,
 };
@@ -32,7 +34,7 @@ pub enum Scan<'a> {
         outputs: Vec<ColumnId>,
     },
     Expression {
-        rows: Vec<Vec<planner::Expression<'a, ColumnId>>>,
+        rows: Vec<Vec<PlanExpression<'a>>>,
         outputs: Vec<ColumnId>,
     },
 }
@@ -135,7 +137,7 @@ impl<'a> PlanNode<'a> {
 
     pub(super) fn new_expression_scan(
         column_map: &mut ColumnMap,
-        rows: Vec<Vec<planner::Expression<'a, ColumnId>>>,
+        rows: Vec<Vec<PlanExpression<'a>>>,
         column_types: Vec<NullableType>,
     ) -> Self {
         let outputs = column_types

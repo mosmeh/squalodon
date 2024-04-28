@@ -1,6 +1,6 @@
 use super::{
     explain::ExplainFormatter,
-    expression::{ExpressionBinder, TypedExpression},
+    expression::{ExpressionBinder, PlanExpression, TypedExpression},
     ColumnId, CompareOp, Node, PlanNode, Planner, PlannerResult, Scan,
 };
 use crate::{
@@ -12,7 +12,7 @@ use std::{collections::HashSet, ops::Bound};
 
 pub struct Filter<'a> {
     pub source: Box<PlanNode<'a>>,
-    pub conjuncts: HashSet<planner::Expression<'a, ColumnId>>,
+    pub conjuncts: HashSet<PlanExpression<'a>>,
 }
 
 impl Node for Filter<'_> {
@@ -42,7 +42,7 @@ impl<'a> PlanNode<'a> {
     fn filter_inner(
         self,
         ctx: &ConnectionContext<'a>,
-        conjuncts: HashSet<planner::Expression<'a, ColumnId>>,
+        conjuncts: HashSet<PlanExpression<'a>>,
     ) -> PlannerResult<Self> {
         if self.produces_no_rows() {
             return Ok(self);
@@ -95,7 +95,7 @@ impl<'a> PlanNode<'a> {
                 let comparisons: Vec<_> = normalized_conjuncts
                     .iter()
                     .filter_map(|conjunct| {
-                        let planner::Expression::BinaryOp { op, lhs, rhs } = conjunct else {
+                        let PlanExpression::BinaryOp { op, lhs, rhs } = conjunct else {
                             return None;
                         };
                         let op = CompareOp::from_binary_op(*op)?;
@@ -150,10 +150,10 @@ impl<'a> PlanNode<'a> {
             }
             PlanNode::Scan(Scan::Seq { table, outputs }) => {
                 for conjunct in &normalized_conjuncts {
-                    let planner::Expression::BinaryOp { op, lhs, rhs } = conjunct else {
+                    let PlanExpression::BinaryOp { op, lhs, rhs } = conjunct else {
                         continue;
                     };
-                    let (planner::Expression::ColumnRef(id), planner::Expression::Constant(value)) =
+                    let (PlanExpression::ColumnRef(id), PlanExpression::Constant(value)) =
                         (lhs.as_ref(), rhs.as_ref())
                     else {
                         continue;
@@ -209,10 +209,10 @@ impl<'a> PlanNode<'a> {
 /// Returns false if the expression evaluates to false.
 fn collect_conjuncts<'a>(
     ctx: &ConnectionContext<'a>,
-    conjuncts: &mut HashSet<planner::Expression<'a, ColumnId>>,
-    expr: planner::Expression<'a, ColumnId>,
+    conjuncts: &mut HashSet<PlanExpression<'a>>,
+    expr: PlanExpression<'a>,
 ) -> bool {
-    if let planner::Expression::BinaryOp {
+    if let PlanExpression::BinaryOp {
         op: BinaryOp::And,
         lhs,
         rhs,

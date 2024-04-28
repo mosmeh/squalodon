@@ -1,8 +1,7 @@
 use super::{ConnectionContext, ExecutorNode, ExecutorResult, IntoOutput, Node, Output};
 use crate::{
     memcomparable::MemcomparableSerde,
-    planner::{self, Expression, OrderBy},
-    rows::ColumnIndex,
+    planner::{self, ExecutableExpression, ExecutableOrderBy},
     ExecutorError, Row, Value,
 };
 use std::collections::BinaryHeap;
@@ -15,7 +14,7 @@ impl Sort {
     fn new(
         ctx: &ConnectionContext,
         source: ExecutorNode,
-        order_by: Vec<OrderBy<ColumnIndex>>,
+        order_by: Vec<ExecutableOrderBy>,
     ) -> ExecutorResult<Self> {
         let mut rows = Vec::new();
         for row in source {
@@ -51,13 +50,13 @@ impl TopN {
     fn new(
         ctx: &ConnectionContext,
         source: ExecutorNode,
-        limit: Expression<ColumnIndex>,
-        offset: Option<Expression<ColumnIndex>>,
-        order_by: Vec<OrderBy<ColumnIndex>>,
+        limit: ExecutableExpression,
+        offset: Option<ExecutableExpression>,
+        order_by: Vec<ExecutableOrderBy>,
     ) -> ExecutorResult<Self> {
         fn eval(
             ctx: &ConnectionContext,
-            expr: Option<Expression<ColumnIndex>>,
+            expr: Option<ExecutableExpression>,
         ) -> ExecutorResult<usize> {
             let Some(expr) = expr else {
                 return Ok(0);

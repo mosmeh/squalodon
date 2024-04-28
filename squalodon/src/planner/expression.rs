@@ -7,7 +7,7 @@ use crate::{
     connection::ConnectionContext,
     executor::{ExecutorError, ExecutorResult},
     parser::{self, BinaryOp, FunctionArgs, UnaryOp},
-    planner::{self, aggregate::ApplyAggregateOp},
+    planner::aggregate::ApplyAggregateOp,
     rows::ColumnIndex,
     types::{NullableType, Type},
     CatalogError, Row, Value,
@@ -17,6 +17,10 @@ use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
 };
+
+pub type PlanExpression<'a> = Expression<'a, ColumnId>;
+pub type ExecutableExpression<'a> = Expression<'a, ColumnIndex>;
+pub type ExpressionDisplay<'a, 'b> = Expression<'a, Cow<'b, str>>;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Expression<'a, C> {
@@ -50,7 +54,7 @@ pub enum Expression<'a, C> {
     },
 }
 
-impl std::fmt::Display for Expression<'_, Cow<'_, str>> {
+impl std::fmt::Display for ExpressionDisplay<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Constant(value) => std::fmt::Debug::fmt(value, f),
@@ -96,7 +100,7 @@ impl std::fmt::Display for Expression<'_, Cow<'_, str>> {
     }
 }
 
-impl<'a> Expression<'a, ColumnId> {
+impl<'a> PlanExpression<'a> {
     pub fn cast(self, ty: Type) -> Self {
         if let Self::Constant(value) = &self {
             if let Some(value) = value.cast(ty) {
@@ -240,14 +244,11 @@ impl<'a> Expression<'a, ColumnId> {
         }
     }
 
-    pub fn into_executable(self, columns: &[ColumnId]) -> Expression<'a, ColumnIndex> {
+    pub fn into_executable(self, columns: &[ColumnId]) -> ExecutableExpression<'a> {
         self.map_column_ref(|id| id.to_index(columns))
     }
 
-    pub(super) fn display<'b>(
-        &self,
-        column_map: &'b ColumnMapView,
-    ) -> Expression<'a, Cow<'b, str>> {
+    pub(super) fn display<'b>(&self, column_map: &'b ColumnMapView) -> ExpressionDisplay<'a, 'b> {
         self.clone().map_column_ref(|id| column_map[id].name())
     }
 
@@ -359,7 +360,7 @@ pub struct CaseBranch<'a, C> {
 
 #[derive(Clone)]
 pub struct TypedExpression<'a> {
-    pub expr: planner::Expression<'a, ColumnId>,
+    pub expr: PlanExpression<'a>,
     pub ty: NullableType,
 }
 
@@ -367,7 +368,7 @@ impl From<Value> for TypedExpression<'_> {
     fn from(value: Value) -> Self {
         let ty = value.ty();
         Self {
-            expr: planner::Expression::Constant(value),
+            expr: PlanExpression::Constant(value),
             ty,
         }
     }
@@ -377,7 +378,7 @@ impl<'a> TypedExpression<'a> {
     pub fn expect_type<T: Into<NullableType>>(
         self,
         expected: T,
-    ) -> PlannerResult<planner::Expression<'a, ColumnId>> {
+    ) -> PlannerResult<PlanExpression<'a>> {
         if self.ty.is_compatible_with(expected.into()) {
             Ok(self.expr)
         } else {
@@ -493,7 +494,7 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
             .aggregates
             .and_then(|aggregates| aggregates.resolve_group_by(&expr))
         {
-            let expr = planner::Expression::ColumnRef(column_id)
+            let expr = PlanExpression::ColumnRef(column_id)
                 .into_typed(self.planner.column_map()[column_id].ty);
             return Ok((source, expr));
         }
@@ -573,7 +574,7 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
                 };
                 Ok((
                     plan,
-                    planner::Expression::Case {
+                    PlanExpression::Case {
                         branches: branch_exprs,
                         else_branch,
                     }
@@ -607,7 +608,7 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
                 {
                     return Err(PlannerError::TypeError);
                 }
-                let expr = planner::Expression::Like {
+                let expr = PlanExpression::Like {
                     str_expr: str_expr.into(),
                     pattern: pattern.into(),
                     case_insensitive,
@@ -629,7 +630,7 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
                             .resolve_aggregate_function(&function_call)
                             .ok_or_else(|| PlannerError::UnknownColumn("(aggregate)".to_owned()))?;
                         let ty = self.planner.column_map()[id].ty;
-                        let expr = planner::Expression::ColumnRef(id).into_typed(ty);
+                        let expr = PlanExpression::ColumnRef(id).into_typed(ty);
                         return Ok((source, expr));
                     }
                     Err(CatalogError::UnknownEntry(_, _)) => (),
@@ -658,7 +659,7 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
                     arg_types.push(ty);
                 }
                 let ty = (function.bind)(&arg_types)?;
-                let expr = planner::Expression::Function {
+                let expr = PlanExpression::Function {
                     function,
                     args: arg_exprs,
                 };
@@ -710,7 +711,7 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
                 }]);
 
                 let plan = source.cross_product(subquery);
-                let expr = planner::Expression::ColumnRef(output).into_typed(subquery_type);
+                let expr = PlanExpression::ColumnRef(output).into_typed(subquery_type);
                 Ok((plan, expr))
             }
             parser::Expression::Exists(query) => {
@@ -757,7 +758,7 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
                 }]);
 
                 let plan = source.cross_product(subquery);
-                let expr = planner::Expression::ColumnRef(output).into_typed(Type::Boolean);
+                let expr = PlanExpression::ColumnRef(output).into_typed(Type::Boolean);
                 Ok((plan, expr))
             }
             parser::Expression::Parameter(i) => {
