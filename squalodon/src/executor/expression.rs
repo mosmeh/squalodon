@@ -258,10 +258,18 @@ fn eval_like<T: EvalContext>(
         _ => return Err(ExecutorError::TypeError),
     };
     let mut regex = "^".to_owned();
-    for ch in pattern.chars() {
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
         match ch {
             '%' => regex.push_str(".*"),
             '_' => regex.push('.'),
+            '\\' => {
+                if let Some(ch) = chars.next() {
+                    regex.push_str(&regex_lite::escape(&ch.to_string()));
+                } else {
+                    return Err(ExecutorError::InvalidLikePattern);
+                }
+            }
             ch => regex.push_str(&regex_lite::escape(&ch.to_string())),
         }
     }
