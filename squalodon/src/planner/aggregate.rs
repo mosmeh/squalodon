@@ -5,6 +5,7 @@ use super::{
 use crate::{catalog::AggregateFunction, parser, CatalogError, Type};
 use std::collections::HashMap;
 
+#[derive(Clone)]
 pub enum Aggregate<'a> {
     Ungrouped {
         source: Box<PlanNode<'a>>,
@@ -52,20 +53,39 @@ impl Node for Aggregate<'_> {
             }
             Self::Hash { ops, .. } => {
                 for op in ops {
-                    match op {
-                        AggregateOp::ApplyAggregate(ApplyAggregateOp { output, .. }) => {
-                            columns.push(*output);
-                        }
-                        AggregateOp::GroupBy { target } => {
-                            columns.push(*target);
-                        }
-                    }
+                    let id = match op {
+                        AggregateOp::ApplyAggregate(ApplyAggregateOp { output, .. }) => output,
+                        AggregateOp::GroupBy { target } => target,
+                    };
+                    columns.push(*id);
                 }
+            }
+        }
+    }
+
+    fn num_rows(&self) -> usize {
+        match self {
+            Self::Ungrouped { .. } => 1,
+            Self::Hash { source, .. } => source.num_rows().min(200), // Arbitrary value
+        }
+    }
+
+    fn cost(&self) -> f64 {
+        match self {
+            Self::Ungrouped { source, .. } => {
+                let aggregate_cost = source.num_rows() as f64 * PlanNode::DEFAULT_ROW_COST;
+                source.cost() + aggregate_cost
+            }
+            Self::Hash { source, .. } => {
+                let hash_cost = source.num_rows() as f64 * PlanNode::DEFAULT_ROW_COST;
+                let aggregate_cost = source.num_rows() as f64 * PlanNode::DEFAULT_ROW_COST;
+                source.cost() + hash_cost + aggregate_cost
             }
         }
     }
 }
 
+#[derive(Clone)]
 pub struct ApplyAggregateOp<'a> {
     pub function: &'a AggregateFunction,
     pub is_distinct: bool,
@@ -73,6 +93,7 @@ pub struct ApplyAggregateOp<'a> {
     pub output: ColumnId,
 }
 
+#[derive(Clone)]
 pub enum AggregateOp<'a> {
     ApplyAggregate(ApplyAggregateOp<'a>),
     GroupBy { target: ColumnId },
@@ -119,9 +140,7 @@ impl<'a, 'b> AggregateCollection<'a, 'b> {
             group_by: HashMap::new(),
         }
     }
-}
 
-impl<'a, 'b> AggregateCollection<'a, 'b> {
     pub fn gather(
         &mut self,
         source: PlanNode<'b>,
@@ -200,7 +219,7 @@ impl<'a, 'b> AggregateCollection<'a, 'b> {
                             return Ok(plan);
                         };
 
-                        let output = self.planner.column_map().insert(Column::new(
+                        let output = self.planner.column_map_mut().insert(Column::new(
                             expr.to_string(),
                             (function.bind)(bound_expr.ty)?,
                         ));
@@ -257,23 +276,22 @@ impl<'b> AggregatePlanner<'_, 'b> {
     pub fn resolve_group_by(&self, expr: &parser::Expression) -> Option<ColumnId> {
         self.group_by.get(expr).copied()
     }
-}
 
-impl<'a> AggregatePlanner<'_, 'a> {
     pub fn plan(
         &mut self,
-        expr_binder: &ExpressionBinder<'_, 'a>,
-        source: PlanNode<'a>,
+        expr_binder: &ExpressionBinder<'_, 'b>,
+        source: PlanNode<'b>,
         group_by: Vec<parser::Expression>,
-    ) -> PlannerResult<PlanNode<'a>> {
-        let num_aggregates = self.collected.aggregates.len();
-        let mut exprs = Vec::with_capacity(num_aggregates + group_by.len());
+    ) -> PlannerResult<PlanNode<'b>> {
+        let planner = self.collected.planner;
+        let aggregates = &self.collected.aggregates;
+        let mut exprs = Vec::with_capacity(aggregates.len() + group_by.len());
 
         // The first `aggregates.len()` columns are the aggregated columns
         // that are passed to the respective aggregate functions.
         {
-            let column_map = self.collected.planner.column_map();
-            for aggregate in self.collected.aggregates.values() {
+            let column_map = planner.column_map();
+            for aggregate in aggregates.values() {
                 let expr = aggregate
                     .arg
                     .clone()
@@ -291,23 +309,25 @@ impl<'a> AggregatePlanner<'_, 'a> {
             exprs.push(expr);
         }
 
-        let plan = plan.project(&mut self.collected.planner.column_map(), exprs);
+        let plan = plan.project(&mut planner.column_map_mut(), exprs);
         let outputs = plan.outputs();
-        let (aggregate_outputs, group_by_outputs) = outputs.split_at(num_aggregates);
+        let (aggregate_outputs, group_by_outputs) = outputs.split_at(aggregates.len());
         if has_group_by {
             for (group_by, output) in group_by.into_iter().zip(group_by_outputs) {
                 self.group_by.insert(group_by, *output);
             }
         }
 
-        let ops = self.collected.aggregates.iter().zip(aggregate_outputs).map(
-            |((func_call, aggregate), input)| ApplyAggregateOp {
-                function: aggregate.function,
-                is_distinct: func_call.is_distinct,
-                input: *input,
-                output: aggregate.output,
-            },
-        );
+        let ops =
+            aggregates
+                .iter()
+                .zip(aggregate_outputs)
+                .map(|((func_call, aggregate), input)| ApplyAggregateOp {
+                    function: aggregate.function,
+                    is_distinct: func_call.is_distinct,
+                    input: *input,
+                    output: aggregate.output,
+                });
         if has_group_by {
             let group_by_ops = group_by_outputs
                 .iter()

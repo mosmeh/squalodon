@@ -1,8 +1,5 @@
 use crate::{parser, rows::ColumnIndex, types::NullableType};
-use std::{
-    borrow::Cow,
-    cell::{RefCell, RefMut},
-};
+use std::borrow::Cow;
 
 #[derive(Debug, Clone)]
 pub struct Column {
@@ -73,13 +70,10 @@ impl ColumnId {
     }
 }
 
-pub struct ColumnMap<'a>(RefMut<'a, Vec<Column>>);
+#[derive(Default)]
+pub struct ColumnMap(Vec<Column>);
 
-impl ColumnMap<'_> {
-    pub fn view(&self) -> ColumnMapView {
-        ColumnMapView(&self.0)
-    }
-
+impl ColumnMap {
     pub fn insert(&mut self, column: Column) -> ColumnId {
         let id = ColumnId(self.0.len());
         self.0.push(column);
@@ -87,13 +81,7 @@ impl ColumnMap<'_> {
     }
 }
 
-impl<'a> From<&'a RefCell<Vec<Column>>> for ColumnMap<'a> {
-    fn from(cell: &'a RefCell<Vec<Column>>) -> Self {
-        ColumnMap(cell.borrow_mut())
-    }
-}
-
-impl std::ops::Index<ColumnId> for ColumnMap<'_> {
+impl std::ops::Index<ColumnId> for ColumnMap {
     type Output = Column;
 
     fn index(&self, index: ColumnId) -> &Self::Output {
@@ -101,31 +89,7 @@ impl std::ops::Index<ColumnId> for ColumnMap<'_> {
     }
 }
 
-impl std::ops::Index<&ColumnId> for ColumnMap<'_> {
-    type Output = Column;
-
-    fn index(&self, index: &ColumnId) -> &Self::Output {
-        &self.0[index.0]
-    }
-}
-
-pub struct ColumnMapView<'a>(&'a [Column]);
-
-impl<'a> From<&'a [Column]> for ColumnMapView<'a> {
-    fn from(columns: &'a [Column]) -> Self {
-        Self(columns)
-    }
-}
-
-impl std::ops::Index<ColumnId> for ColumnMapView<'_> {
-    type Output = Column;
-
-    fn index(&self, index: ColumnId) -> &Self::Output {
-        &self.0[index.0]
-    }
-}
-
-impl std::ops::Index<&ColumnId> for ColumnMapView<'_> {
+impl std::ops::Index<&ColumnId> for ColumnMap {
     type Output = Column;
 
     fn index(&self, index: &ColumnId) -> &Self::Output {

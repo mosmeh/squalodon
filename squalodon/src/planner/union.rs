@@ -4,10 +4,11 @@ use super::{
 };
 use crate::{parser, planner, PlannerError};
 
+#[derive(Clone)]
 pub struct Union<'a> {
     pub left: Box<PlanNode<'a>>,
     pub right: Box<PlanNode<'a>>,
-    outputs: Vec<ColumnId>,
+    pub outputs: Vec<ColumnId>,
 }
 
 impl Node for Union<'_> {
@@ -17,6 +18,14 @@ impl Node for Union<'_> {
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
         columns.extend(self.outputs.iter());
+    }
+
+    fn num_rows(&self) -> usize {
+        self.left.num_rows() + self.right.num_rows()
+    }
+
+    fn cost(&self) -> f64 {
+        self.left.cost() + self.right.cost()
     }
 }
 
@@ -63,7 +72,7 @@ impl<'a> Planner<'a> {
     ) -> PlannerResult<PlanNode<'a>> {
         let left = self.plan_query(left)?;
         let right = self.plan_query(right)?;
-        let mut plan = left.union(&mut self.column_map(), right)?;
+        let mut plan = left.union(&mut self.column_map_mut(), right)?;
         if !all {
             let ops = plan
                 .outputs()

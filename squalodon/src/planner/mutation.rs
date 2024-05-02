@@ -5,10 +5,11 @@ use super::{
 };
 use crate::{catalog::Table, parser, Type};
 
+#[derive(Clone)]
 pub struct Insert<'a> {
     pub source: Box<PlanNode<'a>>,
     pub table: Table<'a>,
-    output: ColumnId,
+    pub output: ColumnId,
 }
 
 impl Node for Insert<'_> {
@@ -21,12 +22,21 @@ impl Node for Insert<'_> {
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
         columns.push(self.output);
     }
+
+    fn num_rows(&self) -> usize {
+        1
+    }
+
+    fn cost(&self) -> f64 {
+        self.source.num_rows() as f64 * PlanNode::DEFAULT_ROW_COST
+    }
 }
 
+#[derive(Clone)]
 pub struct Update<'a> {
     pub source: Box<PlanNode<'a>>,
     pub table: Table<'a>,
-    output: ColumnId,
+    pub output: ColumnId,
 }
 
 impl Node for Update<'_> {
@@ -39,12 +49,21 @@ impl Node for Update<'_> {
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
         columns.push(self.output);
     }
+
+    fn num_rows(&self) -> usize {
+        1
+    }
+
+    fn cost(&self) -> f64 {
+        self.source.num_rows() as f64 * PlanNode::DEFAULT_ROW_COST
+    }
 }
 
+#[derive(Clone)]
 pub struct Delete<'a> {
     pub source: Box<PlanNode<'a>>,
     pub table: Table<'a>,
-    output: ColumnId,
+    pub output: ColumnId,
 }
 
 impl Node for Delete<'_> {
@@ -56,6 +75,14 @@ impl Node for Delete<'_> {
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
         columns.push(self.output);
+    }
+
+    fn num_rows(&self) -> usize {
+        1
+    }
+
+    fn cost(&self) -> f64 {
+        self.source.num_rows() as f64 * PlanNode::DEFAULT_ROW_COST
     }
 }
 
@@ -134,7 +161,7 @@ impl<'a> Planner<'a> {
         }
 
         let mut exprs = Vec::with_capacity(table.columns().len());
-        let mut column_map = self.column_map();
+        let mut column_map = self.column_map_mut();
         for (source_column_id, dest_column) in column_mapping.into_iter().zip(table.columns()) {
             let TypedExpression { mut expr, ty } = if let Some(id) = source_column_id {
                 PlanExpression::ColumnRef(id).into_typed(column_map[id].ty)
@@ -201,7 +228,7 @@ impl<'a> Planner<'a> {
         // The input of the Update node should consist of the old and new values
         // of columns concatenated together.
         let outputs = plan.outputs();
-        let mut column_map = self.column_map();
+        let mut column_map = self.column_map_mut();
         let old = outputs
             .into_iter()
             .map(|id| PlanExpression::ColumnRef(id).into_typed(column_map[id].ty));
@@ -228,6 +255,6 @@ impl<'a> Planner<'a> {
         // Spool prevents Halloween problem.
         let plan = plan.spool();
 
-        Ok(plan.delete(&mut self.column_map(), table))
+        Ok(plan.delete(&mut self.column_map_mut(), table))
     }
 }

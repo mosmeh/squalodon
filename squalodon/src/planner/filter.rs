@@ -1,7 +1,7 @@
 use super::{
     explain::ExplainFormatter,
     expression::{ExpressionBinder, PlanExpression, TypedExpression},
-    ColumnId, CompareOp, Node, PlanNode, Planner, PlannerResult, Scan,
+    ColumnId, Node, PlanNode, Planner, PlannerResult, Scan,
 };
 use crate::{
     parser::{self, BinaryOp},
@@ -9,9 +9,16 @@ use crate::{
 };
 use std::{collections::HashSet, ops::Bound};
 
+#[derive(Clone)]
 pub struct Filter<'a> {
     pub source: Box<PlanNode<'a>>,
     pub conjuncts: HashSet<PlanExpression<'a>>,
+}
+
+impl Filter<'_> {
+    /// Default selectivity for filters when there is no basis for
+    /// a better estimate.
+    pub const DEFAULT_SELECTIVITY: f64 = 0.5;
 }
 
 impl Node for Filter<'_> {
@@ -26,15 +33,27 @@ impl Node for Filter<'_> {
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
         self.source.append_outputs(columns);
     }
+
+    fn num_rows(&self) -> usize {
+        (self.source.num_rows() as f64 * Self::DEFAULT_SELECTIVITY) as usize
+    }
+
+    fn cost(&self) -> f64 {
+        let filter_cost = self.source.num_rows() as f64 * PlanNode::DEFAULT_ROW_COST;
+        self.source.cost() + filter_cost
+    }
 }
 
 impl<'a> PlanNode<'a> {
-    pub(super) fn filter(self, condition: TypedExpression<'a>) -> PlannerResult<Self> {
+    pub fn filter(self, condition: TypedExpression<'a>) -> PlannerResult<Self> {
         let condition = condition.expect_type(Type::Boolean)?;
-        self.filter_inner([condition].into())
+        self.filter_with_conjuncts([condition].into())
     }
 
-    fn filter_inner(self, conjuncts: HashSet<PlanExpression<'a>>) -> PlannerResult<Self> {
+    pub fn filter_with_conjuncts(
+        self,
+        conjuncts: HashSet<PlanExpression<'a>>,
+    ) -> PlannerResult<Self> {
         if self.produces_no_rows() {
             return Ok(self);
         }
@@ -57,7 +76,7 @@ impl<'a> PlanNode<'a> {
             }) => {
                 // Merge nested filters
                 conjuncts.extend(normalized_conjuncts);
-                return source.filter_inner(conjuncts);
+                return source.filter_with_conjuncts(conjuncts);
             }
             PlanNode::CrossProduct(planner::CrossProduct { left, right }) => {
                 let left_outputs = left.outputs().into_iter().collect();
@@ -65,76 +84,25 @@ impl<'a> PlanNode<'a> {
 
                 // Push down filters
                 for conjunct in &normalized_conjuncts {
-                    if conjunct.referenced_columns().is_subset(&left_outputs) {
+                    let refs = conjunct.referenced_columns();
+                    if refs.is_empty() {
+                        continue;
+                    }
+                    if refs.is_subset(&left_outputs) {
                         let conjunct = conjunct.clone();
                         normalized_conjuncts.remove(&conjunct);
                         return left
-                            .filter_inner([conjunct].into())?
+                            .filter_with_conjuncts([conjunct].into())?
                             .cross_product(*right)
-                            .filter_inner(normalized_conjuncts);
+                            .filter_with_conjuncts(normalized_conjuncts);
                     }
-                    if conjunct.referenced_columns().is_subset(&right_outputs) {
+                    if refs.is_subset(&right_outputs) {
                         let conjunct = conjunct.clone();
                         normalized_conjuncts.remove(&conjunct);
                         return left
-                            .cross_product(right.filter_inner([conjunct].into())?)
-                            .filter_inner(normalized_conjuncts);
+                            .cross_product(right.filter_with_conjuncts([conjunct].into())?)
+                            .filter_with_conjuncts(normalized_conjuncts);
                     }
-                }
-
-                // Nested loop join or hash join
-                let comparisons: Vec<_> = normalized_conjuncts
-                    .iter()
-                    .filter_map(|conjunct| {
-                        let PlanExpression::BinaryOp { op, lhs, rhs } = conjunct else {
-                            return None;
-                        };
-                        let op = CompareOp::from_binary_op(*op)?;
-                        let lhs_refs = lhs.referenced_columns();
-                        let rhs_refs = rhs.referenced_columns();
-                        let (op, left, right) = if lhs_refs.is_subset(&left_outputs)
-                            && rhs_refs.is_subset(&right_outputs)
-                        {
-                            (op, lhs, rhs)
-                        } else if lhs_refs.is_subset(&right_outputs)
-                            && rhs_refs.is_subset(&left_outputs)
-                        {
-                            (op.flip(), rhs, lhs)
-                        } else {
-                            return None;
-                        };
-                        Some((conjunct.clone(), op, (**left).clone(), (**right).clone()))
-                    })
-                    .collect();
-                if !comparisons.is_empty() {
-                    for (conjunct, _, _, _) in &comparisons {
-                        normalized_conjuncts.remove(conjunct);
-                    }
-                    let has_inequality =
-                        comparisons.iter().any(|(_, op, _, _)| *op != CompareOp::Eq);
-                    let join = if has_inequality {
-                        // TODO: compare costs of NestedLoopJoin and
-                        //       HashJoin + Filter when some of the conjuncts
-                        //       are equalities and others are inequalities
-                        planner::Join::NestedLoop {
-                            left,
-                            right,
-                            comparisons: comparisons
-                                .into_iter()
-                                .map(|(_, op, left, right)| (op, left, right))
-                                .collect(),
-                        }
-                    } else {
-                        planner::Join::Hash {
-                            left,
-                            right,
-                            keys: comparisons
-                                .into_iter()
-                                .map(|(_, _, left, right)| (left, right))
-                                .collect(),
-                        }
-                    };
-                    return PlanNode::Join(join).filter_inner(normalized_conjuncts);
                 }
 
                 PlanNode::CrossProduct(planner::CrossProduct { left, right })
@@ -180,7 +148,7 @@ impl<'a> PlanNode<'a> {
                             range,
                             outputs,
                         })
-                        .filter_inner(normalized_conjuncts);
+                        .filter_with_conjuncts(normalized_conjuncts);
                     }
                 }
                 PlanNode::Scan(Scan::Seq { table, outputs })

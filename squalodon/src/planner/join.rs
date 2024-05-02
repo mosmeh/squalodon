@@ -1,13 +1,14 @@
 use super::{
     explain::ExplainFormatter,
     expression::{ExpressionBinder, PlanExpression, TypedExpression},
-    ColumnId, Node, PlanNode, Planner, PlannerResult,
+    ColumnId, Filter, Node, PlanNode, Planner, PlannerResult,
 };
 use crate::{
     parser::{self, BinaryOp},
     Value,
 };
 
+#[derive(Clone)]
 pub struct CrossProduct<'a> {
     pub left: Box<PlanNode<'a>>,
     pub right: Box<PlanNode<'a>>,
@@ -22,8 +23,19 @@ impl Node for CrossProduct<'_> {
         self.left.append_outputs(columns);
         self.right.append_outputs(columns);
     }
+
+    fn num_rows(&self) -> usize {
+        self.left.num_rows() * self.right.num_rows()
+    }
+
+    fn cost(&self) -> f64 {
+        let cross_product_cost =
+            self.left.num_rows() as f64 * self.right.num_rows() as f64 * PlanNode::DEFAULT_ROW_COST;
+        self.left.cost() + self.right.cost() + cross_product_cost
+    }
 }
 
+#[derive(Clone)]
 pub enum Join<'a> {
     NestedLoop {
         left: Box<PlanNode<'a>>,
@@ -72,6 +84,44 @@ impl Node for Join<'_> {
             Self::NestedLoop { left, right, .. } | Self::Hash { left, right, .. } => {
                 left.append_outputs(columns);
                 right.append_outputs(columns);
+            }
+        }
+    }
+
+    fn num_rows(&self) -> usize {
+        match self {
+            Self::NestedLoop {
+                left,
+                right,
+                comparisons,
+            } => {
+                let mut num_rows = left.num_rows() as f64 * right.num_rows() as f64;
+                for _ in comparisons {
+                    num_rows *= Filter::DEFAULT_SELECTIVITY;
+                }
+                num_rows as usize
+            }
+            Self::Hash { left, right, keys } => {
+                let mut num_rows = left.num_rows() as f64 * right.num_rows() as f64;
+                for _ in keys {
+                    num_rows *= Filter::DEFAULT_SELECTIVITY;
+                }
+                num_rows as usize
+            }
+        }
+    }
+
+    fn cost(&self) -> f64 {
+        match self {
+            Self::NestedLoop { left, right, .. } => {
+                let join_cost =
+                    left.num_rows() as f64 * right.num_rows() as f64 * PlanNode::DEFAULT_ROW_COST;
+                left.cost() + right.cost() + join_cost
+            }
+            Self::Hash { left, right, .. } => {
+                let join_cost =
+                    (left.num_rows() as f64 + right.num_rows() as f64) * PlanNode::DEFAULT_ROW_COST;
+                left.cost() + right.cost() + join_cost
             }
         }
     }
@@ -129,23 +179,58 @@ impl std::fmt::Display for CompareOp {
     }
 }
 
-impl PlanNode<'_> {
-    pub(super) fn cross_product(self, other: Self) -> Self {
+impl<'a> PlanNode<'a> {
+    pub fn cross_product(self, other: Self) -> Self {
+        match self.simplify(other) {
+            Ok(plan) => plan,
+            Err((left, right)) => Self::CrossProduct(CrossProduct {
+                left: Box::new(left),
+                right: Box::new(right),
+            }),
+        }
+    }
+
+    pub fn nested_loop_join(
+        self,
+        other: Self,
+        comparisons: Vec<(CompareOp, PlanExpression<'a>, PlanExpression<'a>)>,
+    ) -> Self {
+        match self.simplify(other) {
+            Ok(plan) => plan,
+            Err((left, right)) => Self::Join(Join::NestedLoop {
+                left: Box::new(left),
+                right: Box::new(right),
+                comparisons,
+            }),
+        }
+    }
+
+    pub fn hash_join(
+        self,
+        other: Self,
+        keys: Vec<(PlanExpression<'a>, PlanExpression<'a>)>,
+    ) -> Self {
+        match self.simplify(other) {
+            Ok(plan) => plan,
+            Err((left, right)) => Self::Join(Join::Hash {
+                left: Box::new(left),
+                right: Box::new(right),
+                keys,
+            }),
+        }
+    }
+
+    fn simplify(self, other: Self) -> Result<Self, (Self, Self)> {
         if self.produces_no_rows() || other.produces_no_rows() {
-            let mut outputs = self.outputs();
-            outputs.append(&mut other.outputs());
-            return PlanNode::new_no_rows(outputs);
+            return Ok(PlanNode::new_no_rows(self.outputs()));
         }
         if self.outputs().is_empty() {
-            return other;
+            return Ok(other);
         }
         if other.outputs().is_empty() {
-            return self;
+            return Ok(self);
         }
-        Self::CrossProduct(CrossProduct {
-            left: Box::new(self),
-            right: Box::new(other),
-        })
+        Err((self, other))
     }
 }
 

@@ -7,6 +7,7 @@ use crate::{
 };
 use std::collections::HashSet;
 
+#[derive(Clone)]
 pub struct CreateTable {
     pub name: String,
     pub if_not_exists: bool,
@@ -25,13 +26,22 @@ impl Node for CreateTable {
     }
 
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
+
+    fn num_rows(&self) -> usize {
+        0
+    }
+
+    fn cost(&self) -> f64 {
+        PlanNode::DEFAULT_COST
+    }
 }
 
-#[derive(PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Constraint {
     Unique(Vec<ColumnIndex>),
 }
 
+#[derive(Clone)]
 pub struct CreateIndex<'a> {
     pub name: String,
     pub table: Table<'a>,
@@ -51,8 +61,17 @@ impl Node for CreateIndex<'_> {
     }
 
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
+
+    fn num_rows(&self) -> usize {
+        0
+    }
+
+    fn cost(&self) -> f64 {
+        PlanNode::DEFAULT_COST
+    }
 }
 
+#[derive(Clone)]
 pub enum DropObject<'a> {
     Table(Table<'a>),
     Index { table: Table<'a>, name: String },
@@ -68,8 +87,17 @@ impl Node for DropObject<'_> {
     }
 
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
+
+    fn num_rows(&self) -> usize {
+        0
+    }
+
+    fn cost(&self) -> f64 {
+        PlanNode::DEFAULT_COST
+    }
 }
 
+#[derive(Clone)]
 pub struct Truncate<'a> {
     pub table: Table<'a>,
 }
@@ -80,8 +108,17 @@ impl Node for Truncate<'_> {
     }
 
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
+
+    fn num_rows(&self) -> usize {
+        0
+    }
+
+    fn cost(&self) -> f64 {
+        PlanNode::DEFAULT_COST
+    }
 }
 
+#[derive(Clone)]
 pub enum Analyze<'a> {
     AllTables,
     Tables(Vec<Table<'a>>),
@@ -103,8 +140,17 @@ impl Node for Analyze<'_> {
     }
 
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
+
+    fn num_rows(&self) -> usize {
+        0
+    }
+
+    fn cost(&self) -> f64 {
+        PlanNode::DEFAULT_COST
+    }
 }
 
+#[derive(Clone)]
 pub enum Reindex<'a> {
     Table(Table<'a>),
     Index(Index<'a>),
@@ -120,6 +166,14 @@ impl Node for Reindex<'_> {
     }
 
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
+
+    fn num_rows(&self) -> usize {
+        0
+    }
+
+    fn cost(&self) -> f64 {
+        PlanNode::DEFAULT_COST
+    }
 }
 
 impl<'a> PlanNode<'a> {

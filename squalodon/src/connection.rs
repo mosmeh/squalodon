@@ -1,6 +1,7 @@
 use crate::{
     catalog::{self, Catalog},
     executor::ExecutionContext,
+    optimizer,
     parser::{Deallocate, Expression, Parser, Statement, TransactionControl},
     planner,
     rows::Rows,
@@ -125,6 +126,7 @@ impl<'a, T: Storage> Connection<'a, T> {
         let catalog = self.db.catalog.with(txn);
         let execution_ctx = ExecutionContext::new(catalog, &self.rng);
         let plan = planner::plan(&execution_ctx, statement, params)?;
+        let plan = optimizer::optimize(plan)?;
         match execution_ctx.execute(plan) {
             Ok(rows) => {
                 if let Some(txn) = implicit_txn {

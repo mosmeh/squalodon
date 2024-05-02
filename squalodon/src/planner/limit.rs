@@ -5,6 +5,7 @@ use super::{
 };
 use crate::{parser, PlannerError, Type, Value};
 
+#[derive(Clone)]
 pub struct Limit<'a> {
     pub source: Box<PlanNode<'a>>,
     pub limit: Option<PlanExpression<'a>>,
@@ -26,6 +27,23 @@ impl Node for Limit<'_> {
 
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
         self.source.append_outputs(columns);
+    }
+
+    fn num_rows(&self) -> usize {
+        let mut num_rows = self.source.num_rows();
+        if let Some(Ok(Value::Integer(limit))) = self.limit.as_ref().map(PlanExpression::eval_const)
+        {
+            num_rows = num_rows.min(limit as usize);
+        }
+        num_rows
+    }
+
+    fn cost(&self) -> f64 {
+        let num_rows = self.num_rows();
+        let source_cost =
+            self.source.cost() * (num_rows + 1) as f64 / (self.source.num_rows() + 1) as f64;
+        let limit_cost = num_rows as f64 * PlanNode::DEFAULT_ROW_COST;
+        source_cost + limit_cost
     }
 }
 
@@ -121,6 +139,6 @@ impl<'a> Planner<'a> {
         let offset = offset
             .map(|expr| expr_binder.bind_without_source(expr))
             .transpose()?;
-        source.limit(&mut self.column_map(), limit, offset)
+        source.limit(&mut self.column_map_mut(), limit, offset)
     }
 }

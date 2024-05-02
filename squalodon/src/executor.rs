@@ -78,9 +78,8 @@ impl<'a> ExecutionContext<'a> {
     }
 
     pub fn execute(&self, plan: Plan) -> ExecutorResult<Rows> {
-        let Plan { node, schema } = plan;
-        let columns: Vec<_> = schema
-            .into_iter()
+        let columns: Vec<_> = plan
+            .columns()
             .map(|column| {
                 Column {
                     name: column.column_name,
@@ -91,7 +90,7 @@ impl<'a> ExecutionContext<'a> {
                 }
             })
             .collect();
-        let executor = Executor::new(self, node)?;
+        let executor = Executor::new(self, plan.into_node())?;
         let mut rows = Vec::new();
         for row in executor {
             let row = row?;

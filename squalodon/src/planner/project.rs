@@ -12,6 +12,7 @@ use crate::{
 };
 use std::collections::HashSet;
 
+#[derive(Clone)]
 pub struct Project<'a> {
     pub source: Box<PlanNode<'a>>,
     pub projections: Vec<(ColumnId, PlanExpression<'a>)>,
@@ -29,14 +30,19 @@ impl Node for Project<'_> {
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
         columns.extend(self.projections.iter().map(|(id, _)| *id));
     }
+
+    fn num_rows(&self) -> usize {
+        self.source.num_rows()
+    }
+
+    fn cost(&self) -> f64 {
+        let projection_cost = self.source.num_rows() as f64 * PlanNode::DEFAULT_ROW_COST;
+        self.source.cost() + projection_cost
+    }
 }
 
 impl<'a> PlanNode<'a> {
-    pub(super) fn project(
-        self,
-        column_map: &mut ColumnMap,
-        exprs: Vec<TypedExpression<'a>>,
-    ) -> Self {
+    pub fn project(self, column_map: &mut ColumnMap, exprs: Vec<TypedExpression<'a>>) -> Self {
         if self.produces_no_rows() {
             return self;
         }
@@ -47,10 +53,7 @@ impl<'a> PlanNode<'a> {
                 let TypedExpression { expr, ty } = expr;
                 let id = match expr {
                     PlanExpression::ColumnRef(id) => *id,
-                    _ => column_map.insert(Column::new(
-                        expr.display(&column_map.view()).to_string(),
-                        *ty,
-                    )),
+                    _ => column_map.insert(Column::new(expr.display(column_map).to_string(), *ty)),
                 };
                 (id, expr.clone())
             })
@@ -93,9 +96,10 @@ impl<'a> PlanNode<'a> {
                     .map(|i| outputs[i.0])
                     .collect();
                 let indexed: HashSet<_> = indexed_column_ids.iter().copied().collect();
-                let is_covered = exprs
-                    .iter()
-                    .all(|expr| expr.expr.referenced_columns().is_subset(&indexed));
+                let is_covered = exprs.iter().all(|expr| {
+                    let refs = expr.expr.referenced_columns();
+                    !refs.is_empty() && refs.is_subset(&indexed)
+                });
                 if is_covered {
                     return PlanNode::Scan(Scan::IndexOnly {
                         index,
@@ -167,7 +171,7 @@ impl<'a> Planner<'a> {
                     exprs.push(expr);
                 }
 
-                let mut column_map = self.column_map();
+                let mut column_map = self.column_map_mut();
                 let plan = plan.project(&mut column_map, exprs);
                 let outputs = plan.outputs();
 
@@ -194,7 +198,7 @@ impl<'a> Planner<'a> {
                 Ok(plan.project(&mut column_map, exprs))
             }
             Some(parser::Distinct { on: None }) => {
-                let plan = plan.project(&mut self.column_map(), exprs);
+                let plan = plan.project(&mut self.column_map_mut(), exprs);
                 let ops = plan
                     .outputs()
                     .into_iter()
@@ -202,7 +206,7 @@ impl<'a> Planner<'a> {
                     .collect();
                 Ok(plan.hash_aggregate(ops))
             }
-            None => Ok(plan.project(&mut self.column_map(), exprs)),
+            None => Ok(plan.project(&mut self.column_map_mut(), exprs)),
         }
     }
 }

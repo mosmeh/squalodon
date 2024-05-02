@@ -172,6 +172,10 @@ impl<'a> Table<'a> {
         self.save()
     }
 
+    pub fn statistics(&self) -> &Statistics {
+        &self.def.statistics
+    }
+
     pub fn transaction(&self) -> &'a dyn Transaction {
         self.catalog.txn
     }
@@ -242,8 +246,14 @@ struct IndexDef {
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
-struct Statistics {
+pub struct Statistics {
     num_rows: u64,
+}
+
+impl Statistics {
+    pub fn num_rows(&self) -> u64 {
+        self.num_rows
+    }
 }
 
 pub enum Function<'a> {

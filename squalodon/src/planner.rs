@@ -14,8 +14,9 @@ mod sort;
 mod union;
 
 pub use aggregate::{Aggregate, AggregateOp, ApplyAggregateOp};
-pub use column::{Column, ColumnId};
+pub use column::{Column, ColumnId, ColumnMap};
 pub use ddl::{Analyze, Constraint, CreateIndex, CreateTable, DropObject, Reindex, Truncate};
+pub use explain::Explain;
 pub use expression::{CaseBranch, ExecutableExpression, Expression, PlanExpression};
 pub use filter::Filter;
 pub use join::{CompareOp, CrossProduct, Join};
@@ -30,10 +31,14 @@ use crate::{
     catalog::CatalogRef, executor::ExecutionContext, parser, types::Params, CatalogError, Result,
     Row, StorageError, Value,
 };
-use column::{ColumnMap, ColumnRef};
-use explain::{Explain, ExplainFormatter};
+use column::ColumnRef;
+use explain::ExplainFormatter;
 use expression::{ExpressionBinder, TypedExpression};
-use std::{cell::RefCell, num::NonZeroUsize, rc::Rc};
+use std::{
+    cell::{Ref, RefCell, RefMut},
+    num::NonZeroUsize,
+    rc::Rc,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlannerError {
@@ -98,30 +103,55 @@ pub fn plan<'a>(
         let value = expr.into_executable(&[]).eval(ctx, &Row::empty())?;
         param_values.push(value);
     }
-
-    let planner = planner.with_params(param_values);
-    let node = planner.plan(statement)?;
-    let column_map = planner.column_map();
-    let schema = node
-        .outputs()
-        .into_iter()
-        .map(|id| column_map[id].clone())
-        .collect();
-    Ok(Plan { node, schema })
+    Ok(Plan {
+        node: planner.with_params(param_values).plan(statement)?,
+        column_map: planner.column_map,
+    })
 }
 
 pub struct Plan<'a> {
-    pub node: PlanNode<'a>,
-    pub schema: Vec<Column>,
+    node: PlanNode<'a>,
+    column_map: Rc<RefCell<ColumnMap>>,
 }
 
-trait Node {
+impl<'a> Plan<'a> {
+    pub fn into_node(self) -> PlanNode<'a> {
+        self.node
+    }
+
+    pub fn map<F>(self, f: F) -> PlannerResult<Self>
+    where
+        F: FnOnce(PlanNode<'a>, &RefCell<ColumnMap>) -> PlannerResult<PlanNode<'a>>,
+    {
+        Ok(Plan {
+            node: f(self.node, &self.column_map)?,
+            column_map: self.column_map,
+        })
+    }
+
+    pub fn columns(&self) -> impl Iterator<Item = Column> + '_ {
+        let column_map = self.column_map.borrow();
+        self.node
+            .outputs()
+            .into_iter()
+            .map(move |id| column_map[id].clone())
+    }
+}
+
+pub trait Node {
     fn fmt_explain(&self, f: &ExplainFormatter);
     fn append_outputs(&self, columns: &mut Vec<ColumnId>);
+
+    /// Estimated number of rows produced by the node.
+    fn num_rows(&self) -> usize;
+
+    /// Cost of executing this node.
+    fn cost(&self) -> f64;
 }
 
 macro_rules! nodes {
     ($($variant:ident: $ty:ty)*) => {
+        #[derive(Clone)]
         pub enum PlanNode<'a> {
             $($variant($ty),)*
         }
@@ -136,6 +166,18 @@ macro_rules! nodes {
             fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
                 match self {
                     $(Self::$variant(n) => n.append_outputs(columns),)*
+                }
+            }
+
+            fn num_rows(&self) -> usize {
+                match self {
+                    $(Self::$variant(n) => n.num_rows(),)*
+                }
+            }
+
+            fn cost(&self) -> f64 {
+                match self {
+                    $(Self::$variant(n) => n.cost(),)*
                 }
             }
         }
@@ -167,6 +209,14 @@ nodes! {
 }
 
 impl<'a> PlanNode<'a> {
+    /// Default cost for executing a node when there is no basis for a better
+    /// estimate.
+    const DEFAULT_COST: f64 = 1.0;
+
+    /// Default cost for processing a row when there is no basis for a better
+    /// estimate.
+    const DEFAULT_ROW_COST: f64 = 0.01;
+
     pub fn outputs(&self) -> Vec<ColumnId> {
         let mut columns = Vec::new();
         self.append_outputs(&mut columns);
@@ -220,6 +270,7 @@ impl<'a> PlanNode<'a> {
     }
 }
 
+#[derive(Clone)]
 pub struct Spool<'a> {
     pub source: Box<PlanNode<'a>>,
 }
@@ -232,12 +283,21 @@ impl Node for Spool<'_> {
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
         self.source.append_outputs(columns);
     }
+
+    fn num_rows(&self) -> usize {
+        self.source.num_rows()
+    }
+
+    fn cost(&self) -> f64 {
+        let spool_cost = self.source.num_rows() as f64 * PlanNode::DEFAULT_ROW_COST;
+        self.source.cost() + spool_cost
+    }
 }
 
 struct Planner<'a> {
     catalog: CatalogRef<'a>,
     params: Vec<Value>,
-    column_map: Rc<RefCell<Vec<Column>>>,
+    column_map: Rc<RefCell<ColumnMap>>,
 }
 
 impl<'a> Planner<'a> {
@@ -257,8 +317,12 @@ impl<'a> Planner<'a> {
         }
     }
 
-    fn column_map(&self) -> ColumnMap {
-        ColumnMap::from(self.column_map.as_ref())
+    fn column_map(&self) -> Ref<ColumnMap> {
+        self.column_map.borrow()
+    }
+
+    fn column_map_mut(&self) -> RefMut<ColumnMap> {
+        self.column_map.borrow_mut()
     }
 }
 

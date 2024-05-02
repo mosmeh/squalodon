@@ -6,6 +6,7 @@ mod catalog;
 mod connection;
 mod executor;
 mod memcomparable;
+mod optimizer;
 mod parser;
 mod planner;
 mod rows;

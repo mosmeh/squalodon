@@ -1,8 +1,7 @@
 use super::{
-    column::ColumnMap,
     explain::ExplainFormatter,
     expression::{ExpressionBinder, PlanExpression},
-    Column, ColumnId, Node, PlanNode, Planner, PlannerResult,
+    Column, ColumnId, ColumnMap, Filter, Node, PlanNode, Planner, PlannerResult,
 };
 use crate::{
     catalog::{Index, Table, TableFunction},
@@ -13,6 +12,7 @@ use crate::{
 };
 use std::ops::Bound;
 
+#[derive(Clone)]
 pub enum Scan<'a> {
     Seq {
         table: Table<'a>,
@@ -79,6 +79,39 @@ impl Node for Scan<'_> {
             | Self::Expression { outputs, .. } => {
                 columns.extend(outputs.iter());
             }
+        }
+    }
+
+    fn num_rows(&self) -> usize {
+        match self {
+            Self::Seq { table, .. } => table.statistics().num_rows() as usize,
+            Self::Index { index, .. } | Self::IndexOnly { index, .. } => {
+                let num_rows = index.table().statistics().num_rows() as f64;
+                (num_rows * Filter::DEFAULT_SELECTIVITY) as usize
+            }
+            Self::Function { source, .. } => {
+                // Assume each invocation produces one row
+                source.num_rows()
+            }
+            Self::Expression { rows, .. } => rows.len(),
+        }
+    }
+
+    fn cost(&self) -> f64 {
+        match self {
+            Self::Seq { .. } => self.num_rows() as f64 * PlanNode::DEFAULT_ROW_COST,
+            Self::Index { .. } | Self::IndexOnly { .. } => {
+                let num_rows = self.num_rows() as f64;
+                // Assume the index uses a data structure where time complexity for lookup is O(log n)
+                let index_lookup_cost = num_rows.log2().max(0.0) * PlanNode::DEFAULT_ROW_COST;
+                let row_fetch_cost = num_rows * PlanNode::DEFAULT_ROW_COST;
+                index_lookup_cost + row_fetch_cost
+            }
+            Self::Function { source, .. } => {
+                let function_cost = source.num_rows() as f64 * PlanNode::DEFAULT_ROW_COST;
+                source.cost() + function_cost
+            }
+            Self::Expression { rows, .. } => rows.len() as f64 * PlanNode::DEFAULT_ROW_COST,
         }
     }
 }
@@ -192,7 +225,7 @@ impl<'a> PlanNode<'a> {
 
 impl<'a> Planner<'a> {
     pub fn plan_base_table(&self, table: Table<'a>) -> PlanNode<'a> {
-        PlanNode::new_table_scan(&mut self.column_map(), table)
+        PlanNode::new_table_scan(&mut self.column_map_mut(), table)
     }
 
     pub fn plan_table_function(
@@ -206,7 +239,7 @@ impl<'a> Planner<'a> {
             .into_iter()
             .map(|expr| expr_binder.bind_without_source(expr))
             .collect::<PlannerResult<_>>()?;
-        let mut column_map = self.column_map();
+        let mut column_map = self.column_map_mut();
         Ok(PlanNode::new_empty_row()
             .project(&mut column_map, exprs)
             .function_scan(&mut column_map, function))
@@ -241,7 +274,7 @@ impl<'a> Planner<'a> {
         }
 
         Ok(PlanNode::new_expression_scan(
-            &mut self.column_map(),
+            &mut self.column_map_mut(),
             rows,
             column_types,
         ))

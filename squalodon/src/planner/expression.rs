@@ -1,6 +1,6 @@
 use super::{
-    aggregate::AggregatePlanner, column::ColumnMapView, Column, ColumnId, PlanNode, Planner,
-    PlannerError, PlannerResult,
+    aggregate::AggregatePlanner, Column, ColumnId, ColumnMap, PlanNode, Planner, PlannerError,
+    PlannerResult,
 };
 use crate::{
     catalog::{AggregateFunction, Aggregator, ScalarFunction},
@@ -14,7 +14,6 @@ use crate::{
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
-    hash::Hash,
 };
 
 pub type PlanExpression<'a> = Expression<'a, ColumnId>;
@@ -247,7 +246,7 @@ impl<'a> PlanExpression<'a> {
         self.map_column_ref(|id| id.to_index(columns))
     }
 
-    pub(super) fn display<'b>(&self, column_map: &'b ColumnMapView) -> ExpressionDisplay<'a, 'b> {
+    pub(super) fn display<'b>(&self, column_map: &'b ColumnMap) -> ExpressionDisplay<'a, 'b> {
         self.clone().map_column_ref(|id| column_map[id].name())
     }
 
@@ -305,7 +304,7 @@ impl<'a> PlanExpression<'a> {
         }
     }
 
-    pub(super) fn referenced_columns(&self) -> HashSet<ColumnId> {
+    pub fn referenced_columns(&self) -> HashSet<ColumnId> {
         let mut free = HashSet::new();
         self.insert_referenced_columns(&mut free);
         free
@@ -481,9 +480,7 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
             ..*self
         }
     }
-}
 
-impl<'a, 'b> ExpressionBinder<'a, 'b> {
     pub fn bind(
         &self,
         source: PlanNode<'b>,
@@ -690,7 +687,7 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
                     .map_err(|_| PlannerError::MultipleColumnsFromSubquery)?;
 
                 // Equivalent to `SELECT assert_single_row(subquery)`
-                let mut column_map = self.planner.column_map();
+                let mut column_map = self.planner.column_map_mut();
                 let subquery_type = column_map[input].ty;
                 let output = column_map.insert(Column::new(column_name, subquery_type));
                 let subquery = subquery.ungrouped_aggregate(vec![ApplyAggregateOp {
@@ -730,14 +727,14 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
 
                 // Equivalent to `SELECT exists(SELECT first_column FROM subquery LIMIT 1)`
                 let subquery = subquery.limit(
-                    &mut self.planner.column_map(),
+                    &mut self.planner.column_map_mut(),
                     Some(Value::from(1).into()),
                     None,
                 )?;
                 let input = *subquery.outputs().first().unwrap();
                 let output = self
                     .planner
-                    .column_map()
+                    .column_map_mut()
                     .insert(Column::new(column_name, Type::Boolean));
                 let subquery = subquery.ungrouped_aggregate(vec![ApplyAggregateOp {
                     function: &EXISTS,

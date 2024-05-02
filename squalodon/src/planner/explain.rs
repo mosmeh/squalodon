@@ -1,11 +1,15 @@
-use super::{column::ColumnMapView, Column, ColumnId, Node, PlanNode, Planner, PlannerResult};
+use super::{column::ColumnMap, Column, ColumnId, Node, PlanNode, Planner, PlannerResult};
 use crate::{parser, Type};
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Ref, RefCell},
+    rc::Rc,
+};
 
+#[derive(Clone)]
 pub struct Explain<'a> {
     pub source: Box<PlanNode<'a>>,
     pub output: ColumnId,
-    pub column_map: Rc<RefCell<Vec<Column>>>,
+    pub column_map: Rc<RefCell<ColumnMap>>,
 }
 
 impl Node for Explain<'_> {
@@ -16,11 +20,19 @@ impl Node for Explain<'_> {
     fn append_outputs(&self, columns: &mut Vec<ColumnId>) {
         columns.push(self.output);
     }
+
+    fn num_rows(&self) -> usize {
+        1 // Lower bound
+    }
+
+    fn cost(&self) -> f64 {
+        PlanNode::DEFAULT_COST
+    }
 }
 
 impl Explain<'_> {
     pub fn explain(&self) -> Vec<String> {
-        let f = ExplainFormatter::new(self.column_map.borrow().clone());
+        let f = ExplainFormatter::new(self.column_map.clone());
         self.source.fmt_explain(&f);
         f.finish()
     }
@@ -36,19 +48,21 @@ impl<'a> PlanNode<'a> {
     pub(super) fn explain(self, planner: &Planner<'a>) -> Self {
         Self::Explain(Explain {
             source: Box::new(self),
-            output: planner.column_map().insert(Column::new("plan", Type::Text)),
+            output: planner
+                .column_map_mut()
+                .insert(Column::new("plan", Type::Text)),
             column_map: planner.column_map.clone(),
         })
     }
 }
 
 pub struct ExplainFormatter {
-    column_map: Vec<Column>,
+    column_map: Rc<RefCell<ColumnMap>>,
     state: RefCell<FormatterState>,
 }
 
 impl ExplainFormatter {
-    pub fn new(column_map: Vec<Column>) -> Self {
+    pub fn new(column_map: Rc<RefCell<ColumnMap>>) -> Self {
         Self {
             column_map,
             state: Default::default(),
@@ -69,8 +83,8 @@ impl ExplainFormatter {
         }
     }
 
-    pub fn column_map(&self) -> ColumnMapView {
-        ColumnMapView::from(self.column_map.as_slice())
+    pub fn column_map(&self) -> Ref<ColumnMap> {
+        self.column_map.borrow()
     }
 }
 
