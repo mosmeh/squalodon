@@ -1,4 +1,4 @@
-use super::{ExecutionContext, ExecutorNode, ExecutorResult, Node, Output};
+use super::{ExecutionContext, ExecutorNode, ExecutorResult, Node, NodeError, Output};
 use crate::planner;
 
 pub struct Union<'a> {
@@ -8,7 +8,11 @@ pub struct Union<'a> {
 
 impl Node for Union<'_> {
     fn next_row(&mut self) -> Output {
-        self.left.next_row().or_else(|_| self.right.next_row())
+        match self.left.next_row() {
+            Ok(row) => Ok(row),
+            Err(NodeError::EndOfRows) => self.right.next_row(),
+            Err(e) => Err(e),
+        }
     }
 }
 
