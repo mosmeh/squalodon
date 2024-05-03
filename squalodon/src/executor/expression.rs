@@ -1,6 +1,6 @@
 use super::{ExecutionContext, ExecutorResult};
 use crate::{
-    catalog::ScalarFunctionEval,
+    catalog::{BoxedScalarFn, ScalarFunction, ScalarImpureFn},
     parser::{BinaryOp, UnaryOp},
     planner::{CaseBranch, ColumnId, Expression, PlanExpression},
     rows::ColumnIndex,
@@ -13,7 +13,7 @@ pub trait EvalContext {
     fn column(column: &Self::Column, row: &Row) -> ExecutorResult<Value>;
     fn eval_impure_scalar_function(
         &self,
-        eval: fn(&ExecutionContext, &[Value]) -> ExecutorResult<Value>,
+        eval: &ScalarImpureFn,
         args: &[Value],
     ) -> ExecutorResult<Value>;
 }
@@ -27,7 +27,7 @@ impl EvalContext for ExecutionContext<'_> {
 
     fn eval_impure_scalar_function(
         &self,
-        eval: fn(&ExecutionContext, &[Value]) -> ExecutorResult<Value>,
+        eval: &ScalarImpureFn,
         args: &[Value],
     ) -> ExecutorResult<Value> {
         eval(self, args)
@@ -46,7 +46,7 @@ impl EvalContext for ConstantFoldingContext {
 
     fn eval_impure_scalar_function(
         &self,
-        _: fn(&ExecutionContext, &[Value]) -> ExecutorResult<Value>,
+        _: &ScalarImpureFn,
         _: &[Value],
     ) -> ExecutorResult<Value> {
         Err(ExecutorError::EvaluationError)
@@ -76,18 +76,7 @@ impl<C> Expression<'_, C> {
                 pattern,
                 case_insensitive,
             } => eval_like(ctx, row, str_expr, pattern, *case_insensitive),
-            Self::Function { function, args } => {
-                let args: Vec<_> = args
-                    .iter()
-                    .map(|arg| arg.eval(ctx, row))
-                    .collect::<ExecutorResult<_>>()?;
-                match function.eval {
-                    ScalarFunctionEval::Pure(eval) => eval(&args),
-                    ScalarFunctionEval::Impure(eval) => {
-                        ctx.eval_impure_scalar_function(eval, &args)
-                    }
-                }
-            }
+            Self::Function { function, args } => eval_function(ctx, row, function, args),
         }
     }
 }
@@ -280,4 +269,24 @@ fn eval_like<T: EvalContext>(
         .map_err(|_| ExecutorError::InvalidLikePattern)?
         .is_match(&string);
     Ok(is_match.into())
+}
+
+fn eval_function<T: EvalContext>(
+    ctx: &T,
+    row: &Row,
+    function: &ScalarFunction,
+    args: &[Expression<T::Column>],
+) -> ExecutorResult<Value> {
+    let mut arg_values = Vec::with_capacity(args.len());
+    for arg in args {
+        match arg.eval(ctx, row) {
+            Ok(Value::Null) => return Ok(Value::Null),
+            Ok(value) => arg_values.push(value),
+            Err(e) => return Err(e),
+        }
+    }
+    match &function.eval {
+        BoxedScalarFn::Pure(eval) => eval(&arg_values),
+        BoxedScalarFn::Impure(eval) => ctx.eval_impure_scalar_function(eval, &arg_values),
+    }
 }

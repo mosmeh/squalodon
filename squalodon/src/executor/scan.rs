@@ -1,6 +1,6 @@
 use super::{ExecutionContext, ExecutorNode, ExecutorResult, IntoOutput, Node, Output};
 use crate::{
-    catalog::{Index, Table, TableFnPtr},
+    catalog::{Index, Table, TableFn},
     planner::{ExecutableExpression, Scan},
     storage::StorageResult,
     Row, Value,
@@ -64,16 +64,16 @@ impl Node for IndexOnlyScan<'_> {
 pub struct FunctionScan<'a> {
     ctx: &'a ExecutionContext<'a>,
     source: Box<ExecutorNode<'a>>,
-    fn_ptr: TableFnPtr,
+    eval: &'a TableFn,
     rows: Box<dyn Iterator<Item = Row> + 'a>,
 }
 
 impl<'a> FunctionScan<'a> {
-    fn new(ctx: &'a ExecutionContext, source: ExecutorNode<'a>, fn_ptr: TableFnPtr) -> Self {
+    fn new(ctx: &'a ExecutionContext, source: ExecutorNode<'a>, eval: &'a TableFn) -> Self {
         Self {
             ctx,
             source: source.into(),
-            fn_ptr,
+            eval,
             rows: Box::new(std::iter::empty()),
         }
     }
@@ -86,7 +86,7 @@ impl Node for FunctionScan<'_> {
                 return Ok(row);
             }
             let row = self.source.next_row()?;
-            self.rows = (self.fn_ptr)(self.ctx, &row)?;
+            self.rows = (self.eval)(self.ctx, &row.0)?;
         }
     }
 }
@@ -145,7 +145,7 @@ impl<'a> ExecutorNode<'a> {
             } => Ok(Self::FunctionScan(FunctionScan::new(
                 ctx,
                 Self::new(ctx, *source)?,
-                function.fn_ptr,
+                &*function.eval,
             ))),
             Scan::Expression { rows, .. } => {
                 let rows = rows

@@ -11,6 +11,14 @@ pub enum Type {
 }
 
 impl Type {
+    pub(crate) const ALL: &'static [Self] = &[
+        Self::Integer,
+        Self::Real,
+        Self::Boolean,
+        Self::Text,
+        Self::Blob,
+    ];
+
     pub(crate) fn is_numeric(self) -> bool {
         matches!(self, Self::Integer | Self::Real)
     }
@@ -212,29 +220,26 @@ impl std::hash::Hash for Value {
     }
 }
 
-impl From<i64> for Value {
-    fn from(v: i64) -> Self {
-        Self::Integer(v)
+impl<T: Into<Self>> From<Option<T>> for Value {
+    fn from(v: Option<T>) -> Self {
+        v.map_or(Self::Null, Into::into)
     }
 }
 
-impl From<f64> for Value {
-    fn from(v: f64) -> Self {
-        Self::Real(v)
-    }
+macro_rules! impl_from_value {
+    ($ty:ty, $variant:ident) => {
+        impl From<$ty> for Value {
+            fn from(v: $ty) -> Self {
+                Self::$variant(v)
+            }
+        }
+    };
 }
 
-impl From<bool> for Value {
-    fn from(v: bool) -> Self {
-        Self::Boolean(v)
-    }
-}
-
-impl From<String> for Value {
-    fn from(v: String) -> Self {
-        Self::Text(v)
-    }
-}
+impl_from_value!(i64, Integer);
+impl_from_value!(f64, Real);
+impl_from_value!(bool, Boolean);
+impl_from_value!(String, Text);
 
 impl From<&str> for Value {
     fn from(v: &str) -> Self {
@@ -276,35 +281,82 @@ macro_rules! impl_try_from_value {
             type Error = TryFromValueError;
 
             fn try_from(value: Value) -> Result<Self, TryFromValueError> {
-                match value {
-                    Value::Null => Ok(None),
-                    Value::$variant(v) => v
-                        .try_into()
-                        .map_err(|_| TryFromValueError::OutOfRange)
-                        .map(Some),
-                    _ => Err(TryFromValueError::IncompatibleType),
-                }
+                Ok(match value {
+                    Value::Null => None,
+                    _ => Some(value.try_into()?),
+                })
             }
         }
     };
 }
 
-impl_try_from_value!(i8, Integer);
-impl_try_from_value!(u8, Integer);
-impl_try_from_value!(i16, Integer);
-impl_try_from_value!(u16, Integer);
-impl_try_from_value!(i32, Integer);
-impl_try_from_value!(u32, Integer);
-impl_try_from_value!(i64, Integer);
-impl_try_from_value!(u64, Integer);
-impl_try_from_value!(i128, Integer);
-impl_try_from_value!(u128, Integer);
-impl_try_from_value!(isize, Integer);
-impl_try_from_value!(usize, Integer);
-impl_try_from_value!(f64, Real);
-impl_try_from_value!(bool, Boolean);
 impl_try_from_value!(String, Text);
 impl_try_from_value!(Vec<u8>, Blob);
+
+macro_rules! impl_try_from_value_with_from_str {
+    ($ty:ty, $variant:ident) => {
+        impl TryFrom<Value> for $ty {
+            type Error = TryFromValueError;
+
+            fn try_from(value: Value) -> Result<Self, TryFromValueError> {
+                match value {
+                    Value::$variant(v) => v.try_into().map_err(|_| TryFromValueError::OutOfRange),
+                    Value::Text(v) => v.parse().map_err(|_| TryFromValueError::OutOfRange),
+                    _ => Err(TryFromValueError::IncompatibleType),
+                }
+            }
+        }
+
+        impl TryFrom<Value> for Option<$ty> {
+            type Error = TryFromValueError;
+
+            fn try_from(value: Value) -> Result<Self, TryFromValueError> {
+                Ok(match value {
+                    Value::Null => None,
+                    _ => Some(value.try_into()?),
+                })
+            }
+        }
+    };
+}
+
+impl_try_from_value_with_from_str!(i8, Integer);
+impl_try_from_value_with_from_str!(u8, Integer);
+impl_try_from_value_with_from_str!(i16, Integer);
+impl_try_from_value_with_from_str!(u16, Integer);
+impl_try_from_value_with_from_str!(i32, Integer);
+impl_try_from_value_with_from_str!(u32, Integer);
+impl_try_from_value_with_from_str!(i64, Integer);
+impl_try_from_value_with_from_str!(u64, Integer);
+impl_try_from_value_with_from_str!(i128, Integer);
+impl_try_from_value_with_from_str!(u128, Integer);
+impl_try_from_value_with_from_str!(isize, Integer);
+impl_try_from_value_with_from_str!(usize, Integer);
+impl_try_from_value_with_from_str!(bool, Boolean);
+
+impl TryFrom<Value> for f64 {
+    type Error = TryFromValueError;
+
+    fn try_from(value: Value) -> Result<Self, TryFromValueError> {
+        match value {
+            Value::Integer(v) => Ok(v as Self),
+            Value::Real(v) => Ok(v),
+            Value::Text(v) => v.parse().map_err(|_| TryFromValueError::OutOfRange),
+            _ => Err(TryFromValueError::IncompatibleType),
+        }
+    }
+}
+
+impl TryFrom<Value> for Option<f64> {
+    type Error = TryFromValueError;
+
+    fn try_from(value: Value) -> Result<Self, TryFromValueError> {
+        Ok(match value {
+            Value::Null => None,
+            _ => Some(value.try_into()?),
+        })
+    }
+}
 
 impl TryFrom<Value> for Null {
     type Error = TryFromValueError;
@@ -356,3 +408,56 @@ impl<const N: usize> Params for &[Value; N] {
         self.to_vec()
     }
 }
+
+pub trait Args {
+    fn from_values(values: &[Value]) -> Result<Self, TryFromValueError>
+    where
+        Self: Sized;
+}
+
+impl<T> Args for T
+where
+    T: TryFrom<Value, Error = TryFromValueError>,
+{
+    fn from_values(values: &[Value]) -> Result<Self, TryFromValueError> {
+        match values {
+            [v] => v.clone().try_into(),
+            _ => Err(TryFromValueError::IncompatibleType),
+        }
+    }
+}
+
+macro_rules! impl_args_for_tuple {
+    ($($t:ident)*) => {
+        impl<$($t,)*> Args for ($($t,)*)
+        where
+            $($t: TryFrom<Value, Error = TryFromValueError>,)*
+        {
+            fn from_values(values: &[Value]) -> Result<Self, TryFromValueError> {
+                match values {
+                    #[allow(non_snake_case)]
+                    [$($t,)*] => Ok(($($t.clone().try_into()?,)*)),
+                    _ => Err(TryFromValueError::IncompatibleType),
+                }
+            }
+        }
+    };
+}
+
+impl_args_for_tuple!();
+impl_args_for_tuple!(T);
+impl_args_for_tuple!(T0 T1);
+impl_args_for_tuple!(T0 T1 T2);
+impl_args_for_tuple!(T0 T1 T2 T3);
+impl_args_for_tuple!(T0 T1 T2 T3 T4);
+impl_args_for_tuple!(T0 T1 T2 T3 T4 T5);
+impl_args_for_tuple!(T0 T1 T2 T3 T4 T5 T6);
+impl_args_for_tuple!(T0 T1 T2 T3 T4 T5 T6 T7);
+impl_args_for_tuple!(T0 T1 T2 T3 T4 T5 T6 T7 T8);
+impl_args_for_tuple!(T0 T1 T2 T3 T4 T5 T6 T7 T8 T9);
+impl_args_for_tuple!(T0 T1 T2 T3 T4 T5 T6 T7 T8 T9 T10);
+impl_args_for_tuple!(T0 T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11);
+impl_args_for_tuple!(T0 T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12);
+impl_args_for_tuple!(T0 T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12 T13);
+impl_args_for_tuple!(T0 T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12 T13 T14);
+impl_args_for_tuple!(T0 T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12 T13 T14 T15);

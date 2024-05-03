@@ -1,70 +1,61 @@
 use crate::{
-    catalog::{AggregateFunction, Aggregator},
+    catalog::{AggregateFunction, Aggregator, TypedAggregator},
     executor::ExecutorResult,
-    types::NullableType,
-    ExecutorError, PlannerError, Type, Value,
+    ExecutorError, Type, Value,
 };
-use std::ops::Add;
 
 pub fn load() -> impl Iterator<Item = AggregateFunction> {
-    [
-        AggregateFunction {
-            name: "avg",
-            bind: |ty| match ty {
-                NullableType::Null => Ok(NullableType::Null),
-                NullableType::NonNull(ty) if ty.is_numeric() => Ok(Type::Real.into()),
-                NullableType::NonNull(_) => Err(PlannerError::TypeError),
+    Type::ALL
+        .iter()
+        .flat_map(|&ty| {
+            [
+                AggregateFunction {
+                    name: "count",
+                    input_type: ty,
+                    output_type: Type::Integer,
+                    init: || Box::<Count>::default(),
+                },
+                AggregateFunction {
+                    name: "max",
+                    input_type: ty,
+                    output_type: ty,
+                    init: || Box::<Max>::default(),
+                },
+                AggregateFunction {
+                    name: "min",
+                    input_type: ty,
+                    output_type: ty,
+                    init: || Box::<Min>::default(),
+                },
+            ]
+            .into_iter()
+        })
+        .chain([
+            AggregateFunction {
+                name: "avg",
+                input_type: Type::Integer,
+                output_type: Type::Real,
+                init: || Box::<Average<i64>>::default(),
             },
-            init: || Box::<Average>::default(),
-        },
-        AggregateFunction {
-            name: "count",
-            bind: |_| Ok(Type::Integer.into()),
-            init: || Box::<Count>::default(),
-        },
-        AggregateFunction {
-            name: "max",
-            bind: Ok,
-            init: || Box::<Max>::default(),
-        },
-        AggregateFunction {
-            name: "min",
-            bind: Ok,
-            init: || Box::<Min>::default(),
-        },
-        AggregateFunction {
-            name: "sum",
-            bind: |ty| match ty {
-                NullableType::Null => Ok(NullableType::Null),
-                NullableType::NonNull(ty) if ty.is_numeric() => Ok(NullableType::NonNull(ty)),
-                NullableType::NonNull(_) => Err(PlannerError::TypeError),
+            AggregateFunction {
+                name: "avg",
+                input_type: Type::Real,
+                output_type: Type::Real,
+                init: || Box::<Average<f64>>::default(),
             },
-            init: || Box::<Sum>::default(),
-        },
-    ]
-    .into_iter()
-}
-
-#[derive(Default)]
-struct Average {
-    sum: Number,
-    count: usize,
-}
-
-impl Aggregator for Average {
-    fn update(&mut self, value: &Value) -> ExecutorResult<()> {
-        if !value.is_null() {
-            self.sum.checked_update(value, i64::checked_add, f64::add)?;
-            self.count = self.count.checked_add(1).ok_or(ExecutorError::OutOfRange)?;
-        }
-        Ok(())
-    }
-
-    fn finish(&self) -> Value {
-        self.sum
-            .as_f64()
-            .map_or(Value::Null, |sum| Value::Real(sum / self.count as f64))
-    }
+            AggregateFunction {
+                name: "sum",
+                input_type: Type::Integer,
+                output_type: Type::Integer,
+                init: || Box::<Sum<i64>>::default(),
+            },
+            AggregateFunction {
+                name: "sum",
+                input_type: Type::Real,
+                output_type: Type::Real,
+                init: || Box::<Sum<f64>>::default(),
+            },
+        ])
 }
 
 #[derive(Default)]
@@ -132,70 +123,79 @@ impl Aggregator for Min {
 }
 
 #[derive(Default)]
-struct Sum {
-    sum: Number,
+struct Average<T> {
+    sum: T,
+    count: usize,
 }
 
-impl Aggregator for Sum {
-    fn update(&mut self, value: &Value) -> ExecutorResult<()> {
-        if !value.is_null() {
-            self.sum.checked_update(value, i64::checked_add, f64::add)?;
+impl TypedAggregator for Average<i64> {
+    type Input = i64;
+    type Output = Option<f64>;
+
+    fn update(&mut self, value: i64) -> ExecutorResult<()> {
+        self.sum = self
+            .sum
+            .checked_add(value)
+            .ok_or(ExecutorError::OutOfRange)?;
+        self.count = self.count.checked_add(1).ok_or(ExecutorError::OutOfRange)?;
+        Ok(())
+    }
+
+    fn finish(&self) -> Option<f64> {
+        (self.count > 0).then(|| self.sum as f64 / self.count as f64)
+    }
+}
+
+impl TypedAggregator for Average<f64> {
+    type Input = f64;
+    type Output = Option<f64>;
+
+    fn update(&mut self, value: f64) -> ExecutorResult<()> {
+        self.sum += value;
+        self.count = self.count.checked_add(1).ok_or(ExecutorError::OutOfRange)?;
+        Ok(())
+    }
+
+    fn finish(&self) -> Option<f64> {
+        (self.count > 0).then(|| self.sum / self.count as f64)
+    }
+}
+
+#[derive(Default)]
+struct Sum<T> {
+    sum: Option<T>,
+}
+
+impl TypedAggregator for Sum<i64> {
+    type Input = i64;
+    type Output = Option<i64>;
+
+    fn update(&mut self, value: i64) -> ExecutorResult<()> {
+        match &mut self.sum {
+            Some(sum) => *sum = sum.checked_add(value).ok_or(ExecutorError::OutOfRange)?,
+            None => self.sum = Some(value),
         }
         Ok(())
     }
 
-    fn finish(&self) -> Value {
-        self.sum.clone().into()
+    fn finish(&self) -> Option<i64> {
+        self.sum
     }
 }
 
-/// A number whose type is lazily determined.
-#[derive(Clone)]
-enum Number {
-    Null,
-    Integer(i64),
-    Real(f64),
-}
+impl TypedAggregator for Sum<f64> {
+    type Input = f64;
+    type Output = Option<f64>;
 
-impl Default for Number {
-    fn default() -> Self {
-        Self::Null
-    }
-}
-
-impl From<Number> for Value {
-    fn from(n: Number) -> Self {
-        match n {
-            Number::Null => Self::Null,
-            Number::Integer(i) => Self::Integer(i),
-            Number::Real(r) => Self::Real(r),
-        }
-    }
-}
-
-impl Number {
-    fn as_f64(&self) -> Option<f64> {
-        match self {
-            Self::Null => None,
-            Self::Integer(i) => Some(*i as f64),
-            Self::Real(r) => Some(*r),
-        }
-    }
-
-    fn checked_update<I, R>(&mut self, rhs: &Value, integer_f: I, real_f: R) -> ExecutorResult<()>
-    where
-        I: FnOnce(i64, i64) -> Option<i64>,
-        R: FnOnce(f64, f64) -> f64,
-    {
-        match (self, rhs) {
-            (s @ Self::Null, Value::Integer(x)) => *s = Self::Integer(*x),
-            (s @ Self::Null, Value::Real(x)) => *s = Self::Real(*x),
-            (Self::Integer(s), Value::Integer(x)) => {
-                *s = integer_f(*s, *x).ok_or(ExecutorError::OutOfRange)?;
-            }
-            (Self::Real(s), Value::Real(x)) => *s = real_f(*s, *x),
-            _ => unreachable!("Unexpected non-numeric value or mixed types in a single column"),
+    fn update(&mut self, value: f64) -> ExecutorResult<()> {
+        match &mut self.sum {
+            Some(sum) => *sum += value,
+            None => self.sum = Some(value),
         }
         Ok(())
+    }
+
+    fn finish(&self) -> Option<f64> {
+        self.sum
     }
 }

@@ -234,14 +234,17 @@ impl<'a> Planner<'a> {
         name: String,
         args: Vec<parser::Expression>,
     ) -> PlannerResult<PlanNode<'a>> {
-        let function = self.catalog.table_function(&name)?;
-        let exprs = args
-            .into_iter()
-            .map(|expr| expr_binder.bind_without_source(expr))
-            .collect::<PlannerResult<_>>()?;
+        let mut arg_types = Vec::with_capacity(args.len());
+        let mut arg_exprs = Vec::with_capacity(args.len());
+        for arg in args {
+            let expr = expr_binder.bind_without_source(arg)?;
+            arg_types.push(expr.ty);
+            arg_exprs.push(expr);
+        }
+        let function = self.catalog.table_function(&name, &arg_types)?;
         let mut column_map = self.column_map_mut();
         Ok(PlanNode::new_empty_row()
-            .project(&mut column_map, exprs)
+            .project(&mut column_map, arg_exprs)
             .function_scan(&mut column_map, function))
     }
 

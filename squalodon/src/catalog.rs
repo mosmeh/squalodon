@@ -2,14 +2,14 @@ use crate::{
     builtin,
     executor::{ExecutionContext, ExecutorResult},
     parser::Expression,
-    planner::{self, PlannerResult},
+    planner,
     rows::ColumnIndex,
     storage::{StorageError, Transaction, TransactionExt},
-    types::{NullableType, Type},
-    Row, Value,
+    types::{Args, NullableType, Type},
+    Row, TryFromValueError, Value,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Deref};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CatalogError {
@@ -27,6 +27,21 @@ pub enum CatalogError {
 
     #[error("Bincode error: {0}")]
     Bincode(#[from] bincode::Error),
+}
+
+impl CatalogError {
+    fn unknown_function(
+        kind: CatalogEntryKind,
+        name: String,
+        argument_types: &[NullableType],
+    ) -> Self {
+        let args = argument_types
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        Self::UnknownEntry(kind, format!("{name}({args})"))
+    }
 }
 
 pub type CatalogResult<T> = std::result::Result<T, CatalogError>;
@@ -272,39 +287,82 @@ impl<'a> Function<'a> {
     }
 }
 
-#[derive(PartialEq, Eq, Hash)]
 pub struct ScalarFunction {
     pub name: &'static str,
-    pub bind: ScalarBindFnPtr,
-    pub eval: ScalarFunctionEval,
+    pub argument_types: &'static [Type],
+    pub return_type: NullableType,
+    pub eval: BoxedScalarFn,
 }
 
-pub type ScalarBindFnPtr = fn(&[NullableType]) -> PlannerResult<NullableType>;
+impl PartialEq for ScalarFunction {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.argument_types == other.argument_types
+    }
+}
 
-#[derive(PartialEq, Eq, Hash)]
-pub enum ScalarFunctionEval {
-    Pure(fn(&[Value]) -> ExecutorResult<Value>),
-    Impure(fn(&ExecutionContext, &[Value]) -> ExecutorResult<Value>),
+impl Eq for ScalarFunction {}
+
+impl std::hash::Hash for ScalarFunction {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.argument_types.hash(state);
+    }
+}
+
+pub type ScalarPureFn = dyn Fn(&[Value]) -> ExecutorResult<Value> + Send + Sync;
+pub type ScalarImpureFn =
+    dyn Fn(&ExecutionContext, &[Value]) -> ExecutorResult<Value> + Send + Sync;
+
+pub enum BoxedScalarFn {
+    Pure(Box<ScalarPureFn>),
+    Impure(Box<ScalarImpureFn>),
+}
+
+impl BoxedScalarFn {
+    pub fn pure<F, A, R>(f: F) -> Self
+    where
+        F: Fn(A) -> ExecutorResult<R> + Send + Sync + 'static,
+        A: Args,
+        R: Into<Value>,
+    {
+        Self::Pure(Box::new(move |args| {
+            let args = A::from_values(args).expect("Declared and actual argument types must match");
+            f(args).map(Into::into)
+        }))
+    }
+
+    pub fn impure<F, A, R>(f: F) -> Self
+    where
+        F: Fn(&ExecutionContext, A) -> ExecutorResult<R> + Send + Sync + 'static,
+        A: Args,
+        R: Into<Value>,
+    {
+        Self::Impure(Box::new(move |ctx, args| {
+            let args = A::from_values(args).expect("Declared and actual argument types must match");
+            f(ctx, args).map(Into::into)
+        }))
+    }
 }
 
 pub struct AggregateFunction {
     pub name: &'static str,
-    pub bind: AggregateBindFnPtr,
+    pub input_type: Type,
+    pub output_type: Type,
     pub init: AggregateInitFnPtr,
 }
 
 impl AggregateFunction {
     /// Creates an aggregate function that is not exposed to the user.
-    pub const fn new_internal<T: Aggregator + Default + 'static>() -> Self {
+    pub const fn new_internal<T: Aggregator + Default + 'static>(name: &'static str) -> Self {
         Self {
-            name: "(internal)",
-            bind: |_| unreachable!(),
+            name,
+            input_type: Type::Text,  // dummy
+            output_type: Type::Text, // dummy
             init: || Box::<T>::default(),
         }
     }
 }
 
-pub type AggregateBindFnPtr = fn(NullableType) -> PlannerResult<NullableType>;
 pub type AggregateInitFnPtr = fn() -> Box<dyn Aggregator>;
 
 pub trait Aggregator {
@@ -312,33 +370,102 @@ pub trait Aggregator {
     fn finish(&self) -> Value;
 }
 
-pub struct TableFunction {
-    pub name: &'static str,
-    pub fn_ptr: TableFnPtr,
-    pub result_columns: Vec<planner::Column>,
+pub trait TypedAggregator {
+    type Input: TryFrom<Value, Error = TryFromValueError>;
+    type Output: Into<Value>;
+
+    fn update(&mut self, value: Self::Input) -> ExecutorResult<()>;
+    fn finish(&self) -> Self::Output;
 }
 
-pub type TableFnPtr =
-    for<'a> fn(&'a ExecutionContext, &Row) -> ExecutorResult<Box<dyn Iterator<Item = Row> + 'a>>;
+impl<T: TypedAggregator> Aggregator for T {
+    fn update(&mut self, value: &Value) -> ExecutorResult<()> {
+        if !value.is_null() {
+            let value = value
+                .clone()
+                .try_into()
+                .expect("Declared and actual input types must match");
+            TypedAggregator::update(self, value)?;
+        }
+        Ok(())
+    }
+
+    fn finish(&self) -> Value {
+        TypedAggregator::finish(self).into()
+    }
+}
+
+pub struct TableFunction {
+    pub name: &'static str,
+    pub argument_types: &'static [Type],
+    pub result_columns: Vec<planner::Column>,
+    pub eval: BoxedTableFn,
+}
+
+pub type TableFn = dyn Fn(&ExecutionContext, &[Value]) -> ExecutorResult<Box<dyn Iterator<Item = Row>>>
+    + Send
+    + Sync;
+
+pub struct BoxedTableFn(Box<TableFn>);
+
+impl Deref for BoxedTableFn {
+    type Target = TableFn;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl BoxedTableFn {
+    pub fn new<F, A, R>(f: F) -> Self
+    where
+        F: Fn(&ExecutionContext, A) -> ExecutorResult<R> + Send + Sync + 'static,
+        A: Args,
+        R: Iterator<Item = Row> + 'static,
+    {
+        Self(Box::new(move |ctx, args| {
+            let args = A::from_values(args).expect("Declared and actual argument types must match");
+            Ok(Box::new(f(ctx, args)?))
+        }))
+    }
+}
 
 pub struct Catalog {
-    scalar_functions: HashMap<&'static str, ScalarFunction>,
-    aggregate_functions: HashMap<&'static str, AggregateFunction>,
-    table_functions: HashMap<&'static str, TableFunction>,
+    scalar_functions: HashMap<&'static str, Vec<ScalarFunction>>,
+    aggregate_functions: HashMap<&'static str, Vec<AggregateFunction>>,
+    table_functions: HashMap<&'static str, Vec<TableFunction>>,
 }
 
 impl Default for Catalog {
     fn default() -> Self {
+        let mut scalar_functions = HashMap::new();
+        for f in builtin::scalar_function::load() {
+            scalar_functions
+                .entry(f.name)
+                .or_insert_with(Vec::new)
+                .push(f);
+        }
+
+        let mut aggregate_functions = HashMap::new();
+        for f in builtin::aggregate_function::load() {
+            aggregate_functions
+                .entry(f.name)
+                .or_insert_with(Vec::new)
+                .push(f);
+        }
+
+        let mut table_functions = HashMap::new();
+        for f in builtin::table_function::load() {
+            table_functions
+                .entry(f.name)
+                .or_insert_with(Vec::new)
+                .push(f);
+        }
+
         Self {
-            scalar_functions: builtin::scalar_function::load()
-                .map(|f| (f.name, f))
-                .collect(),
-            aggregate_functions: builtin::aggregate_function::load()
-                .map(|f| (f.name, f))
-                .collect(),
-            table_functions: builtin::table_function::load()
-                .map(|f| (f.name, f))
-                .collect(),
+            scalar_functions,
+            aggregate_functions,
+            table_functions,
         }
     }
 }
@@ -472,31 +599,102 @@ impl<'a> CatalogRef<'a> {
     }
 
     pub fn functions(&self) -> impl Iterator<Item = Function> + '_ {
-        let scalar = self.catalog.scalar_functions.values().map(Function::Scalar);
+        let scalar = self
+            .catalog
+            .scalar_functions
+            .values()
+            .flatten()
+            .map(Function::Scalar);
         let aggregate = self
             .catalog
             .aggregate_functions
             .values()
+            .flatten()
             .map(Function::Aggregate);
-        let table = self.catalog.table_functions.values().map(Function::Table);
+        let table = self
+            .catalog
+            .table_functions
+            .values()
+            .flatten()
+            .map(Function::Table);
         scalar.chain(aggregate).chain(table)
     }
 
-    pub fn scalar_function(&self, name: &str) -> CatalogResult<&'a ScalarFunction> {
-        self.catalog.scalar_functions.get(name).ok_or_else(|| {
-            CatalogError::UnknownEntry(CatalogEntryKind::ScalarFunction, name.to_owned())
-        })
+    pub fn scalar_function(
+        &self,
+        name: &str,
+        argument_types: &[NullableType],
+    ) -> CatalogResult<&'a ScalarFunction> {
+        self.catalog
+            .scalar_functions
+            .get(name)
+            .and_then(|functions| {
+                functions.iter().find(|f| {
+                    if f.argument_types.len() != argument_types.len() {
+                        return false;
+                    }
+                    argument_types
+                        .iter()
+                        .zip(f.argument_types)
+                        .all(|(a, b)| a.is_compatible_with(*b))
+                })
+            })
+            .ok_or_else(|| {
+                CatalogError::unknown_function(
+                    CatalogEntryKind::ScalarFunction,
+                    name.to_owned(),
+                    argument_types,
+                )
+            })
     }
 
-    pub fn aggregate_function(&self, name: &str) -> CatalogResult<&'a AggregateFunction> {
-        self.catalog.aggregate_functions.get(name).ok_or_else(|| {
-            CatalogError::UnknownEntry(CatalogEntryKind::AggregateFunction, name.to_owned())
-        })
+    pub fn aggregate_function(
+        &self,
+        name: &str,
+        input_type: NullableType,
+    ) -> CatalogResult<&'a AggregateFunction> {
+        self.catalog
+            .aggregate_functions
+            .get(name)
+            .and_then(|functions| {
+                functions
+                    .iter()
+                    .find(|f| input_type.is_compatible_with(f.input_type))
+            })
+            .ok_or_else(|| {
+                CatalogError::unknown_function(
+                    CatalogEntryKind::AggregateFunction,
+                    name.to_owned(),
+                    &[input_type],
+                )
+            })
     }
 
-    pub fn table_function(&self, name: &str) -> CatalogResult<&'a TableFunction> {
-        self.catalog.table_functions.get(name).ok_or_else(|| {
-            CatalogError::UnknownEntry(CatalogEntryKind::TableFunction, name.to_owned())
-        })
+    pub fn table_function(
+        &self,
+        name: &str,
+        argument_types: &[NullableType],
+    ) -> CatalogResult<&'a TableFunction> {
+        self.catalog
+            .table_functions
+            .get(name)
+            .and_then(|functions| {
+                functions.iter().find(|f| {
+                    if f.argument_types.len() != argument_types.len() {
+                        return false;
+                    }
+                    argument_types
+                        .iter()
+                        .zip(f.argument_types.iter())
+                        .all(|(a, b)| a.is_compatible_with(*b))
+                })
+            })
+            .ok_or_else(|| {
+                CatalogError::unknown_function(
+                    CatalogEntryKind::TableFunction,
+                    name.to_owned(),
+                    argument_types,
+                )
+            })
     }
 }

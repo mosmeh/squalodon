@@ -1,15 +1,25 @@
 use crate::{
-    catalog::{Function, TableFunction},
+    catalog::{BoxedTableFn, Function, TableFunction},
     lexer,
     planner::Column,
     Row, Type,
 };
+use std::collections::HashSet;
 
 pub fn load() -> impl Iterator<Item = TableFunction> {
     [
         TableFunction {
             name: "squalodon_columns",
-            fn_ptr: |ctx, _| {
+            argument_types: &[],
+            result_columns: vec![
+                Column::new("table_name", Type::Text),
+                Column::new("column_name", Type::Text),
+                Column::new("type", Type::Text),
+                Column::new("is_nullable", Type::Boolean),
+                Column::new("is_primary_key", Type::Boolean),
+                Column::new("default_value", Type::Text),
+            ],
+            eval: BoxedTableFn::new(|ctx, ()| {
                 let mut rows = Vec::new();
                 for table in ctx.catalog().tables() {
                     let table = table?;
@@ -33,38 +43,41 @@ pub fn load() -> impl Iterator<Item = TableFunction> {
                         ]));
                     }
                 }
-                Ok(Box::new(rows.into_iter()))
-            },
-            result_columns: vec![
-                Column::new("table_name", Type::Text),
-                Column::new("column_name", Type::Text),
-                Column::new("type", Type::Text),
-                Column::new("is_nullable", Type::Boolean),
-                Column::new("is_primary_key", Type::Boolean),
-                Column::new("default_value", Type::Text),
-            ],
+                Ok(rows.into_iter())
+            }),
         },
         TableFunction {
             name: "squalodon_functions",
-            fn_ptr: |ctx, _| {
-                let rows = ctx.catalog().functions().map(|function| {
+            argument_types: &[],
+            result_columns: vec![
+                Column::new("name", Type::Text),
+                Column::new("type", Type::Text),
+            ],
+            eval: BoxedTableFn::new(|ctx, ()| {
+                let mut dedup_set = HashSet::new();
+                for function in ctx.catalog().functions() {
                     let kind = match function {
                         Function::Scalar(_) => "scalar",
                         Function::Aggregate(_) => "aggregate",
                         Function::Table(_) => "table",
                     };
-                    Row::new(vec![function.name().into(), kind.into()])
-                });
-                Ok(Box::new(rows))
-            },
-            result_columns: vec![
-                Column::new("name", Type::Text),
-                Column::new("type", Type::Text),
-            ],
+                    dedup_set.insert((function.name().to_owned(), kind));
+                }
+                let rows = dedup_set
+                    .into_iter()
+                    .map(|(name, kind)| Row::new(vec![name.into(), kind.into()]));
+                Ok(rows)
+            }),
         },
         TableFunction {
             name: "squalodon_indexes",
-            fn_ptr: |ctx, _| {
+            argument_types: &[],
+            result_columns: vec![
+                Column::new("table_name", Type::Text),
+                Column::new("index_name", Type::Text),
+                Column::new("is_unique", Type::Boolean),
+            ],
+            eval: BoxedTableFn::new(|ctx, ()| {
                 let mut rows = Vec::new();
                 for table in ctx.catalog().tables() {
                     let table = table?;
@@ -76,35 +89,32 @@ pub fn load() -> impl Iterator<Item = TableFunction> {
                         ]));
                     }
                 }
-                Ok(Box::new(rows.into_iter()))
-            },
-            result_columns: vec![
-                Column::new("table_name", Type::Text),
-                Column::new("index_name", Type::Text),
-                Column::new("is_unique", Type::Boolean),
-            ],
+                Ok(rows.into_iter())
+            }),
         },
         TableFunction {
             name: "squalodon_keywords",
-            fn_ptr: |_, _| {
+            argument_types: &[],
+            result_columns: vec![Column::new("keyword", Type::Text)],
+            eval: BoxedTableFn::new(|_, ()| {
                 let rows = lexer::KEYWORDS
                     .iter()
                     .map(|keyword| Row::new(vec![keyword.to_ascii_uppercase().into()]));
-                Ok(Box::new(rows))
-            },
-            result_columns: vec![Column::new("keyword", Type::Text)],
+                Ok(rows)
+            }),
         },
         TableFunction {
             name: "squalodon_tables",
-            fn_ptr: |ctx, _| {
+            argument_types: &[],
+            result_columns: vec![Column::new("name", Type::Text)],
+            eval: BoxedTableFn::new(|ctx, ()| {
                 let mut rows = Vec::new();
                 for table in ctx.catalog().tables() {
                     let table = table?;
                     rows.push(Row::new(vec![table.name().into()]));
                 }
-                Ok(Box::new(rows.into_iter()))
-            },
-            result_columns: vec![Column::new("name", Type::Text)],
+                Ok(rows.into_iter())
+            }),
         },
     ]
     .into_iter()

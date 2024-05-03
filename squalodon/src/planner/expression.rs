@@ -9,7 +9,7 @@ use crate::{
     planner::aggregate::ApplyAggregateOp,
     rows::ColumnIndex,
     types::{NullableType, Type},
-    CatalogError, Value,
+    Value,
 };
 use std::{
     borrow::Cow,
@@ -450,6 +450,10 @@ impl<'a> TypedExpression<'a> {
     pub fn and(self, other: Self) -> PlannerResult<Self> {
         self.binary_op(BinaryOp::And, other)
     }
+
+    fn function(function: &'a ScalarFunction, args: Vec<PlanExpression<'a>>) -> Self {
+        PlanExpression::Function { function, args }.into_typed(function.return_type)
+    }
 }
 
 pub struct ExpressionBinder<'a, 'b> {
@@ -612,23 +616,17 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
                 Ok((plan, expr.into_typed(Type::Boolean)))
             }
             parser::Expression::Function(function_call) => {
-                match self.planner.catalog.aggregate_function(&function_call.name) {
-                    Ok(_) => {
-                        let Some(aggregates) = &self.aggregates else {
-                            return Err(PlannerError::AggregateNotAllowed);
-                        };
-                        let id = aggregates
-                            .resolve_aggregate_function(&function_call)
-                            .ok_or_else(|| PlannerError::UnknownColumn("(aggregate)".to_owned()))?;
-                        let ty = self.planner.column_map()[id].ty;
-                        let expr = PlanExpression::ColumnRef(id).into_typed(ty);
-                        return Ok((source, expr));
-                    }
-                    Err(CatalogError::UnknownEntry(_, _)) => (),
-                    Err(e) => return Err(e.into()),
+                // Aggregate function
+                if let Some(id) = self
+                    .aggregates
+                    .and_then(|aggregates| aggregates.resolve_aggregate_function(&function_call))
+                {
+                    let ty = self.planner.column_map()[id].ty;
+                    let expr = PlanExpression::ColumnRef(id).into_typed(ty);
+                    return Ok((source, expr));
                 }
 
-                let function = self.planner.catalog.scalar_function(&function_call.name)?;
+                // Scalar function
                 if function_call.is_distinct {
                     return Err(PlannerError::InvalidArgument);
                 }
@@ -645,12 +643,11 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
                     arg_exprs.push(expr);
                     arg_types.push(ty);
                 }
-                let ty = (function.bind)(&arg_types)?;
-                let expr = PlanExpression::Function {
-                    function,
-                    args: arg_exprs,
-                };
-                Ok((plan, expr.into_typed(ty)))
+                let function = self
+                    .planner
+                    .catalog
+                    .scalar_function(&function_call.name, &arg_types)?;
+                Ok((plan, TypedExpression::function(function, arg_exprs)))
             }
             parser::Expression::ScalarSubquery(query) => {
                 /// An aggregator that asserts that the subquery returns
@@ -676,7 +673,7 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
                 }
 
                 static ASSERT_SINGLE_ROW: AggregateFunction =
-                    AggregateFunction::new_internal::<AssertSingleRow>();
+                    AggregateFunction::new_internal::<AssertSingleRow>("assert_single_row");
 
                 let column_name = query.to_string();
                 let subquery = self.planner.plan_query(*query)?;
@@ -720,7 +717,8 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
                     }
                 }
 
-                static EXISTS: AggregateFunction = AggregateFunction::new_internal::<Exists>();
+                static EXISTS: AggregateFunction =
+                    AggregateFunction::new_internal::<Exists>("exists");
 
                 let column_name = format!("EXISTS ({query})");
                 let subquery = self.planner.plan_query(*query)?;

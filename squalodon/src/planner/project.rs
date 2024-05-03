@@ -163,7 +163,7 @@ impl<'a> Planner<'a> {
                     }
                 }
 
-                static FIRST: AggregateFunction = AggregateFunction::new_internal::<First>();
+                static FIRST: AggregateFunction = AggregateFunction::new_internal::<First>("first");
 
                 for expr in on {
                     let (new_plan, expr) = expr_binder.bind(plan, expr)?;

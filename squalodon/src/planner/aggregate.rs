@@ -189,59 +189,70 @@ impl<'a, 'b> AggregateCollection<'a, 'b> {
                 self.gather_inner(plan, pattern, in_aggregate_args)
             }
             parser::Expression::Function(function_call) => {
-                match self.planner.catalog.aggregate_function(&function_call.name) {
-                    Ok(function) => {
-                        if in_aggregate_args {
-                            // Nested aggregate functions are not allowed.
-                            return Err(PlannerError::AggregateNotAllowed);
+                let mut plan = source;
+                let bound_args = match &function_call.args {
+                    parser::FunctionArgs::Wildcard => {
+                        if function_call.name.eq_ignore_ascii_case("count") {
+                            // `count(*)` is a special case equivalent to `count(1)`.
+                            vec![PlanExpression::Constant(1.into()).into_typed(Type::Integer)]
+                        } else {
+                            return Err(PlannerError::InvalidArgument);
                         }
-
-                        let (plan, bound_expr) = match &function_call.args {
-                            parser::FunctionArgs::Wildcard
-                                if function_call.name.eq_ignore_ascii_case("count") =>
-                            {
-                                // `count(*)` is a special case equivalent to `count(1)`.
-                                (
-                                    source,
-                                    PlanExpression::Constant(1.into()).into_typed(Type::Integer),
-                                )
-                            }
-                            parser::FunctionArgs::Expressions(args) if args.len() == 1 => {
-                                let plan = self.gather_inner(source, &args[0], true)?;
-                                ExpressionBinder::new(self.planner).bind(plan, args[0].clone())?
-                            }
-                            _ => return Err(PlannerError::ArityError),
-                        };
-
-                        let std::collections::hash_map::Entry::Vacant(entry) =
-                            self.aggregates.entry(function_call.clone())
-                        else {
-                            return Ok(plan);
-                        };
-
-                        let output = self.planner.column_map_mut().insert(Column::new(
-                            expr.to_string(),
-                            (function.bind)(bound_expr.ty)?,
-                        ));
-                        entry.insert(BoundAggregate {
-                            function,
-                            arg: bound_expr.expr,
-                            output,
-                        });
-                        return Ok(plan);
                     }
-                    Err(CatalogError::UnknownEntry(_, _)) => (),
-                    Err(err) => return Err(err.into()),
+                    parser::FunctionArgs::Expressions(args) => {
+                        let mut bound_args = Vec::with_capacity(args.len());
+                        for arg in args {
+                            let (new_plan, bound) =
+                                ExpressionBinder::new(self.planner).bind(plan, arg.clone())?;
+                            plan = new_plan;
+                            bound_args.push(bound);
+                        }
+                        bound_args
+                    }
+                };
+
+                if let [arg] = bound_args.as_slice() {
+                    match self
+                        .planner
+                        .catalog
+                        .aggregate_function(&function_call.name, arg.ty)
+                    {
+                        Ok(function) => {
+                            if in_aggregate_args {
+                                // Nested aggregate functions are not allowed.
+                                return Err(PlannerError::AggregateNotAllowed);
+                            }
+
+                            let output = self
+                                .planner
+                                .column_map_mut()
+                                .insert(Column::new(expr.to_string(), function.output_type));
+                            let aggregate = BoundAggregate {
+                                function,
+                                arg: arg.expr.clone(),
+                                output,
+                            };
+                            self.aggregates.insert(function_call.clone(), aggregate);
+                            return Ok(plan);
+                        }
+                        Err(CatalogError::UnknownEntry(_, _)) => {
+                            // No matching aggregate function found.
+                            // Let's try to bind a scalar function instead.
+                        }
+                        Err(err) => return Err(err.into()),
+                    }
                 }
 
-                self.planner.catalog.scalar_function(&function_call.name)?; // Check if the function exists
+                let arg_types: Vec<_> = bound_args.iter().map(|arg| arg.ty).collect();
+                self.planner
+                    .catalog
+                    .scalar_function(&function_call.name, &arg_types)?; // Check if the function exists
                 if function_call.is_distinct {
                     return Err(PlannerError::InvalidArgument);
                 }
                 match &function_call.args {
                     parser::FunctionArgs::Wildcard => Err(PlannerError::InvalidArgument),
                     parser::FunctionArgs::Expressions(args) => {
-                        let mut plan = source;
                         for arg in args {
                             plan = self.gather_inner(plan, arg, in_aggregate_args)?;
                         }

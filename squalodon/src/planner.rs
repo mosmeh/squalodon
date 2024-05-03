@@ -75,9 +75,6 @@ pub enum PlannerError {
     #[error("Type error")]
     TypeError,
 
-    #[error("Arity error")]
-    ArityError,
-
     #[error("Parameter ${0} not provided")]
     ParameterNotProvided(NonZeroUsize),
 
