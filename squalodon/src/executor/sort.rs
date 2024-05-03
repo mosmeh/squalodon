@@ -69,7 +69,7 @@ impl TopN {
 
         let limit = eval(ctx, Some(limit))?;
         let offset = eval(ctx, offset)?;
-        let mut heap = BinaryHeap::with_capacity(limit + offset);
+        let mut heap = BinaryHeap::with_capacity(limit + offset + 1);
         for row in source {
             let row = row?;
             let mut sort_key = Vec::new();
