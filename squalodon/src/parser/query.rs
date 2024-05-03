@@ -1,4 +1,4 @@
-use super::{unexpected, Expression, Parser, ParserResult};
+use super::{Expression, Parser, ParserResult};
 use crate::{lexer::Token, ParserError};
 use serde::{Deserialize, Serialize};
 
@@ -442,7 +442,7 @@ impl Parser<'_> {
                 projections = vec![Projection::Wildcard];
                 from = TableRef::Values(Values { rows });
             }
-            token => return Err(unexpected(token)),
+            token => return Err(ParserError::unexpected(token)),
         };
         Ok(Select {
             distinct,
@@ -564,7 +564,7 @@ impl Parser<'_> {
                 self.expect(Token::RightParen)?;
                 Ok(TableRef::Subquery(query.into()))
             }
-            token => Err(unexpected(token)),
+            token => Err(ParserError::unexpected(token)),
         }
     }
 
@@ -586,7 +586,7 @@ impl Parser<'_> {
                 match parser.lexer.consume()? {
                     Token::First => NullOrder::NullsFirst,
                     Token::Last => NullOrder::NullsLast,
-                    token => return Err(unexpected(&token)),
+                    token => return Err(ParserError::unexpected(&token)),
                 }
             } else {
                 order.default_null_order()

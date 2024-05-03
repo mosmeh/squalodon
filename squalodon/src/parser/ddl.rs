@@ -1,5 +1,5 @@
-use super::{unexpected, Parser, ParserResult, Statement};
-use crate::{catalog::Column, lexer::Token};
+use super::{Parser, ParserResult, Statement};
+use crate::{catalog::Column, lexer::Token, ParserError};
 
 #[derive(Debug, Clone)]
 pub struct CreateTable {
@@ -62,7 +62,7 @@ impl Parser<'_> {
         match self.lexer.peek()? {
             Token::Table => self.parse_create_table().map(Statement::CreateTable),
             Token::Index | Token::Unique => self.parse_create_index().map(Statement::CreateIndex),
-            token => Err(unexpected(token)),
+            token => Err(ParserError::unexpected(token)),
         }
     }
 
@@ -137,7 +137,7 @@ impl Parser<'_> {
                         default_value,
                     });
                 }
-                token => return Err(unexpected(token)),
+                token => return Err(ParserError::unexpected(token)),
             }
             if !self.lexer.consume_if_eq(Token::Comma)? {
                 break;
@@ -213,7 +213,7 @@ impl Parser<'_> {
         } else if self.lexer.consume_if_eq(Token::Index)? {
             Ok(ObjectKind::Index)
         } else {
-            Err(unexpected(self.lexer.peek()?))
+            Err(ParserError::unexpected(self.lexer.peek()?))
         }
     }
 }

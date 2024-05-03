@@ -1,5 +1,5 @@
-use super::{unexpected, Parser, ParserResult, Query};
-use crate::{lexer::Token, types::Value, Type};
+use super::{Parser, ParserResult, Query};
+use crate::{lexer::Token, types::Value, ParserError, Type};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
 
@@ -349,7 +349,7 @@ impl Parser<'_> {
                 case_insensitive: true,
                 not,
             },
-            token if not => return Err(unexpected(token)),
+            token if not => return Err(ParserError::unexpected(token)),
             token => match BinaryOp::from_token(token) {
                 Some(op) => InfixOp::Binary(op),
                 None => return Ok(None),
@@ -461,7 +461,7 @@ impl Parser<'_> {
                 self.max_param_id = self.max_param_id.max(Some(i));
                 Expression::Parameter(i)
             }
-            token => return Err(unexpected(&token)),
+            token => return Err(ParserError::unexpected(&token)),
         };
         Ok(expr)
     }

@@ -29,6 +29,12 @@ pub enum ParserError {
     Lexer(#[from] LexerError),
 }
 
+impl ParserError {
+    fn unexpected(token: &Token) -> Self {
+        Self::UnexpectedToken(format!("{token:?}"))
+    }
+}
+
 pub type ParserResult<T> = std::result::Result<T, ParserError>;
 
 #[derive(Debug, Clone)]
@@ -176,7 +182,7 @@ impl<'a> Parser<'a> {
             Token::Insert => self.parse_insert().map(Statement::Insert),
             Token::Update => self.parse_update().map(Statement::Update),
             Token::Delete => self.parse_delete().map(Statement::Delete),
-            token => Err(unexpected(token)),
+            token => Err(ParserError::unexpected(token)),
         }
     }
 
@@ -221,7 +227,7 @@ impl<'a> Parser<'a> {
             Token::Boolean => Type::Boolean,
             Token::Text | Token::Char | Token::BpChar | Token::VarChar => Type::Text,
             Token::Blob | Token::ByteA => Type::Blob,
-            token => return Err(unexpected(&token)),
+            token => return Err(ParserError::unexpected(&token)),
         };
         Ok(ty)
     }
@@ -247,7 +253,7 @@ impl<'a> Parser<'a> {
     fn expect_one_of(&mut self, expected: &[Token]) -> ParserResult<()> {
         let actual = self.lexer.consume()?;
         if !expected.contains(&actual) {
-            return Err(unexpected(&actual));
+            return Err(ParserError::unexpected(&actual));
         }
         Ok(())
     }
@@ -255,11 +261,7 @@ impl<'a> Parser<'a> {
     fn expect_identifier(&mut self) -> ParserResult<String> {
         match self.lexer.consume()? {
             Token::Identifier(ident) => Ok(ident),
-            token => Err(unexpected(&token)),
+            token => Err(ParserError::unexpected(&token)),
         }
     }
-}
-
-fn unexpected(token: &Token) -> ParserError {
-    ParserError::UnexpectedToken(format!("{token:?}"))
 }
