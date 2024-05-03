@@ -1,4 +1,4 @@
-use super::{ConnectionContext, ExecutorNode, ExecutorResult, Node, NodeError, Output};
+use super::{ExecutionContext, ExecutorNode, ExecutorResult, Node, NodeError, Output};
 use crate::{
     planner::{self, ExecutableExpression},
     ExecutorError, Row, Value,
@@ -13,13 +13,13 @@ pub struct Limit<'a> {
 
 impl<'a> Limit<'a> {
     fn new(
-        ctx: &'a ConnectionContext,
+        ctx: &'a ExecutionContext,
         source: ExecutorNode<'a>,
         limit: Option<ExecutableExpression>,
         offset: Option<ExecutableExpression>,
     ) -> ExecutorResult<Self> {
         fn eval(
-            ctx: &ConnectionContext,
+            ctx: &ExecutionContext,
             expr: Option<ExecutableExpression>,
         ) -> ExecutorResult<Option<usize>> {
             let Some(expr) = expr else {
@@ -62,7 +62,7 @@ impl Node for Limit<'_> {
 }
 
 impl<'a> ExecutorNode<'a> {
-    pub fn limit(ctx: &'a ConnectionContext, plan: planner::Limit<'a>) -> ExecutorResult<Self> {
+    pub fn limit(ctx: &'a ExecutionContext, plan: planner::Limit<'a>) -> ExecutorResult<Self> {
         let planner::Limit {
             source,
             limit,

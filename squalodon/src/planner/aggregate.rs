@@ -170,12 +170,7 @@ impl<'a, 'b> AggregateCollection<'a, 'b> {
                 self.gather_inner(plan, pattern, in_aggregate_args)
             }
             parser::Expression::Function(function_call) => {
-                match self
-                    .planner
-                    .ctx
-                    .catalog()
-                    .aggregate_function(&function_call.name)
-                {
+                match self.planner.catalog.aggregate_function(&function_call.name) {
                     Ok(function) => {
                         if in_aggregate_args {
                             // Nested aggregate functions are not allowed.
@@ -220,10 +215,7 @@ impl<'a, 'b> AggregateCollection<'a, 'b> {
                     Err(err) => return Err(err.into()),
                 }
 
-                self.planner
-                    .ctx
-                    .catalog()
-                    .scalar_function(&function_call.name)?; // Check if the function exists
+                self.planner.catalog.scalar_function(&function_call.name)?; // Check if the function exists
                 if function_call.is_distinct {
                     return Err(PlannerError::InvalidArgument);
                 }

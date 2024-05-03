@@ -11,11 +11,14 @@ mod sort;
 mod union;
 
 use crate::{
-    connection::ConnectionContext,
-    planner::{self, ExecutableExpression, PlanNode},
-    storage, CatalogError, Row, StorageError, Value,
+    catalog::CatalogRef,
+    planner::{self, ExecutableExpression, Plan, PlanNode},
+    storage,
+    types::NullableType,
+    CatalogError, Column, Row, Rows, StorageError, Type, Value,
 };
 use aggregate::{HashAggregate, UngroupedAggregate};
+use fastrand::Rng;
 use filter::Filter;
 use join::{CrossProduct, HashJoin, NestedLoopJoin};
 use limit::Limit;
@@ -23,6 +26,7 @@ use mutation::{Delete, Insert, Update};
 use project::Project;
 use scan::{ExpressionScan, FunctionScan, IndexOnlyScan, IndexScan, SeqScan};
 use sort::{Sort, TopN};
+use std::cell::RefCell;
 use union::Union;
 
 #[derive(Debug, thiserror::Error)]
@@ -50,6 +54,59 @@ pub enum ExecutorError {
 }
 
 pub type ExecutorResult<T> = std::result::Result<T, ExecutorError>;
+
+pub struct ExecutionContext<'a> {
+    catalog: CatalogRef<'a>,
+    rng: &'a RefCell<Rng>,
+}
+
+impl<'a> ExecutionContext<'a> {
+    pub fn new(catalog: CatalogRef<'a>, rng: &'a RefCell<Rng>) -> Self {
+        Self { catalog, rng }
+    }
+
+    pub fn catalog(&self) -> &CatalogRef<'a> {
+        &self.catalog
+    }
+
+    pub fn random(&self) -> f64 {
+        self.rng.borrow_mut().f64()
+    }
+
+    pub fn set_seed(&self, seed: f64) {
+        self.rng.borrow_mut().seed(seed.to_bits());
+    }
+
+    pub fn execute(&self, plan: Plan) -> ExecutorResult<Rows> {
+        let Plan { node, schema } = plan;
+        let columns: Vec<_> = schema
+            .into_iter()
+            .map(|column| {
+                Column {
+                    name: column.column_name,
+                    ty: match column.ty {
+                        NullableType::NonNull(ty) => ty,
+                        NullableType::Null => Type::Integer, // Arbitrarily choose INTEGER
+                    },
+                }
+            })
+            .collect();
+        let executor = Executor::new(self, node)?;
+        let mut rows = Vec::new();
+        for row in executor {
+            let row = row?;
+            assert_eq!(row.columns().len(), columns.len());
+            for (value, column) in row.columns().iter().zip(&columns) {
+                assert!(value.ty().is_compatible_with(column.ty));
+            }
+            rows.push(row);
+        }
+        Ok(Rows {
+            iter: rows.into_iter(),
+            columns,
+        })
+    }
+}
 
 trait Node {
     fn next_row(&mut self) -> Output;
@@ -113,7 +170,7 @@ impl<E: Into<ExecutorError>> IntoOutput for Option<std::result::Result<Row, E>> 
 pub struct Executor<'a>(ExecutorNode<'a>);
 
 impl<'a> Executor<'a> {
-    pub fn new(ctx: &'a ConnectionContext<'a>, plan_node: PlanNode<'a>) -> ExecutorResult<Self> {
+    pub fn new(ctx: &'a ExecutionContext<'a>, plan_node: PlanNode<'a>) -> ExecutorResult<Self> {
         ExecutorNode::new(ctx, plan_node).map(Self)
     }
 }
@@ -170,7 +227,7 @@ nodes! {
 }
 
 impl<'a> ExecutorNode<'a> {
-    fn new(ctx: &'a ConnectionContext, plan: PlanNode<'a>) -> ExecutorResult<Self> {
+    fn new(ctx: &'a ExecutionContext, plan: PlanNode<'a>) -> ExecutorResult<Self> {
         match plan {
             PlanNode::Explain(plan) => {
                 let rows = plan

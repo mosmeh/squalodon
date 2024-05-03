@@ -1,11 +1,11 @@
-use super::{ConnectionContext, ExecutorNode, ExecutorResult, Node, Output};
+use super::{ExecutionContext, ExecutorNode, ExecutorResult, Node, Output};
 use crate::{
     planner::{self, ExecutableExpression},
     Row,
 };
 
 pub struct Project<'a> {
-    ctx: &'a ConnectionContext<'a>,
+    ctx: &'a ExecutionContext<'a>,
     source: Box<ExecutorNode<'a>>,
     exprs: Vec<ExecutableExpression<'a>>,
 }
@@ -23,7 +23,7 @@ impl Node for Project<'_> {
 }
 
 impl<'a> ExecutorNode<'a> {
-    pub fn project(ctx: &'a ConnectionContext, plan: planner::Project<'a>) -> ExecutorResult<Self> {
+    pub fn project(ctx: &'a ExecutionContext, plan: planner::Project<'a>) -> ExecutorResult<Self> {
         let planner::Project {
             source,
             projections,

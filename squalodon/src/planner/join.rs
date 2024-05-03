@@ -169,13 +169,12 @@ impl<'a> Planner<'a> {
                 for column_name in column_names {
                     let left_column_ref = left.resolve_column(&column_map, &column_name)?;
                     let right_column_ref = right.resolve_column(&column_map, &column_name)?;
-                    condition =
-                        condition.and(self.ctx, left_column_ref.eq(self.ctx, right_column_ref)?)?;
+                    condition = condition.and(left_column_ref.eq(right_column_ref)?)?;
                 }
                 let plan = left.cross_product(right);
                 (plan, condition)
             }
         };
-        plan.filter(self.ctx, condition)
+        plan.filter(condition)
     }
 }

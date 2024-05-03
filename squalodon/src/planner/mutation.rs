@@ -87,7 +87,7 @@ impl<'a> PlanNode<'a> {
 
 impl<'a> Planner<'a> {
     pub fn plan_insert(&self, insert: parser::Insert) -> PlannerResult<PlanNode<'a>> {
-        let table = self.ctx.catalog().table(&insert.table_name)?;
+        let table = self.catalog.table(&insert.table_name)?;
         let mut plan = self.plan_query(insert.query)?;
         let outputs = plan.outputs();
 
@@ -161,7 +161,7 @@ impl<'a> Planner<'a> {
     }
 
     pub fn plan_update(&self, update: parser::Update) -> PlannerResult<PlanNode<'a>> {
-        let table = self.ctx.catalog().table(&update.table_name)?;
+        let table = self.catalog.table(&update.table_name)?;
         let expr_binder = ExpressionBinder::new(self);
 
         let mut plan = self.plan_base_table(table.clone());
@@ -219,7 +219,7 @@ impl<'a> Planner<'a> {
     }
 
     pub fn plan_delete(&self, delete: parser::Delete) -> PlannerResult<PlanNode<'a>> {
-        let table = self.ctx.catalog().table(&delete.table_name)?;
+        let table = self.catalog.table(&delete.table_name)?;
         let mut plan = self.plan_base_table(table.clone());
         if let Some(where_clause) = delete.where_clause {
             plan = self.plan_filter(&ExpressionBinder::new(self), plan, where_clause)?;

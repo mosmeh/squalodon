@@ -4,13 +4,12 @@ use super::{
 };
 use crate::{
     catalog::{AggregateFunction, Aggregator, ScalarFunction},
-    connection::ConnectionContext,
     executor::{ExecutorError, ExecutorResult},
     parser::{self, BinaryOp, FunctionArgs, UnaryOp},
     planner::aggregate::ApplyAggregateOp,
     rows::ColumnIndex,
     types::{NullableType, Type},
-    CatalogError, Row, Value,
+    CatalogError, Value,
 };
 use std::{
     borrow::Cow,
@@ -113,8 +112,8 @@ impl<'a> PlanExpression<'a> {
         }
     }
 
-    fn unary_op(self, ctx: &ConnectionContext, op: UnaryOp) -> Self {
-        if let Ok(value) = op.eval(ctx, &Row::empty(), &self) {
+    fn unary_op(self, op: UnaryOp) -> Self {
+        if let Ok(value) = op.eval_const(&self) {
             return Self::Constant(value);
         }
         match (op, self) {
@@ -140,7 +139,7 @@ impl<'a> PlanExpression<'a> {
                     lhs,
                     rhs,
                 },
-            ) => lhs.binary_op(ctx, BinaryOp::Ne, *rhs),
+            ) => lhs.binary_op(BinaryOp::Ne, *rhs),
             (
                 UnaryOp::Not,
                 Self::BinaryOp {
@@ -148,7 +147,7 @@ impl<'a> PlanExpression<'a> {
                     lhs,
                     rhs,
                 },
-            ) => lhs.binary_op(ctx, BinaryOp::Eq, *rhs),
+            ) => lhs.binary_op(BinaryOp::Eq, *rhs),
             (
                 UnaryOp::Not,
                 Self::BinaryOp {
@@ -156,7 +155,7 @@ impl<'a> PlanExpression<'a> {
                     lhs,
                     rhs,
                 },
-            ) => lhs.binary_op(ctx, BinaryOp::Le, *rhs),
+            ) => lhs.binary_op(BinaryOp::Le, *rhs),
             (
                 UnaryOp::Not,
                 Self::BinaryOp {
@@ -164,7 +163,7 @@ impl<'a> PlanExpression<'a> {
                     lhs,
                     rhs,
                 },
-            ) => lhs.binary_op(ctx, BinaryOp::Lt, *rhs),
+            ) => lhs.binary_op(BinaryOp::Lt, *rhs),
             (
                 UnaryOp::Not,
                 Self::BinaryOp {
@@ -172,7 +171,7 @@ impl<'a> PlanExpression<'a> {
                     lhs,
                     rhs,
                 },
-            ) => lhs.binary_op(ctx, BinaryOp::Ge, *rhs),
+            ) => lhs.binary_op(BinaryOp::Ge, *rhs),
             (
                 UnaryOp::Not,
                 Self::BinaryOp {
@@ -180,7 +179,7 @@ impl<'a> PlanExpression<'a> {
                     lhs,
                     rhs,
                 },
-            ) => lhs.binary_op(ctx, BinaryOp::Gt, *rhs),
+            ) => lhs.binary_op(BinaryOp::Gt, *rhs),
             (op, expr) => Self::UnaryOp {
                 op,
                 expr: Box::new(expr),
@@ -188,8 +187,8 @@ impl<'a> PlanExpression<'a> {
         }
     }
 
-    fn binary_op(self, ctx: &ConnectionContext, op: BinaryOp, other: Self) -> Self {
-        if let Ok(value) = op.eval(ctx, &Row::empty(), &self, &other) {
+    fn binary_op(self, op: BinaryOp, other: Self) -> Self {
+        if let Ok(value) = op.eval_const(&self, &other) {
             return Self::Constant(value);
         }
 
@@ -203,12 +202,12 @@ impl<'a> PlanExpression<'a> {
                 | BinaryOp::Ne
                 | BinaryOp::And
                 | BinaryOp::Or => {
-                    return other.binary_op(ctx, op, self);
+                    return other.binary_op(op, self);
                 }
-                BinaryOp::Gt => return other.binary_op(ctx, BinaryOp::Lt, self),
-                BinaryOp::Ge => return other.binary_op(ctx, BinaryOp::Le, self),
-                BinaryOp::Lt => return other.binary_op(ctx, BinaryOp::Gt, self),
-                BinaryOp::Le => return other.binary_op(ctx, BinaryOp::Ge, self),
+                BinaryOp::Gt => return other.binary_op(BinaryOp::Lt, self),
+                BinaryOp::Ge => return other.binary_op(BinaryOp::Le, self),
+                BinaryOp::Lt => return other.binary_op(BinaryOp::Gt, self),
+                BinaryOp::Le => return other.binary_op(BinaryOp::Ge, self),
                 _ => (),
             },
             _ => (),
@@ -386,7 +385,7 @@ impl<'a> TypedExpression<'a> {
         }
     }
 
-    fn unary_op(self, ctx: &ConnectionContext, op: UnaryOp) -> PlannerResult<Self> {
+    fn unary_op(self, op: UnaryOp) -> PlannerResult<Self> {
         let ty = match (op, self.ty) {
             (_, NullableType::Null) => return Ok(Value::Null.into()),
             (UnaryOp::Not, _) => NullableType::NonNull(Type::Boolean),
@@ -395,10 +394,10 @@ impl<'a> TypedExpression<'a> {
             }
             _ => return Err(PlannerError::TypeError),
         };
-        Ok(self.expr.unary_op(ctx, op).into_typed(ty))
+        Ok(self.expr.unary_op(op).into_typed(ty))
     }
 
-    fn binary_op(self, ctx: &ConnectionContext, op: BinaryOp, other: Self) -> PlannerResult<Self> {
+    fn binary_op(self, op: BinaryOp, other: Self) -> PlannerResult<Self> {
         let ty = match op {
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
                 match (self.ty, other.ty) {
@@ -442,15 +441,15 @@ impl<'a> TypedExpression<'a> {
                 _ => return Err(PlannerError::TypeError),
             },
         };
-        Ok(self.expr.binary_op(ctx, op, other.expr).into_typed(ty))
+        Ok(self.expr.binary_op(op, other.expr).into_typed(ty))
     }
 
-    pub fn eq(self, ctx: &ConnectionContext, other: Self) -> PlannerResult<Self> {
-        self.binary_op(ctx, BinaryOp::Eq, other)
+    pub fn eq(self, other: Self) -> PlannerResult<Self> {
+        self.binary_op(BinaryOp::Eq, other)
     }
 
-    pub fn and(self, ctx: &ConnectionContext, other: Self) -> PlannerResult<Self> {
-        self.binary_op(ctx, BinaryOp::And, other)
+    pub fn and(self, other: Self) -> PlannerResult<Self> {
+        self.binary_op(BinaryOp::And, other)
     }
 }
 
@@ -520,12 +519,12 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
             }
             parser::Expression::UnaryOp { op, expr } => {
                 let (plan, expr) = self.bind(source, *expr)?;
-                Ok((plan, expr.unary_op(self.planner.ctx, op)?))
+                Ok((plan, expr.unary_op(op)?))
             }
             parser::Expression::BinaryOp { op, lhs, rhs } => {
                 let (plan, lhs) = self.bind(source, *lhs)?;
                 let (plan, rhs) = self.bind(plan, *rhs)?;
-                Ok((plan, lhs.binary_op(self.planner.ctx, op, rhs)?))
+                Ok((plan, lhs.binary_op(op, rhs)?))
             }
             parser::Expression::Case {
                 branches,
@@ -616,12 +615,7 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
                 Ok((plan, expr.into_typed(Type::Boolean)))
             }
             parser::Expression::Function(function_call) => {
-                match self
-                    .planner
-                    .ctx
-                    .catalog()
-                    .aggregate_function(&function_call.name)
-                {
+                match self.planner.catalog.aggregate_function(&function_call.name) {
                     Ok(_) => {
                         let Some(aggregates) = &self.aggregates else {
                             return Err(PlannerError::AggregateNotAllowed);
@@ -637,11 +631,7 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
                     Err(e) => return Err(e.into()),
                 }
 
-                let function = self
-                    .planner
-                    .ctx
-                    .catalog()
-                    .scalar_function(&function_call.name)?;
+                let function = self.planner.catalog.scalar_function(&function_call.name)?;
                 if function_call.is_distinct {
                     return Err(PlannerError::InvalidArgument);
                 }
@@ -740,7 +730,6 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
 
                 // Equivalent to `SELECT exists(SELECT first_column FROM subquery LIMIT 1)`
                 let subquery = subquery.limit(
-                    self.planner.ctx,
                     &mut self.planner.column_map(),
                     Some(Value::from(1).into()),
                     None,

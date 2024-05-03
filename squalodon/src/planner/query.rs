@@ -137,7 +137,7 @@ impl<'a> Planner<'a> {
     ) -> PlannerResult<PlanNode<'a>> {
         match table_ref {
             parser::TableRef::BaseTable { name } => {
-                Ok(self.plan_base_table(self.ctx.catalog().table(&name)?))
+                Ok(self.plan_base_table(self.catalog.table(&name)?))
             }
             parser::TableRef::Join(join) => self.plan_join(expr_binder, *join),
             parser::TableRef::Subquery(query) => self.plan_query(*query),

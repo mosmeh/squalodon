@@ -1,7 +1,6 @@
 use crate::{
     builtin,
-    connection::ConnectionContext,
-    executor::ExecutorResult,
+    executor::{ExecutionContext, ExecutorResult},
     parser::Expression,
     planner::{self, PlannerResult},
     rows::ColumnIndex,
@@ -267,11 +266,16 @@ impl<'a> Function<'a> {
 pub struct ScalarFunction {
     pub name: &'static str,
     pub bind: ScalarBindFnPtr,
-    pub eval: ScalarEvalFnPtr,
+    pub eval: ScalarFunctionEval,
 }
 
 pub type ScalarBindFnPtr = fn(&[NullableType]) -> PlannerResult<NullableType>;
-pub type ScalarEvalFnPtr = fn(&ConnectionContext, &[Value]) -> ExecutorResult<Value>;
+
+#[derive(PartialEq, Eq, Hash)]
+pub enum ScalarFunctionEval {
+    Pure(fn(&[Value]) -> ExecutorResult<Value>),
+    Impure(fn(&ExecutionContext, &[Value]) -> ExecutorResult<Value>),
+}
 
 pub struct AggregateFunction {
     pub name: &'static str,
@@ -305,7 +309,7 @@ pub struct TableFunction {
 }
 
 pub type TableFnPtr =
-    for<'a> fn(&'a ConnectionContext, &Row) -> ExecutorResult<Box<dyn Iterator<Item = Row> + 'a>>;
+    for<'a> fn(&'a ExecutionContext, &Row) -> ExecutorResult<Box<dyn Iterator<Item = Row> + 'a>>;
 
 pub struct Catalog {
     scalar_functions: HashMap<&'static str, ScalarFunction>,
@@ -468,19 +472,19 @@ impl<'a> CatalogRef<'a> {
         scalar.chain(aggregate).chain(table)
     }
 
-    pub fn scalar_function(&self, name: &str) -> CatalogResult<&ScalarFunction> {
+    pub fn scalar_function(&self, name: &str) -> CatalogResult<&'a ScalarFunction> {
         self.catalog.scalar_functions.get(name).ok_or_else(|| {
             CatalogError::UnknownEntry(CatalogEntryKind::ScalarFunction, name.to_owned())
         })
     }
 
-    pub fn aggregate_function(&self, name: &str) -> CatalogResult<&AggregateFunction> {
+    pub fn aggregate_function(&self, name: &str) -> CatalogResult<&'a AggregateFunction> {
         self.catalog.aggregate_functions.get(name).ok_or_else(|| {
             CatalogError::UnknownEntry(CatalogEntryKind::AggregateFunction, name.to_owned())
         })
     }
 
-    pub fn table_function(&self, name: &str) -> CatalogResult<&TableFunction> {
+    pub fn table_function(&self, name: &str) -> CatalogResult<&'a TableFunction> {
         self.catalog.table_functions.get(name).ok_or_else(|| {
             CatalogError::UnknownEntry(CatalogEntryKind::TableFunction, name.to_owned())
         })

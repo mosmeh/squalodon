@@ -4,9 +4,8 @@ use super::{
     ColumnId, CompareOp, Node, PlanNode, Planner, PlannerResult, Scan,
 };
 use crate::{
-    connection::ConnectionContext,
     parser::{self, BinaryOp},
-    planner, Row, Type, Value,
+    planner, Type, Value,
 };
 use std::{collections::HashSet, ops::Bound};
 
@@ -30,27 +29,19 @@ impl Node for Filter<'_> {
 }
 
 impl<'a> PlanNode<'a> {
-    pub(super) fn filter(
-        self,
-        ctx: &ConnectionContext<'a>,
-        condition: TypedExpression<'a>,
-    ) -> PlannerResult<Self> {
+    pub(super) fn filter(self, condition: TypedExpression<'a>) -> PlannerResult<Self> {
         let condition = condition.expect_type(Type::Boolean)?;
-        self.filter_inner(ctx, [condition].into())
+        self.filter_inner([condition].into())
     }
 
-    fn filter_inner(
-        self,
-        ctx: &ConnectionContext<'a>,
-        conjuncts: HashSet<PlanExpression<'a>>,
-    ) -> PlannerResult<Self> {
+    fn filter_inner(self, conjuncts: HashSet<PlanExpression<'a>>) -> PlannerResult<Self> {
         if self.produces_no_rows() {
             return Ok(self);
         }
 
         let mut normalized_conjuncts = HashSet::new();
         for conjunct in conjuncts {
-            if !collect_conjuncts(ctx, &mut normalized_conjuncts, conjunct) {
+            if !collect_conjuncts(&mut normalized_conjuncts, conjunct) {
                 return Ok(self.into_no_rows());
             }
         }
@@ -66,7 +57,7 @@ impl<'a> PlanNode<'a> {
             }) => {
                 // Merge nested filters
                 conjuncts.extend(normalized_conjuncts);
-                return source.filter_inner(ctx, conjuncts);
+                return source.filter_inner(conjuncts);
             }
             PlanNode::CrossProduct(planner::CrossProduct { left, right }) => {
                 let left_outputs = left.outputs().into_iter().collect();
@@ -78,16 +69,16 @@ impl<'a> PlanNode<'a> {
                         let conjunct = conjunct.clone();
                         normalized_conjuncts.remove(&conjunct);
                         return left
-                            .filter_inner(ctx, [conjunct].into())?
+                            .filter_inner([conjunct].into())?
                             .cross_product(*right)
-                            .filter_inner(ctx, normalized_conjuncts);
+                            .filter_inner(normalized_conjuncts);
                     }
                     if conjunct.referenced_columns().is_subset(&right_outputs) {
                         let conjunct = conjunct.clone();
                         normalized_conjuncts.remove(&conjunct);
                         return left
-                            .cross_product(right.filter_inner(ctx, [conjunct].into())?)
-                            .filter_inner(ctx, normalized_conjuncts);
+                            .cross_product(right.filter_inner([conjunct].into())?)
+                            .filter_inner(normalized_conjuncts);
                     }
                 }
 
@@ -143,7 +134,7 @@ impl<'a> PlanNode<'a> {
                                 .collect(),
                         }
                     };
-                    return PlanNode::Join(join).filter_inner(ctx, normalized_conjuncts);
+                    return PlanNode::Join(join).filter_inner(normalized_conjuncts);
                 }
 
                 PlanNode::CrossProduct(planner::CrossProduct { left, right })
@@ -189,7 +180,7 @@ impl<'a> PlanNode<'a> {
                             range,
                             outputs,
                         })
-                        .filter_inner(ctx, normalized_conjuncts);
+                        .filter_inner(normalized_conjuncts);
                     }
                 }
                 PlanNode::Scan(Scan::Seq { table, outputs })
@@ -208,7 +199,6 @@ impl<'a> PlanNode<'a> {
 ///
 /// Returns false if the expression evaluates to false.
 fn collect_conjuncts<'a>(
-    ctx: &ConnectionContext<'a>,
     conjuncts: &mut HashSet<PlanExpression<'a>>,
     expr: PlanExpression<'a>,
 ) -> bool {
@@ -218,12 +208,12 @@ fn collect_conjuncts<'a>(
         rhs,
     } = expr
     {
-        if !collect_conjuncts(ctx, conjuncts, *lhs) {
+        if !collect_conjuncts(conjuncts, *lhs) {
             return false;
         }
-        return collect_conjuncts(ctx, conjuncts, *rhs);
+        return collect_conjuncts(conjuncts, *rhs);
     }
-    if let Ok(value) = expr.eval(ctx, &Row::empty()) {
+    if let Ok(value) = expr.eval_const() {
         match value {
             Value::Boolean(true) => return true,
             Value::Null | Value::Boolean(false) => return false,
@@ -235,6 +225,7 @@ fn collect_conjuncts<'a>(
 }
 
 impl<'a> Planner<'a> {
+    #[allow(clippy::unused_self)]
     pub fn plan_filter(
         &self,
         expr_binder: &ExpressionBinder<'_, 'a>,
@@ -242,6 +233,6 @@ impl<'a> Planner<'a> {
         expr: parser::Expression,
     ) -> PlannerResult<PlanNode<'a>> {
         let (plan, condition) = expr_binder.bind(source, expr)?;
-        plan.filter(self.ctx, condition)
+        plan.filter(condition)
     }
 }

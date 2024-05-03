@@ -201,7 +201,7 @@ impl<'a> Planner<'a> {
         name: String,
         args: Vec<parser::Expression>,
     ) -> PlannerResult<PlanNode<'a>> {
-        let function = self.ctx.catalog().table_function(&name)?;
+        let function = self.catalog.table_function(&name)?;
         let exprs = args
             .into_iter()
             .map(|expr| expr_binder.bind_without_source(expr))

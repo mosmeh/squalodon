@@ -1,5 +1,5 @@
-use super::{ExecutorNode, ExecutorResult, Node, Output};
-use crate::{connection::ConnectionContext, planner};
+use super::{ExecutionContext, ExecutorNode, ExecutorResult, Node, Output};
+use crate::planner;
 
 pub struct Union<'a> {
     left: Box<ExecutorNode<'a>>,
@@ -13,7 +13,7 @@ impl Node for Union<'_> {
 }
 
 impl<'a> ExecutorNode<'a> {
-    pub fn union(ctx: &'a ConnectionContext, plan: planner::Union<'a>) -> ExecutorResult<Self> {
+    pub fn union(ctx: &'a ExecutionContext, plan: planner::Union<'a>) -> ExecutorResult<Self> {
         let planner::Union { left, right, .. } = plan;
         Ok(Self::Union(Union {
             left: Box::new(Self::new(ctx, *left)?),

@@ -3,7 +3,7 @@ use super::{
     sort::TopN,
     ColumnId, ColumnMap, ExplainFormatter, Node, PlanNode, Planner, PlannerResult, Project, Sort,
 };
-use crate::{connection::ConnectionContext, parser, PlannerError, Row, Type, Value};
+use crate::{parser, PlannerError, Type, Value};
 
 pub struct Limit<'a> {
     pub source: Box<PlanNode<'a>>,
@@ -32,7 +32,6 @@ impl Node for Limit<'_> {
 impl<'a> PlanNode<'a> {
     pub(super) fn limit(
         self,
-        ctx: &ConnectionContext<'a>,
         column_map: &mut ColumnMap,
         limit: Option<TypedExpression<'a>>,
         offset: Option<TypedExpression<'a>>,
@@ -44,7 +43,7 @@ impl<'a> PlanNode<'a> {
             .map(|offset| offset.expect_type(Type::Integer))
             .transpose()?;
         if let Some(expr) = &limit {
-            match expr.eval(ctx, &Row::empty()) {
+            match expr.eval_const() {
                 Ok(Value::Integer(limit)) if limit < 0 => {
                     return Err(PlannerError::NegativeLimitOrOffset)
                 }
@@ -54,7 +53,7 @@ impl<'a> PlanNode<'a> {
             }
         }
         if let Some(expr) = &offset {
-            match expr.eval(ctx, &Row::empty()) {
+            match expr.eval_const() {
                 Ok(Value::Integer(offset)) if offset < 0 => {
                     return Err(PlannerError::NegativeLimitOrOffset)
                 }
@@ -80,7 +79,7 @@ impl<'a> PlanNode<'a> {
                 .map(|(id, expr)| expr.into_typed(column_map[id].ty))
                 .collect();
             return Ok(source
-                .limit(ctx, column_map, limit, offset)?
+                .limit(column_map, limit, offset)?
                 .project(column_map, exprs));
         }
 
@@ -122,6 +121,6 @@ impl<'a> Planner<'a> {
         let offset = offset
             .map(|expr| expr_binder.bind_without_source(expr))
             .transpose()?;
-        source.limit(self.ctx, &mut self.column_map(), limit, offset)
+        source.limit(&mut self.column_map(), limit, offset)
     }
 }

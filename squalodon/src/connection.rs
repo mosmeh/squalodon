@@ -1,12 +1,12 @@
 use crate::{
-    catalog::{self, Catalog, CatalogRef},
-    executor::Executor,
+    catalog::{self, Catalog},
+    executor::ExecutionContext,
     parser::{Deallocate, Expression, Parser, Statement, TransactionControl},
-    planner::{self, Plan},
-    rows::{self, Rows},
+    planner,
+    rows::Rows,
     storage::{Storage, Transaction},
-    types::{NullableType, Params},
-    Database, Error, ExecutorError, Result, Row, Type,
+    types::Params,
+    Database, Error, ExecutorError, Result, Row,
 };
 use fastrand::Rng;
 use std::{cell::RefCell, collections::HashMap};
@@ -123,15 +123,9 @@ impl<'a, T: Storage> Connection<'a, T> {
         };
 
         let catalog = self.db.catalog.with(txn);
-        let ctx = ConnectionContext::new(&catalog, &self.rng);
-
-        let mut param_values = Vec::with_capacity(params.len());
-        for expr in params {
-            param_values.push(planner::plan_expr(&ctx, expr)?.eval(&ctx, &Row::empty())?);
-        }
-
-        let plan = planner::plan(&ctx, statement, param_values)?;
-        match execute_plan(&ctx, plan) {
+        let execution_ctx = ExecutionContext::new(catalog, &self.rng);
+        let plan = planner::plan(&execution_ctx, statement, params)?;
+        match execution_ctx.execute(plan) {
             Ok(rows) => {
                 if let Some(txn) = implicit_txn {
                     txn.commit(); // Auto commit
@@ -142,7 +136,7 @@ impl<'a, T: Storage> Connection<'a, T> {
                 if implicit_txn.is_none() {
                     *txn_status = TransactionState::Aborted;
                 }
-                Err(e)
+                Err(e.into())
             }
         }
     }
@@ -184,36 +178,6 @@ impl<'a, T: Storage> Connection<'a, T> {
             ) => Err(TransactionError::NoActiveTransaction),
         }
     }
-}
-
-fn execute_plan(ctx: &ConnectionContext, plan: Plan) -> Result<Rows> {
-    let Plan { node, schema } = plan;
-    let columns: Vec<_> = schema
-        .into_iter()
-        .map(|column| {
-            rows::Column {
-                name: column.column_name,
-                ty: match column.ty {
-                    NullableType::NonNull(ty) => ty,
-                    NullableType::Null => Type::Integer, // Arbitrarily choose INTEGER
-                },
-            }
-        })
-        .collect();
-    let executor = Executor::new(ctx, node)?;
-    let mut rows = Vec::new();
-    for row in executor {
-        let row = row?;
-        assert_eq!(row.columns().len(), columns.len());
-        for (value, column) in row.columns().iter().zip(&columns) {
-            assert!(value.ty().is_compatible_with(column.ty));
-        }
-        rows.push(row);
-    }
-    Ok(Rows {
-        iter: rows.into_iter(),
-        columns,
-    })
 }
 
 enum TransactionState<T> {
@@ -352,28 +316,5 @@ impl<T: Transaction> Drop for Inserter<'_, T> {
         if let Some(txn) = self.txn.take() {
             txn.commit();
         }
-    }
-}
-
-pub struct ConnectionContext<'a> {
-    catalog: &'a CatalogRef<'a>,
-    rng: &'a RefCell<Rng>,
-}
-
-impl<'a> ConnectionContext<'a> {
-    pub fn new(catalog: &'a CatalogRef<'a>, rng: &'a RefCell<Rng>) -> Self {
-        Self { catalog, rng }
-    }
-
-    pub fn catalog(&self) -> &CatalogRef<'a> {
-        self.catalog
-    }
-
-    pub fn random(&self) -> f64 {
-        self.rng.borrow_mut().f64()
-    }
-
-    pub fn set_seed(&self, seed: f64) {
-        self.rng.borrow_mut().seed(seed.to_bits());
     }
 }

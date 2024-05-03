@@ -1,36 +1,66 @@
-use super::ExecutorResult;
+use super::{ExecutionContext, ExecutorResult};
 use crate::{
-    connection::ConnectionContext,
+    catalog::ScalarFunctionEval,
     parser::{BinaryOp, UnaryOp},
-    planner::{CaseBranch, ColumnId, Expression},
+    planner::{CaseBranch, ColumnId, Expression, PlanExpression},
     rows::ColumnIndex,
     ExecutorError, Row, Value,
 };
 
-pub trait ExtractColumn {
-    fn extract_column<'a>(&self, row: &'a Row) -> ExecutorResult<&'a Value>;
+pub trait EvalContext {
+    type Column;
+
+    fn column(column: &Self::Column, row: &Row) -> ExecutorResult<Value>;
+    fn eval_impure_scalar_function(
+        &self,
+        eval: fn(&ExecutionContext, &[Value]) -> ExecutorResult<Value>,
+        args: &[Value],
+    ) -> ExecutorResult<Value>;
 }
 
-impl ExtractColumn for ColumnId {
-    fn extract_column<'a>(&self, _: &'a Row) -> ExecutorResult<&'a Value> {
-        // Called during planning to check if the expression is constant-foldable.
-        // This error signals that the expression references a column,
-        // which means it's not constant-foldable.
+impl EvalContext for ExecutionContext<'_> {
+    type Column = ColumnIndex;
+
+    fn column(column: &Self::Column, row: &Row) -> ExecutorResult<Value> {
+        Ok(row[column].clone())
+    }
+
+    fn eval_impure_scalar_function(
+        &self,
+        eval: fn(&ExecutionContext, &[Value]) -> ExecutorResult<Value>,
+        args: &[Value],
+    ) -> ExecutorResult<Value> {
+        eval(self, args)
+    }
+}
+
+struct ConstantFoldingContext;
+
+// EvaluationError signals that the expression is not constant-foldable.
+impl EvalContext for ConstantFoldingContext {
+    type Column = ColumnId;
+
+    fn column(_: &Self::Column, _: &Row) -> ExecutorResult<Value> {
+        Err(ExecutorError::EvaluationError)
+    }
+
+    fn eval_impure_scalar_function(
+        &self,
+        _: fn(&ExecutionContext, &[Value]) -> ExecutorResult<Value>,
+        _: &[Value],
+    ) -> ExecutorResult<Value> {
         Err(ExecutorError::EvaluationError)
     }
 }
 
-impl ExtractColumn for ColumnIndex {
-    fn extract_column<'a>(&self, row: &'a Row) -> ExecutorResult<&'a Value> {
-        Ok(&row.0[self.0])
-    }
-}
-
-impl<C: ExtractColumn> Expression<'_, C> {
-    pub fn eval(&self, ctx: &ConnectionContext, row: &Row) -> ExecutorResult<Value> {
+impl<C> Expression<'_, C> {
+    pub fn eval<T>(&self, ctx: &T, row: &Row) -> ExecutorResult<Value>
+    where
+        T: EvalContext<Column = C>,
+    {
         match self {
             Self::Constant(v) => Ok(v.clone()),
-            Self::ColumnRef(c) => c.extract_column(row).cloned(),
+            Self::ColumnRef(c) => T::column(c, row),
             Self::Cast { expr, ty } => expr
                 .eval(ctx, row)?
                 .cast(*ty)
@@ -51,23 +81,42 @@ impl<C: ExtractColumn> Expression<'_, C> {
                     .iter()
                     .map(|arg| arg.eval(ctx, row))
                     .collect::<ExecutorResult<_>>()?;
-                (function.eval)(ctx, &args)
+                match function.eval {
+                    ScalarFunctionEval::Pure(eval) => eval(&args),
+                    ScalarFunctionEval::Impure(eval) => {
+                        ctx.eval_impure_scalar_function(eval, &args)
+                    }
+                }
             }
         }
     }
 }
 
+impl Expression<'_, ColumnId> {
+    pub fn eval_const(&self) -> ExecutorResult<Value> {
+        self.eval(&ConstantFoldingContext, &Row::empty())
+    }
+}
+
 impl UnaryOp {
-    pub fn eval<C: ExtractColumn>(
+    pub fn eval<T: EvalContext>(
         self,
-        ctx: &ConnectionContext,
+        ctx: &T,
         row: &Row,
-        expr: &Expression<C>,
+        expr: &Expression<T::Column>,
     ) -> ExecutorResult<Value> {
-        let expr = expr.eval(ctx, row)?;
-        match (self, expr) {
-            (Self::Plus, Value::Integer(v)) => Ok(Value::Integer(v)),
-            (Self::Plus, Value::Real(v)) => Ok(Value::Real(v)),
+        let value = expr.eval(ctx, row)?;
+        self.eval_value(&value)
+    }
+
+    pub fn eval_const(self, expr: &PlanExpression) -> ExecutorResult<Value> {
+        self.eval(&ConstantFoldingContext, &Row::empty(), expr)
+    }
+
+    pub fn eval_value(self, value: &Value) -> ExecutorResult<Value> {
+        match (self, value) {
+            (Self::Plus, Value::Integer(v)) => Ok(Value::Integer(*v)),
+            (Self::Plus, Value::Real(v)) => Ok(Value::Real(*v)),
             (Self::Minus, Value::Integer(v)) => Ok(Value::Integer(-v)),
             (Self::Minus, Value::Real(v)) => Ok(Value::Real(-v)),
             (Self::Not, Value::Boolean(v)) => Ok(Value::Boolean(!v)),
@@ -77,12 +126,12 @@ impl UnaryOp {
 }
 
 impl BinaryOp {
-    pub fn eval<C: ExtractColumn>(
+    pub fn eval<T: EvalContext>(
         self,
-        ctx: &ConnectionContext,
+        ctx: &T,
         row: &Row,
-        lhs: &Expression<C>,
-        rhs: &Expression<C>,
+        lhs: &Expression<T::Column>,
+        rhs: &Expression<T::Column>,
     ) -> ExecutorResult<Value> {
         let lhs = lhs.eval(ctx, row)?;
         if lhs == Value::Null {
@@ -97,10 +146,14 @@ impl BinaryOp {
         if rhs == Value::Null {
             return Ok(Value::Null);
         }
-        self.eval_const(&lhs, &rhs)
+        self.eval_values(&lhs, &rhs)
     }
 
-    pub fn eval_const(self, lhs: &Value, rhs: &Value) -> ExecutorResult<Value> {
+    pub fn eval_const(self, lhs: &PlanExpression, rhs: &PlanExpression) -> ExecutorResult<Value> {
+        self.eval(&ConstantFoldingContext, &Row::empty(), lhs, rhs)
+    }
+
+    pub fn eval_values(self, lhs: &Value, rhs: &Value) -> ExecutorResult<Value> {
         if lhs.is_null() || rhs.is_null() {
             return Ok(Value::Null);
         }
@@ -171,11 +224,11 @@ impl BinaryOp {
     }
 }
 
-fn eval_case<C: ExtractColumn>(
-    ctx: &ConnectionContext,
+fn eval_case<T: EvalContext>(
+    ctx: &T,
     row: &Row,
-    branches: &[CaseBranch<C>],
-    else_branch: Option<&Expression<C>>,
+    branches: &[CaseBranch<T::Column>],
+    else_branch: Option<&Expression<T::Column>>,
 ) -> ExecutorResult<Value> {
     for CaseBranch { condition, result } in branches {
         match condition.eval(ctx, row)? {
@@ -187,11 +240,11 @@ fn eval_case<C: ExtractColumn>(
     else_branch.map_or(Ok(Value::Null), |else_branch| else_branch.eval(ctx, row))
 }
 
-fn eval_like<C: ExtractColumn>(
-    ctx: &ConnectionContext,
+fn eval_like<T: EvalContext>(
+    ctx: &T,
     row: &Row,
-    str_expr: &Expression<C>,
-    pattern: &Expression<C>,
+    str_expr: &Expression<T::Column>,
+    pattern: &Expression<T::Column>,
     case_insensitive: bool,
 ) -> ExecutorResult<Value> {
     let string = match str_expr.eval(ctx, row)? {

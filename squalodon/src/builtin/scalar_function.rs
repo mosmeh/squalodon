@@ -1,5 +1,7 @@
 use crate::{
-    catalog::ScalarFunction, types::NullableType, ExecutorError, PlannerError, Type, Value,
+    catalog::{ScalarFunction, ScalarFunctionEval},
+    types::NullableType,
+    ExecutorError, PlannerError, Type, Value,
 };
 
 pub fn load() -> impl Iterator<Item = ScalarFunction> {
@@ -11,14 +13,14 @@ pub fn load() -> impl Iterator<Item = ScalarFunction> {
                 [NullableType::NonNull(Type::Text)] => Ok(Type::Integer.into()),
                 _ => Err(PlannerError::InvalidArgument),
             },
-            eval: |_, args| match args {
+            eval: ScalarFunctionEval::Pure(|args| match args {
                 [Value::Null] => Ok(Value::Null),
                 [Value::Text(s)] => {
                     let i = s.len().try_into().map_err(|_| ExecutorError::OutOfRange)?;
                     Ok(Value::Integer(i))
                 }
                 _ => unreachable!(),
-            },
+            }),
         },
         ScalarFunction {
             name: "random",
@@ -29,7 +31,7 @@ pub fn load() -> impl Iterator<Item = ScalarFunction> {
                     Err(PlannerError::ArityError)
                 }
             },
-            eval: |ctx, _| Ok(ctx.random().into()),
+            eval: ScalarFunctionEval::Impure(|ctx, _| Ok(ctx.random().into())),
         },
         ScalarFunction {
             name: "setseed",
@@ -37,14 +39,14 @@ pub fn load() -> impl Iterator<Item = ScalarFunction> {
                 [NullableType::Null | NullableType::NonNull(Type::Real)] => Ok(NullableType::Null),
                 _ => Err(PlannerError::InvalidArgument),
             },
-            eval: |ctx, args| match args {
+            eval: ScalarFunctionEval::Impure(|ctx, args| match args {
                 [Value::Null] => Ok(Value::Null),
                 [Value::Real(seed)] => {
                     ctx.set_seed(*seed);
                     Ok(Value::Null)
                 }
                 _ => unreachable!(),
-            },
+            }),
         },
     ]
     .into_iter()

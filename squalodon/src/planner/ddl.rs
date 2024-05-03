@@ -198,7 +198,7 @@ impl<'a> Planner<'a> {
         &self,
         create_index: parser::CreateIndex,
     ) -> PlannerResult<PlanNode<'a>> {
-        let table = self.ctx.catalog().table(&create_index.table_name)?;
+        let table = self.catalog.table(&create_index.table_name)?;
         let column_indexes =
             column_indexes_from_names(table.columns(), &create_index.column_names)?;
         let create_index = CreateIndex {
@@ -211,11 +211,12 @@ impl<'a> Planner<'a> {
     }
 
     pub fn plan_drop(&self, drop_object: parser::DropObject) -> PlannerResult<PlanNode<'a>> {
-        let catalog = self.ctx.catalog();
         let result = match drop_object.kind {
-            parser::ObjectKind::Table => catalog.table(&drop_object.name).map(DropObject::Table),
+            parser::ObjectKind::Table => {
+                self.catalog.table(&drop_object.name).map(DropObject::Table)
+            }
             parser::ObjectKind::Index => {
-                catalog
+                self.catalog
                     .index(&drop_object.name)
                     .map(|index| DropObject::Index {
                         table: index.table().clone(),
@@ -233,7 +234,7 @@ impl<'a> Planner<'a> {
     }
 
     pub fn plan_truncate(&self, table_name: &str) -> PlannerResult<PlanNode<'a>> {
-        let table = self.ctx.catalog().table(table_name)?;
+        let table = self.catalog.table(table_name)?;
         Ok(PlanNode::new_truncate(table))
     }
 
@@ -244,7 +245,7 @@ impl<'a> Planner<'a> {
                 table_names.dedup();
                 let tables = table_names
                     .iter()
-                    .map(|name| self.ctx.catalog().table(name))
+                    .map(|name| self.catalog.table(name))
                     .collect::<CatalogResult<_>>()?;
                 Analyze::Tables(tables)
             }
@@ -254,14 +255,13 @@ impl<'a> Planner<'a> {
     }
 
     pub fn plan_reindex(&self, reindex: parser::Reindex) -> PlannerResult<PlanNode<'a>> {
-        let catalog = self.ctx.catalog();
         let reindex = match reindex.kind {
             parser::ObjectKind::Table => {
-                let table = catalog.table(&reindex.name)?;
+                let table = self.catalog.table(&reindex.name)?;
                 Reindex::Table(table)
             }
             parser::ObjectKind::Index => {
-                let index = catalog.index(&reindex.name)?;
+                let index = self.catalog.index(&reindex.name)?;
                 Reindex::Index(index)
             }
         };

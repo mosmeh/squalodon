@@ -1,12 +1,11 @@
-use super::{ExecutorNode, ExecutorResult};
+use super::{ExecutionContext, ExecutorNode, ExecutorResult};
 use crate::{
-    connection::ConnectionContext,
     planner::{Analyze, Constraint, CreateIndex, CreateTable, DropObject, Reindex, Truncate},
     CatalogError,
 };
 
 impl ExecutorNode<'_> {
-    pub fn create_table(ctx: &ConnectionContext, plan: CreateTable) -> ExecutorResult<Self> {
+    pub fn create_table(ctx: &ExecutionContext, plan: CreateTable) -> ExecutorResult<Self> {
         let CreateTable {
             name,
             if_not_exists,
@@ -65,7 +64,7 @@ impl ExecutorNode<'_> {
         Ok(Self::empty_result())
     }
 
-    pub fn analyze(ctx: &ConnectionContext, plan: Analyze) -> ExecutorResult<Self> {
+    pub fn analyze(ctx: &ExecutionContext, plan: Analyze) -> ExecutorResult<Self> {
         match plan {
             Analyze::AllTables => {
                 for table in ctx.catalog().tables() {

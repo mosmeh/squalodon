@@ -1,4 +1,4 @@
-use super::{ConnectionContext, ExecutorNode, ExecutorResult, Node, NodeError, Output};
+use super::{ExecutionContext, ExecutorNode, ExecutorResult, Node, NodeError, Output};
 use crate::{
     memcomparable::MemcomparableSerde,
     parser::BinaryOp,
@@ -48,7 +48,7 @@ impl Node for CrossProduct<'_> {
 }
 
 pub struct NestedLoopJoin<'a> {
-    ctx: &'a ConnectionContext<'a>,
+    ctx: &'a ExecutionContext<'a>,
     outer_source: Box<ExecutorNode<'a>>,
     outer_row: Option<JoinRow>,
     inner_rows: Vec<JoinRow>,
@@ -58,7 +58,7 @@ pub struct NestedLoopJoin<'a> {
 
 impl<'a> NestedLoopJoin<'a> {
     pub fn new(
-        ctx: &'a ConnectionContext<'a>,
+        ctx: &'a ExecutionContext<'a>,
         outer_source: ExecutorNode<'a>,
         inner_source: ExecutorNode<'a>,
         comparisons: Vec<(
@@ -115,7 +115,7 @@ impl Node for NestedLoopJoin<'_> {
                     .zip(inner_row.keys.iter())
                     .zip(&self.comparisons)
                 {
-                    match op.eval_const(lhs, rhs)? {
+                    match op.eval_values(lhs, rhs)? {
                         Value::Boolean(true) => (),
                         Value::Null | Value::Boolean(false) => {
                             self.inner_cursor += 1;
@@ -141,7 +141,7 @@ struct JoinRow {
 }
 
 pub struct HashJoin<'a> {
-    ctx: &'a ConnectionContext<'a>,
+    ctx: &'a ExecutionContext<'a>,
     outer_source: Box<ExecutorNode<'a>>,
     map: HashMap<Vec<u8>, Vec<Row>>,
     keys: Vec<ExecutableExpression<'a>>,
@@ -151,7 +151,7 @@ pub struct HashJoin<'a> {
 
 impl<'a> HashJoin<'a> {
     fn new(
-        ctx: &'a ConnectionContext,
+        ctx: &'a ExecutionContext,
         outer_source: ExecutorNode<'a>,
         inner_source: ExecutorNode<'a>,
         keys: Vec<(ExecutableExpression<'a>, ExecutableExpression<'a>)>,
@@ -216,7 +216,7 @@ impl Node for HashJoin<'_> {
 
 impl<'a> ExecutorNode<'a> {
     pub fn cross_product(
-        ctx: &'a ConnectionContext,
+        ctx: &'a ExecutionContext,
         plan: planner::CrossProduct<'a>,
     ) -> ExecutorResult<Self> {
         let planner::CrossProduct { left, right } = plan;
@@ -226,7 +226,7 @@ impl<'a> ExecutorNode<'a> {
         )?))
     }
 
-    pub fn join(ctx: &'a ConnectionContext, plan: Join<'a>) -> ExecutorResult<Self> {
+    pub fn join(ctx: &'a ExecutionContext, plan: Join<'a>) -> ExecutorResult<Self> {
         match plan {
             Join::NestedLoop {
                 left,

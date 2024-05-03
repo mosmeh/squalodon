@@ -1,5 +1,5 @@
-use super::{ExecutorNode, ExecutorResult, IntoOutput, Node, Output};
-use crate::{catalog::Table, connection::ConnectionContext, planner, Row};
+use super::{ExecutionContext, ExecutorNode, ExecutorResult, IntoOutput, Node, Output};
+use crate::{catalog::Table, planner, Row};
 
 pub struct Insert {
     row: Option<Row>,
@@ -75,17 +75,17 @@ impl Node for Delete {
 }
 
 impl<'a> ExecutorNode<'a> {
-    pub fn insert(ctx: &'a ConnectionContext, plan: planner::Insert<'a>) -> ExecutorResult<Self> {
+    pub fn insert(ctx: &'a ExecutionContext, plan: planner::Insert<'a>) -> ExecutorResult<Self> {
         let planner::Insert { source, table, .. } = plan;
         Ok(Self::Insert(Insert::new(Self::new(ctx, *source)?, table)?))
     }
 
-    pub fn update(ctx: &'a ConnectionContext, plan: planner::Update<'a>) -> ExecutorResult<Self> {
+    pub fn update(ctx: &'a ExecutionContext, plan: planner::Update<'a>) -> ExecutorResult<Self> {
         let planner::Update { source, table, .. } = plan;
         Ok(Self::Update(Update::new(Self::new(ctx, *source)?, table)?))
     }
 
-    pub fn delete(ctx: &'a ConnectionContext, plan: planner::Delete<'a>) -> ExecutorResult<Self> {
+    pub fn delete(ctx: &'a ExecutionContext, plan: planner::Delete<'a>) -> ExecutorResult<Self> {
         let planner::Delete { source, table, .. } = plan;
         Ok(Self::Delete(Delete::new(Self::new(ctx, *source)?, table)?))
     }

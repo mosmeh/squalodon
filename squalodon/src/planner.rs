@@ -16,7 +16,7 @@ mod union;
 pub use aggregate::{Aggregate, AggregateOp, ApplyAggregateOp};
 pub use column::{Column, ColumnId};
 pub use ddl::{Analyze, Constraint, CreateIndex, CreateTable, DropObject, Reindex, Truncate};
-pub use expression::{CaseBranch, ExecutableExpression, Expression};
+pub use expression::{CaseBranch, ExecutableExpression, Expression, PlanExpression};
 pub use filter::Filter;
 pub use join::{CompareOp, CrossProduct, Join};
 pub use limit::Limit;
@@ -27,11 +27,12 @@ pub use sort::{ExecutableOrderBy, Sort, TopN};
 pub use union::Union;
 
 use crate::{
-    connection::ConnectionContext, parser, types::Params, CatalogError, StorageError, Value,
+    catalog::CatalogRef, executor::ExecutionContext, parser, types::Params, CatalogError, Result,
+    Row, StorageError, Value,
 };
 use column::{ColumnMap, ColumnRef};
 use explain::{Explain, ExplainFormatter};
-use expression::{ExpressionBinder, PlanExpression, TypedExpression};
+use expression::{ExpressionBinder, TypedExpression};
 use std::{cell::RefCell, num::NonZeroUsize, rc::Rc};
 
 #[derive(Debug, thiserror::Error)]
@@ -84,29 +85,29 @@ pub enum PlannerError {
 
 pub type PlannerResult<T> = std::result::Result<T, PlannerError>;
 
-pub fn plan_expr<'a>(
-    ctx: &'a ConnectionContext<'a>,
-    expr: parser::Expression,
-) -> PlannerResult<PlanExpression<'a>> {
-    let planner = Planner::new(ctx);
-    let TypedExpression { expr, .. } = ExpressionBinder::new(&planner).bind_without_source(expr)?;
-    Ok(expr)
-}
-
 pub fn plan<'a>(
-    ctx: &'a ConnectionContext<'a>,
+    ctx: &ExecutionContext<'a>,
     statement: parser::Statement,
-    params: Vec<Value>,
-) -> PlannerResult<Plan<'a>> {
-    let planner = Planner::new(ctx).with_params(params);
-    let plan = planner.plan(statement)?;
+    params: Vec<parser::Expression>,
+) -> Result<Plan<'a>> {
+    let planner = Planner::new(ctx.catalog().clone());
+    let mut param_values = Vec::with_capacity(params.len());
+    for expr in params {
+        let TypedExpression { expr, .. } =
+            ExpressionBinder::new(&planner).bind_without_source(expr)?;
+        let value = expr.into_executable(&[]).eval(ctx, &Row::empty())?;
+        param_values.push(value);
+    }
+
+    let planner = planner.with_params(param_values);
+    let node = planner.plan(statement)?;
     let column_map = planner.column_map();
-    let schema: Vec<_> = plan
+    let schema = node
         .outputs()
         .into_iter()
         .map(|id| column_map[id].clone())
         .collect();
-    Ok(Plan { node: plan, schema })
+    Ok(Plan { node, schema })
 }
 
 pub struct Plan<'a> {
@@ -234,15 +235,15 @@ impl Node for Spool<'_> {
 }
 
 struct Planner<'a> {
-    ctx: &'a ConnectionContext<'a>,
+    catalog: CatalogRef<'a>,
     params: Vec<Value>,
     column_map: Rc<RefCell<Vec<Column>>>,
 }
 
 impl<'a> Planner<'a> {
-    fn new(ctx: &'a ConnectionContext<'a>) -> Self {
+    fn new(catalog: CatalogRef<'a>) -> Self {
         Self {
-            ctx,
+            catalog,
             params: Vec::new(),
             column_map: Default::default(),
         }
@@ -250,7 +251,7 @@ impl<'a> Planner<'a> {
 
     fn with_params(&self, params: Vec<Value>) -> Self {
         Self {
-            ctx: self.ctx,
+            catalog: self.catalog.clone(),
             params,
             column_map: self.column_map.clone(),
         }
@@ -273,7 +274,7 @@ impl<'a> Planner<'a> {
                 self.rewrite_to("SELECT * FROM squalodon_tables() ORDER BY name", [])
             }
             parser::Statement::Describe(name) => {
-                self.ctx.catalog().table(&name)?; // Check if the table exists
+                self.catalog.table(&name)?; // Check if the table exists
                 self.rewrite_to(
                     "SELECT column_name, type, is_nullable, is_primary_key, default_value
                     FROM squalodon_columns()

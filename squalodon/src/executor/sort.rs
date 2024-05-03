@@ -1,4 +1,4 @@
-use super::{ConnectionContext, ExecutorNode, ExecutorResult, IntoOutput, Node, Output};
+use super::{ExecutionContext, ExecutorNode, ExecutorResult, IntoOutput, Node, Output};
 use crate::{
     memcomparable::MemcomparableSerde,
     planner::{self, ExecutableExpression, ExecutableOrderBy},
@@ -12,7 +12,7 @@ pub struct Sort {
 
 impl Sort {
     fn new(
-        ctx: &ConnectionContext,
+        ctx: &ExecutionContext,
         source: ExecutorNode,
         order_by: Vec<ExecutableOrderBy>,
     ) -> ExecutorResult<Self> {
@@ -48,14 +48,14 @@ pub struct TopN {
 
 impl TopN {
     fn new(
-        ctx: &ConnectionContext,
+        ctx: &ExecutionContext,
         source: ExecutorNode,
         limit: ExecutableExpression,
         offset: Option<ExecutableExpression>,
         order_by: Vec<ExecutableOrderBy>,
     ) -> ExecutorResult<Self> {
         fn eval(
-            ctx: &ConnectionContext,
+            ctx: &ExecutionContext,
             expr: Option<ExecutableExpression>,
         ) -> ExecutorResult<usize> {
             let Some(expr) = expr else {
@@ -130,7 +130,7 @@ impl Ord for TopNRow {
 }
 
 impl<'a> ExecutorNode<'a> {
-    pub fn sort(ctx: &'a ConnectionContext, plan: planner::Sort<'a>) -> ExecutorResult<Self> {
+    pub fn sort(ctx: &'a ExecutionContext, plan: planner::Sort<'a>) -> ExecutorResult<Self> {
         let planner::Sort { source, order_by } = plan;
         let outputs = source.outputs();
         let order_by = order_by
@@ -144,7 +144,7 @@ impl<'a> ExecutorNode<'a> {
         )?))
     }
 
-    pub fn top_n(ctx: &'a ConnectionContext, plan: planner::TopN<'a>) -> ExecutorResult<Self> {
+    pub fn top_n(ctx: &'a ExecutionContext, plan: planner::TopN<'a>) -> ExecutorResult<Self> {
         let planner::TopN {
             source,
             limit,

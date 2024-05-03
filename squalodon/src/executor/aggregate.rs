@@ -1,7 +1,6 @@
-use super::{ExecutorNode, ExecutorResult, IntoOutput, Node, Output};
+use super::{ExecutionContext, ExecutorNode, ExecutorResult, IntoOutput, Node, Output};
 use crate::{
     catalog::{AggregateInitFnPtr, Aggregator},
-    connection::ConnectionContext,
     memcomparable::MemcomparableSerde,
     planner::{self, Aggregate, ColumnId},
     rows::ColumnIndex,
@@ -160,7 +159,7 @@ impl GroupAggregator {
 }
 
 impl<'a> ExecutorNode<'a> {
-    pub fn aggregate(ctx: &'a ConnectionContext, plan: Aggregate<'a>) -> ExecutorResult<Self> {
+    pub fn aggregate(ctx: &'a ExecutionContext, plan: Aggregate<'a>) -> ExecutorResult<Self> {
         match plan {
             Aggregate::Ungrouped { source, ops } => {
                 let outputs = source.outputs();

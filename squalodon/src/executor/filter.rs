@@ -1,11 +1,11 @@
-use super::{ConnectionContext, ExecutorNode, ExecutorResult, Node, Output};
+use super::{ExecutionContext, ExecutorNode, ExecutorResult, Node, Output};
 use crate::{
     planner::{self, ExecutableExpression},
     Row, Value,
 };
 
 pub struct Filter<'a> {
-    ctx: &'a ConnectionContext<'a>,
+    ctx: &'a ExecutionContext<'a>,
     source: Box<ExecutorNode<'a>>,
     conjuncts: Vec<ExecutableExpression<'a>>,
 }
@@ -22,7 +22,7 @@ impl Node for Filter<'_> {
 }
 
 impl Filter<'_> {
-    fn is_match(&self, ctx: &ConnectionContext, row: &Row) -> ExecutorResult<bool> {
+    fn is_match(&self, ctx: &ExecutionContext, row: &Row) -> ExecutorResult<bool> {
         for conjunct in &self.conjuncts {
             match conjunct.eval(ctx, row)? {
                 Value::Boolean(true) => {}
@@ -35,7 +35,7 @@ impl Filter<'_> {
 }
 
 impl<'a> ExecutorNode<'a> {
-    pub fn filter(ctx: &'a ConnectionContext, plan: planner::Filter<'a>) -> ExecutorResult<Self> {
+    pub fn filter(ctx: &'a ExecutionContext, plan: planner::Filter<'a>) -> ExecutorResult<Self> {
         let planner::Filter {
             source, conjuncts, ..
         } = plan;
