@@ -124,12 +124,18 @@ impl<'a> Planner<'a> {
             plan = self.plan_filter(&expr_binder, plan, having)?;
         }
 
-        // FIXME: order_by should be after projections according to SQL
-        //        semantics. However, if projections reorder columns,
-        //        we lose track of aggregation results. So we process order_by
-        //        before projections for now.
-        let plan = self.plan_order_by(&expr_binder, plan, modifier.order_by)?;
-        let plan = self.plan_projections(&expr_binder, plan, projection_exprs, select.distinct)?;
+        if select.distinct.is_some() {
+            // SELECT DISTINCT will not preserve the order of rows,
+            // so we need to apply ORDER BY after SELECT DISTINCT.
+            plan = self.plan_projections(&expr_binder, plan, projection_exprs, select.distinct)?;
+            plan = self.plan_order_by(&expr_binder, plan, modifier.order_by)?;
+        } else {
+            // This is SELECT without DISTINCT, so we can apply ORDER BY before
+            // projection to allow the ORDER BY clause to reference columns
+            // not present in the SELECT clause.
+            plan = self.plan_order_by(&expr_binder, plan, modifier.order_by)?;
+            plan = self.plan_projections(&expr_binder, plan, projection_exprs, select.distinct)?;
+        }
 
         let plan = self.plan_limit(
             &ExpressionBinder::new(self),
