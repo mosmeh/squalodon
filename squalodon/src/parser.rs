@@ -8,7 +8,7 @@ pub use expression::{BinaryOp, ColumnRef, Expression, FunctionArgs, FunctionCall
 pub use mutation::{Delete, Insert, Update};
 pub use query::{
     Distinct, Join, JoinCondition, NullOrder, Order, OrderBy, Projection, Query, QueryBody,
-    QueryModifier, Select, TableRef, Values,
+    QueryModifier, Select, TableRef, TableRefKind, Values,
 };
 
 use crate::{

@@ -59,6 +59,18 @@ impl<'a> PlanNode<'a> {
             })
             .collect();
 
+        self.project_with_column_ids(column_map, projections)
+    }
+
+    pub fn project_with_column_ids(
+        self,
+        column_map: &mut ColumnMap,
+        projections: Vec<(ColumnId, PlanExpression<'a>)>,
+    ) -> Self {
+        if self.produces_no_rows() {
+            return self;
+        }
+
         if self
             .outputs()
             .into_iter()
@@ -96,8 +108,8 @@ impl<'a> PlanNode<'a> {
                     .map(|i| outputs[i.0])
                     .collect();
                 let indexed: HashSet<_> = indexed_column_ids.iter().copied().collect();
-                let is_covered = exprs.iter().all(|expr| {
-                    let refs = expr.expr.referenced_columns();
+                let is_covered = projections.iter().all(|(_, expr)| {
+                    let refs = expr.referenced_columns();
                     !refs.is_empty() && refs.is_subset(&indexed)
                 });
                 if is_covered {
@@ -106,7 +118,7 @@ impl<'a> PlanNode<'a> {
                         range,
                         outputs: indexed_column_ids,
                     })
-                    .project(column_map, exprs);
+                    .project_with_column_ids(column_map, projections);
                 }
                 PlanNode::Scan(Scan::Index {
                     index,

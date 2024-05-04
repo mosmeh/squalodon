@@ -96,3 +96,15 @@ impl std::ops::Index<&ColumnId> for ColumnMap {
         &self.0[index.0]
     }
 }
+
+impl std::ops::IndexMut<ColumnId> for ColumnMap {
+    fn index_mut(&mut self, index: ColumnId) -> &mut Self::Output {
+        &mut self.0[index.0]
+    }
+}
+
+impl std::ops::IndexMut<&ColumnId> for ColumnMap {
+    fn index_mut(&mut self, index: &ColumnId) -> &mut Self::Output {
+        &mut self.0[index.0]
+    }
+}

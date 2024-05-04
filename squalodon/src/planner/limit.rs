@@ -92,13 +92,9 @@ impl<'a> PlanNode<'a> {
         {
             let limit = limit.map(|limit| limit.into_typed(Type::Integer));
             let offset = offset.map(|offset| offset.into_typed(Type::Integer));
-            let exprs = projections
-                .into_iter()
-                .map(|(id, expr)| expr.into_typed(column_map[id].ty))
-                .collect();
             return Ok(source
                 .limit(column_map, limit, offset)?
-                .project(column_map, exprs));
+                .project_with_column_ids(column_map, projections));
         }
 
         // Turn Sort + Limit into TopN

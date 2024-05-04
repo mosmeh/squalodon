@@ -135,16 +135,23 @@ impl<'a> Planner<'a> {
         expr_binder: &ExpressionBinder<'_, 'a>,
         table_ref: parser::TableRef,
     ) -> PlannerResult<PlanNode<'a>> {
-        match table_ref {
-            parser::TableRef::BaseTable { name } => {
-                Ok(self.plan_base_table(self.catalog.table(&name)?))
+        let plan = match table_ref.kind {
+            parser::TableRefKind::BaseTable { name } => {
+                self.plan_base_table(self.catalog.table(&name)?)
             }
-            parser::TableRef::Join(join) => self.plan_join(expr_binder, *join),
-            parser::TableRef::Subquery(query) => self.plan_query(*query),
-            parser::TableRef::Function { name, args } => {
-                self.plan_table_function(expr_binder, name, args)
+            parser::TableRefKind::Join(join) => self.plan_join(expr_binder, *join)?,
+            parser::TableRefKind::Subquery(query) => self.plan_query(*query)?,
+            parser::TableRefKind::Function { name, args } => {
+                self.plan_table_function(expr_binder, name, args)?
             }
-            parser::TableRef::Values(values) => self.plan_values(expr_binder, values),
+            parser::TableRefKind::Values(values) => self.plan_values(expr_binder, values)?,
+        };
+        if let Some(alias) = table_ref.alias {
+            let mut column_map = self.column_map_mut();
+            for id in plan.outputs() {
+                column_map[id].table_name = Some(alias.clone());
+            }
         }
+        Ok(plan)
     }
 }
