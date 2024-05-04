@@ -340,7 +340,7 @@ impl<'a> Planner<'a> {
                     "SELECT column_name, type, is_nullable, is_primary_key, default_value
                     FROM squalodon_columns()
                     WHERE table_name = $1",
-                    Value::from(name),
+                    name,
                 )
             }
             parser::Statement::CreateTable(create_table) => self.plan_create_table(create_table),
