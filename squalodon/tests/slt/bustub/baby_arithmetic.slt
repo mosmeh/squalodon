@@ -1,0 +1,50 @@
+query I
+select 1 + 2;
+----
+3
+
+query I
+select 1 + 2 + 3;
+----
+6
+
+query I
+select 1 - 2 + 5 - 10;
+----
+-6
+
+query I
+select 1 + 2 + 3 + null;
+----
+NULL
+
+query B
+select 1 > 2 and 2 > 3;
+----
+f
+
+query B
+select null > 2 and 2 > 3;
+----
+f
+
+query B
+select null < 2 and 2 < 3;
+----
+NULL
+
+query B
+select null > 2 or 2 > 3;
+----
+NULL
+
+query B
+select null < 2 or 2 < 3;
+----
+t
+
+statement ok
+CREATE TABLE __mock_table_1 (colA INTEGER PRIMARY KEY, colB INTEGER);
+
+statement ok
+select colA + colB, colA, colB, colA - colB from __mock_table_1;

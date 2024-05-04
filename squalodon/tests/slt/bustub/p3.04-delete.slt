@@ -1,0 +1,78 @@
+# Create a table
+statement ok
+create table t1(v1 int primary key, v2 varchar, v3 int);
+
+# Insert once
+statement ok
+insert into t1 values (0, '🥰', 10), (1, '🥰🥰', 11), (2, '🥰🥰🥰', 12), (3, '🥰🥰🥰🥰', 13), (4, '🥰🥰🥰🥰🥰', 14);
+
+query ITI
+select * from t1;
+----
+0 🥰 10
+1 🥰🥰 11
+2 🥰🥰🥰 12
+3 🥰🥰🥰🥰 13
+4 🥰🥰🥰🥰🥰 14
+
+# Delete from the table
+statement ok
+delete from t1 where v1 >= 3
+
+query ITI
+select * from t1;
+----
+0 🥰 10
+1 🥰🥰 11
+2 🥰🥰🥰 12
+
+# Delete all
+statement ok
+delete from t1;
+
+query ITI
+select * from t1;
+----
+
+# Repeat
+statement ok
+insert into t1 values (0, '🥰', 10), (1, '🥰🥰', 11), (2, '🥰🥰🥰', 12), (3, '🥰🥰🥰🥰', 13), (4, '🥰🥰🥰🥰🥰', 14);
+
+query ITI
+select * from t1;
+----
+0 🥰 10
+1 🥰🥰 11
+2 🥰🥰🥰 12
+3 🥰🥰🥰🥰 13
+4 🥰🥰🥰🥰🥰 14
+
+# Delete from the table
+statement ok
+delete from t1 where v1 >= 3
+
+query ITI
+select * from t1;
+----
+0 🥰 10
+1 🥰🥰 11
+2 🥰🥰🥰 12
+
+# Delete nothing
+statement ok
+delete from t1 where v1 != v1;
+
+query ITI
+select * from t1;
+----
+0 🥰 10
+1 🥰🥰 11
+2 🥰🥰🥰 12
+
+# Delete all
+statement ok
+delete from t1;
+
+query ITI
+select * from t1;
+----

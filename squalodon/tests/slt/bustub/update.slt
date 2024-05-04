@@ -1,0 +1,13 @@
+statement ok
+create table t1(v1 int primary key);
+
+statement ok
+insert into t1 values (1);
+
+statement ok
+update t1 set v1 = 2;
+
+query I
+select * from t1;
+----
+2

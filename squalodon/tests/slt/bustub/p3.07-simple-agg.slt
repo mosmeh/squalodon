@@ -1,0 +1,79 @@
+statement ok
+CREATE TABLE __mock_table_tas_2024 (github_id VARCHAR PRIMARY KEY, office_hour VARCHAR);
+
+statement ok
+INSERT INTO __mock_table_tas_2024 VALUES
+    ('AlSchlo', 'Friday'),
+    ('walkingcabbages', 'Thursday'),
+    ('averyqi115', 'Friday'),
+    ('lanlou1554', 'Wednesday'),
+    ('sweetsuro', 'Thursday'),
+    ('ChaosZhai', 'Yesterday'),
+    ('SDTheSlayer', 'Monday'),
+    ('xx01cyx', 'Tuesday'),
+    ('yliang412', 'Tuesday'),
+    ('thelongmarch-azx', 'Monday');
+
+# How many TAs are there in 2024 Spring?
+query I
+select count(*) from __mock_table_tas_2024;
+----
+10
+
+# The real test process begins...
+
+# Create a table
+statement ok
+create table t1(v1 int primary key);
+
+# Simple aggregation over the table
+statement ok
+insert into t1 values (-99999), (99999), (0), (1), (2), (3);
+
+query IIIII
+select count(*), min(v1), max(v1), count(v1), sum(v1) from t1;
+----
+6 -99999 99999 6 6
+
+# Create yet another table
+statement ok
+create table t2(v1 int primary key, v2 int);
+
+# Insert something
+statement ok
+insert into t2 values (1, 100), (2, 200), (3, 300), (4, 400), (5, 500);
+
+# Do some ridiculous query
+query IIIIIIIII
+select count(*), min(v1+v2-3), max(2+v2-v1), count(v1+v2+v2), sum(v1-v2+v2), sum(1), max(233), min(1), count(2) from t2;
+----
+5 98 497 5 15 5 233 1 5
+
+# Simple aggregation over an empty table
+statement ok
+delete from t1;
+
+query I
+select count(*) from t1;
+----
+0
+
+query I
+select min(v1) from t1;
+----
+NULL
+
+query I
+select max(v1) from t1;
+----
+NULL
+
+query I
+select count(v1) from t1;
+----
+0
+
+query I
+select sum(v1) from t1;
+----
+NULL

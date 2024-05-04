@@ -1,0 +1,26 @@
+statement ok
+CREATE TABLE __mock_table_schedule (
+    day_of_week VARCHAR PRIMARY KEY,
+    has_lecture INTEGER
+);
+
+statement ok
+INSERT INTO __mock_table_schedule VALUES
+    ('Monday', 1),
+    ('Tuesday', 0),
+    ('Wednesday', 1),
+    ('Thursday', 0),
+    ('Friday', 0),
+    ('Saturday', 0),
+    ('Sunday', 0);
+
+query TTTI rowsort
+select day_of_week, upper(day_of_week), lower(day_of_week), has_lecture from __mock_table_schedule;
+----
+Friday FRIDAY friday 0
+Monday MONDAY monday 1
+Saturday SATURDAY saturday 0
+Sunday SUNDAY sunday 0
+Thursday THURSDAY thursday 0
+Tuesday TUESDAY tuesday 0
+Wednesday WEDNESDAY wednesday 1

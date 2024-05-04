@@ -1,0 +1,58 @@
+statement ok
+CREATE TABLE __mock_table_123 (a INTEGER PRIMARY KEY);
+
+statement ok
+INSERT INTO __mock_table_123 VALUES (1), (2), (3);
+
+# Put everything on the right side of NLJ
+
+statement ok
+create table t1(v1 int primary key, v2 varchar);
+
+statement ok
+insert into t1 values (0, '🥰'), (1, '🥰🥰');
+
+# SeqScan as the right child
+
+query IIT rowsort
+select * from __mock_table_123, t1;
+----
+1 0 🥰
+1 1 🥰🥰
+2 0 🥰
+2 1 🥰🥰
+3 0 🥰
+3 1 🥰🥰
+
+# SimpleAgg as the right child
+
+query II rowsort
+select * from __mock_table_123, (select count(*) as cnt from t1) s;
+----
+1 2
+2 2
+3 2
+
+# GroupAgg as the right child
+
+query IT rowsort
+select * from __mock_table_123, (select distinct v2 from t1) s;
+----
+1 🥰
+1 🥰🥰
+2 🥰
+2 🥰🥰
+3 🥰
+3 🥰🥰
+
+# IndexScan as the right child
+
+statement ok
+create index t1v1 on t1(v1);
+
+query IIT rowsort
+select * from __mock_table_123, (select * from t1 where v1 = 1) s;
+----
+1 1 🥰🥰
+2 1 🥰🥰
+3 1 🥰🥰

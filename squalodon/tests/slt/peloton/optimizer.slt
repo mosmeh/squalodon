@@ -1,0 +1,1019 @@
+statement ok
+CREATE TABLE test (a INT PRIMARY KEY, b INT, c INT);
+
+statement ok
+INSERT INTO test VALUES
+    (1, 22, 333),
+    (2, 11, 000),
+    (3, 33, 444),
+    (4, 00, 555);
+
+# SimpleSelectTest
+
+query III
+SELECT * FROM test;
+----
+1 22 333
+2 11 0
+3 33 444
+4 0 555
+
+query I
+SELECT b FROM test ORDER BY c;
+----
+11
+22
+33
+0
+
+query I
+SELECT a FROM test ORDER BY c DESC;
+----
+4
+3
+1
+2
+
+query II
+SELECT c, b FROM test WHERE a=1;
+----
+333 22
+
+query III
+SELECT a, b, c FROM test ORDER BY a + c;
+----
+2 11 0
+1 22 333
+3 33 444
+4 0 555
+
+# SelectOrderByTest
+
+query I
+SELECT b FROM test ORDER BY c;
+----
+11
+22
+33
+0
+
+query I
+SELECT a FROM test ORDER BY c DESC;
+----
+4
+3
+1
+2
+
+query III
+SELECT * FROM test ORDER BY a + c;
+----
+2 11 0
+1 22 333
+3 33 444
+4 0 555
+
+query III
+SELECT * FROM test ORDER BY a;
+----
+1 22 333
+2 11 0
+3 33 444
+4 0 555
+
+# SelectLimitTest
+
+query I
+SELECT b FROM test ORDER BY b LIMIT 3;
+----
+0
+11
+22
+
+query I
+SELECT b FROM test ORDER BY b LIMIT 2 OFFSET 2;
+----
+22
+33
+
+# SelectProjectionTest
+
+query II
+SELECT a * 5 + b, -1 + c FROM test;
+----
+27 332
+21 -1
+48 443
+20 554
+
+query I
+SELECT a * 5 + b - c FROM test ORDER BY a * 10 + b;
+----
+21
+-306
+-535
+-396
+
+query II
+SELECT a, a + c FROM test ORDER BY a * 3 * b DESC, b + c / 5 ASC;
+----
+3 447
+2 2
+1 334
+4 559
+
+# DeleteSqlTest
+
+statement ok
+DELETE FROM test WHERE a = 1 and c = 333;
+
+query III
+SELECT * FROM test;
+----
+2 11 0
+3 33 444
+4 0 555
+
+statement ok
+DELETE FROM test WHERE b = 33;
+
+query III
+SELECT * FROM test;
+----
+2 11 0
+4 0 555
+
+statement ok
+DELETE FROM test WHERE b = 123;
+
+query III
+SELECT * FROM test;
+----
+2 11 0
+4 0 555
+
+statement ok
+DELETE FROM test;
+
+query III
+SELECT * FROM test;
+----
+
+# UpdateSqlTest
+
+statement ok
+INSERT INTO test VALUES
+    (1, 22, 333),
+    (2, 11, 000),
+    (3, 33, 444),
+    (4, 00, 555);
+
+statement ok
+UPDATE test SET c = b + 1 WHERE a = 1;
+
+query I
+SELECT c FROM test WHERE a=1;
+----
+23
+
+# InsertSqlTest
+
+statement ok
+TRUNCATE TABLE test;
+
+statement ok
+INSERT INTO test VALUES
+    (1, 22, 333),
+    (2, 11, 000),
+    (3, 33, 444),
+    (4, 00, 555);
+
+statement ok
+INSERT INTO test VALUES (5, 55, 555);
+
+query III
+SELECT * FROM test WHERE a=5;
+----
+5 55 555
+
+# DDLSqlTest
+
+statement ok
+CREATE TABLE test2 (a INT PRIMARY KEY, b INT, c INT);
+
+statement ok
+DROP TABLE test2;
+
+# GroupByTest
+
+statement ok
+TRUNCATE TABLE test;
+
+statement ok
+INSERT INTO test VALUES
+    (1, 22, 333),
+    (2, 11, 000),
+    (3, 33, 444),
+    (4, 00, 555);
+
+statement ok
+INSERT INTO test VALUES
+    (5, 11, 000),
+    (6, 22, 333);
+
+query I rowsort
+SELECT b FROM test GROUP BY b HAVING b=11 OR b=22;
+----
+11
+22
+
+query I
+SELECT count(*) FROM test;
+----
+6
+
+query I rowsort
+SELECT count(*) FROM test GROUP BY b;
+----
+1
+1
+2
+2
+
+query I rowsort
+SELECT count(a) FROM test GROUP BY b;
+----
+1
+1
+2
+2
+
+query I rowsort
+SELECT b FROM test GROUP BY b HAVING b=11 OR b=22;
+----
+11
+22
+
+query I rowsort
+SELECT count(*) FROM test GROUP BY b;
+----
+1
+1
+2
+2
+
+query I rowsort
+SELECT count(a) FROM test GROUP BY b;
+----
+1
+1
+2
+2
+
+query RI
+SELECT CAST(avg(a) AS REAL), b FROM test GROUP BY b HAVING b=22;
+----
+3.5 22
+
+query RI rowsort
+SELECT CAST(avg(a) AS REAL), b FROM test GROUP BY b HAVING avg(a)=3.5;
+----
+3.5 11
+3.5 22
+
+query I
+SELECT b FROM test GROUP BY b ORDER BY b;
+----
+0
+11
+22
+33
+
+query II
+SELECT b, max(a + c) FROM test GROUP BY b ORDER BY b;
+----
+0 559
+11 5
+22 339
+33 447
+
+query II
+SELECT b + c, sum(c * a) FROM test GROUP BY b, c ORDER BY b + c;
+----
+11 0
+355 2331
+477 1332
+555 2220
+
+query I
+SELECT sum(c * a) FROM test;
+----
+5883
+
+query I
+SELECT sum(c * a) + max(b - 1) * 2 FROM test;
+----
+5947
+
+query I rowsort
+SELECT min(b + c) * sum(a - 2) FROM test GROUP BY b,c;
+----
+1065
+1110
+33
+477
+
+query I rowsort
+SELECT min(c) + b FROM test GROUP BY b;
+----
+11
+355
+477
+555
+
+query I rowsort
+SELECT min(b + c) * sum(a - 2) + b * c FROM test GROUP BY b,c;
+----
+1110
+15129
+33
+8391
+
+query I
+SELECT a FROM test GROUP BY a,b ORDER BY a + b;
+----
+4
+2
+5
+1
+6
+3
+
+query I
+SELECT a FROM test GROUP BY a,b ORDER BY b,a, a+b;
+----
+4
+2
+5
+1
+6
+3
+
+query I
+SELECT a + b FROM test GROUP BY a,b ORDER BY a;
+----
+23
+13
+36
+4
+16
+28
+
+# SelectDistinctTest
+
+statement ok
+TRUNCATE TABLE test;
+
+statement ok
+INSERT INTO test VALUES
+    (1, 22, 333),
+    (2, 11, 000),
+    (3, 33, 444),
+    (4, 00, 555);
+
+statement ok
+INSERT INTO test VALUES
+    (5, 00, 555),
+    (6, 22, 333);
+
+query II rowsort
+SELECT DISTINCT b,c FROM test GROUP BY b,c;
+----
+0 555
+11 0
+22 333
+33 444
+
+query I rowsort
+SELECT DISTINCT b FROM test GROUP BY b,c;
+----
+0
+11
+22
+33
+
+statement ok
+INSERT INTO test VALUES (7, 00, 444);
+
+query I
+SELECT DISTINCT b FROM test ORDER BY b;
+----
+0
+11
+22
+33
+
+skipif postgres
+query II
+SELECT DISTINCT b, c FROM test ORDER BY 10 * b + c;
+----
+11 0
+0 444
+22 333
+0 555
+33 444
+
+skipif postgres
+query III rowsort
+SELECT DISTINCT * FROM test ORDER BY a + 10 * b + c LIMIT 3;
+----
+1 22 333
+2 11 0
+7 0 444
+
+query I
+SELECT DISTINCT b + c FROM test GROUP BY b + c ORDER BY b + c;
+----
+11
+355
+444
+477
+555
+
+# SelectConstantTest
+
+statement ok
+TRUNCATE TABLE test;
+
+statement ok
+INSERT INTO test VALUES
+    (1, 22, 333),
+    (2, 11, 000),
+    (3, 33, 444),
+    (4, 00, 555);
+
+query I
+SELECT 1;
+----
+1
+
+query I
+SELECT 1 + 2 * (6 / 4);
+----
+3
+
+query II
+SELECT 18 / 4, 2 / 3 * 8 - 1;
+----
+4 -1
+
+query II
+SELECT 18 % 4, 2 / 3 * 8 - 1;
+----
+2 -1
+
+query BBB
+SELECT NOT 1>3, 1!=1, NOT 1=1;
+----
+t f f
+
+query III
+SELECT 1, 3 * 7, a FROM test;
+----
+1 21 1
+1 21 2
+1 21 3
+1 21 4
+
+# JoinTest
+
+statement ok
+CREATE TABLE test1 (a INT PRIMARY KEY, b INT, c INT);
+
+statement ok
+INSERT INTO test1 VALUES
+    (1, 22, 333),
+    (2, 11, 000),
+    (3, 22, 444),
+    (4, 00, 333);
+
+statement ok
+CREATE TABLE test2 (a INT PRIMARY KEY, b INT, c INT);
+
+statement ok
+INSERT INTO test2 VALUES
+    (1, 22, 000),
+    (2, 11, 333),
+    (3, 22, 555),
+    (4, 00, 000);
+
+statement ok
+CREATE TABLE test3 (a INT PRIMARY KEY, b INT, c INT);
+
+statement ok
+INSERT INTO test3 VALUES
+    (1, 22, 000),
+    (2, 11, 333),
+    (3, 22, 555),
+    (4, 00, 000);
+
+query IIIIII
+SELECT * FROM test1, test2 WHERE test1.a = 1 AND test2.b = 0;
+----
+1 22 333 4 0 0
+
+query II rowsort
+SELECT test.a, test1.b FROM test, test1 WHERE test1.b = 22;
+----
+1 22
+1 22
+2 22
+2 22
+3 22
+3 22
+4 22
+4 22
+
+query III
+SELECT A.a, B.b, C.c
+FROM test AS A, test1 AS B, test2 AS C
+WHERE B.a = 1 AND A.b = 22 AND C.a = 2;
+----
+1 22 333
+
+query II rowsort
+SELECT test.a, test1.a FROM test JOIN test1 ON test.a = test1.a;
+----
+1 1
+2 2
+3 3
+4 4
+
+query IIII rowsort
+SELECT test.a, test.b, test1.b, test1.c
+FROM test, test1
+WHERE test.b = test1.b;
+----
+1 22 22 333
+1 22 22 444
+2 11 11 0
+4 0 0 333
+
+query IIII rowsort
+SELECT test.a, test.b, test1.b, test2.c
+FROM test2
+JOIN test ON test.b = test2.b
+JOIN test1 ON test2.c = test1.c;
+----
+1 22 11 0
+2 11 0 333
+2 11 22 333
+4 0 11 0
+
+query IIII rowsort
+SELECT test.a, test.b, test1.b, test2.c
+FROM test2, test, test1
+WHERE test.b = test2.b AND test2.c = test1.c;
+----
+1 22 11 0
+2 11 0 333
+2 11 22 333
+4 0 11 0
+
+query IIII rowsort
+SELECT test.a, test.b, test1.b, test2.c
+FROM test, test1, test2
+WHERE test.b = test2.b AND test2.c = test1.c;
+----
+1 22 11 0
+2 11 0 333
+2 11 22 333
+4 0 11 0
+
+query II rowsort
+SELECT test.a, test1.b
+FROM test, test1
+WHERE test.a = test1.a  AND test1.b = 22;
+----
+1 22
+3 22
+
+query I rowsort
+SELECT test.a FROM test, test1 WHERE test.a = test1.a AND test1.b = 22;
+----
+1
+3
+
+query II
+SELECT A.a, B.a FROM test1 AS A, test1 AS B WHERE A.a = 1 AND B.a = 1;
+----
+1 1
+
+query II rowsort
+SELECT A.b, B.b FROM test1 AS A, test1 AS B WHERE A.a = B.a;
+----
+0 0
+11 11
+22 22
+22 22
+
+query I rowsort
+SELECT test.b FROM test, test1 WHERE test.a = test1.a AND test.c > 333;
+----
+0
+33
+
+query II rowsort
+SELECT test.a, test.b+test2.b FROM test, test2 WHERE test.a = test2.a;
+----
+1 44
+2 22
+3 55
+4 0
+
+query II
+SELECT test.a, test.b+test2.b
+FROM test, test2
+WHERE test.a = test2.a
+ORDER BY test.a+test.c+test2.c
+LIMIT 3;
+----
+1 44
+2 22
+4 0
+
+query I rowsort
+SELECT sum(test2.b) FROM test, test2 WHERE test.a = test2.a GROUP BY test.a;
+----
+0
+11
+22
+22
+
+query II
+SELECT sum(test2.b), test.a
+FROM test, test2
+WHERE test.a = test2.a
+GROUP BY test.a
+ORDER BY test.a;
+----
+22 1
+11 2
+22 3
+0 4
+
+query IIII rowsort
+SELECT test.a, test1.a, test2.a, test3.c
+FROM test, test1, test2, test3
+WHERE test.a = test2.a AND test2.a = test1.a and test.b = test3.b;
+----
+1 1 1 0
+1 1 1 555
+2 2 2 333
+4 4 4 0
+
+# IndexTest
+
+statement ok
+CREATE TABLE foo (a INT, b VARCHAR, PRIMARY KEY (a, b));
+
+statement ok
+CREATE INDEX sk0 ON foo (a);
+
+statement ok
+INSERT INTO foo VALUES
+    (2, '323'),
+    (2, '313'),
+    (1, '313');
+
+query IT rowsort
+SELECT * FROM foo WHERE b = '313';
+----
+1 313
+2 313
+
+# QueryDerivedTableTest
+
+statement ok
+DROP TABLE test2;
+
+statement ok
+CREATE TABLE test2 (a INT PRIMARY KEY, b INT, c VARCHAR);
+
+statement ok
+INSERT INTO test2 VALUES
+    (1, 22, '1st'),
+    (2, 11, '2nd'),
+    (3, 33, '3rd'),
+    (5, 00, '4th');
+
+query I
+SELECT A.b FROM (SELECT b FROM test WHERE a = 1) AS A;
+----
+22
+
+query I
+SELECT * FROM (SELECT b FROM test WHERE a = 1) AS A;
+----
+22
+
+query II
+SELECT A.b, B.b
+FROM
+    (SELECT b FROM test WHERE a = 1) AS A,
+    (SELECT b FROM test AS t WHERE a = 2) AS B;
+----
+22 11
+
+query I
+SELECT B.b
+FROM
+    (SELECT b FROM test WHERE a = 1) AS A,
+    (SELECT b FROM test AS t WHERE a=2) AS B;
+----
+11
+
+query II
+SELECT *
+FROM
+    (SELECT b FROM test WHERE a = 1) AS A,
+    (SELECT b FROM test AS t WHERE a=2) AS B;
+----
+22 11
+
+query II rowsort
+SELECT *
+FROM
+    (SELECT b FROM test) AS A,
+    (SELECT b FROM test AS t) AS B
+WHERE A.b = B.b;
+----
+0 0
+11 11
+22 22
+33 33
+
+query II rowsort
+SELECT *
+FROM
+    (SELECT b FROM test) AS A,
+    (SELECT b FROM test) AS B
+WHERE A.b = B.b;
+----
+0 0
+11 11
+22 22
+33 33
+
+query IIIT rowsort
+SELECT *
+FROM
+    (SELECT a+b AS a, c FROM test) AS A,
+    (SELECT a+b AS a, c AS c FROM test2) AS B
+WHERE A.a=B.a;
+----
+13 0 13 2nd
+23 333 23 1st
+36 444 36 3rd
+
+query IT
+SELECT A.c, B.c
+FROM
+    (SELECT a+b AS a, c FROM test) AS A,
+    (SELECT a+b AS a, c AS c FROM test2) AS B
+WHERE A.a=B.a
+ORDER BY A.a;
+----
+0 2nd
+333 1st
+444 3rd
+
+query IR
+SELECT A.a, B.c
+FROM
+    (SELECT count(*) AS a FROM test) AS A,
+    (SELECT CAST(avg(a) AS REAL) AS C FROM test2) AS B;
+----
+4 2.75
+
+# NestedQueryTest
+
+#query I
+#SELECT B.a FROM test AS B WHERE EXISTS (SELECT b AS a FROM test WHERE a = B.a);
+#----
+#1
+#2
+#3
+#4
+#
+#query I
+#SELECT b FROM test WHERE a IN (SELECT a FROM test AS t WHERE a = test.a);
+#----
+#22
+#11
+#33
+#0
+#
+#query I
+#SELECT B.a
+#FROM test AS B
+#WHERE
+#    EXISTS (SELECT b AS a FROM test2 WHERE a = B.a) AND
+#    b IN (SELECT b FROM test WHERE b > 22);
+#----
+#3
+#
+#query I
+#SELECT B.a
+#FROM test as B
+#WHERE
+#    EXISTS (SELECT b AS a FROM test2 WHERE a = B.a) AND
+#    b IN (SELECT b FROM test) AND
+#    c > 0;
+#----
+#1
+#3
+#
+#query II rowsort
+#SELECT t1.a, t2.a
+#FROM test AS t1 JOIN test AS t2 ON t1.a=t2.a
+#WHERE t1.b+t2.b IN (SELECT 2*b FROM test2 WHERE a > 2);
+#----
+#3 3
+#4 4
+#
+#skipif postgres
+#query I
+#SELECT B.a
+#FROM test AS B
+#WHERE
+#    EXISTS (SELECT b AS a FROM test AS T WHERE a = B.a) AND
+#    EXISTS (SELECT c FROM test WHERE T.c = c);
+#----
+#1
+#2
+#3
+#4
+
+# NestedQueryWithAggregationTest
+
+statement ok
+CREATE TABLE agg (a INT, b INT, PRIMARY KEY (a, b));
+
+statement ok
+INSERT INTO agg VALUES
+    (1, 2),
+    (1, 3),
+    (2, 3),
+    (2, 4);
+
+#query I
+#SELECT B.a
+#FROM test AS B
+#WHERE EXISTS (SELECT count(b) FROM test WHERE a = B.a);
+#----
+#1
+#2
+#3
+#4
+#
+#query I
+#SELECT b
+#FROM test
+#WHERE a IN (SELECT sum(a) FROM test AS t WHERE a = test.a GROUP BY b);
+#----
+#22
+#11
+#33
+#0
+#
+#query I
+#SELECT b
+#FROM test
+#WHERE a < (SELECT avg(a)+10 FROM test AS t WHERE a = test.a GROUP BY b);
+#----
+#22
+#11
+#33
+#0
+#
+#query I
+#SELECT b
+#FROM test as t
+#WHERE b/10+2 IN (SELECT sum(b) FROM agg WHERE b < 4 AND a = t.a GROUP BY a);
+#----
+#11
+#
+#query I
+#SELECT b
+#FROM test as t
+#WHERE EXISTS (SELECT sum(b) FROM agg WHERE b < 4 AND a = t.a GROUP BY a);
+#----
+#22
+#11
+
+statement ok
+CREATE TABLE student (sid INT PRIMARY KEY, name VARCHAR);
+
+statement ok
+CREATE TABLE course (cid INT, sid INT, score REAL, PRIMARY KEY (cid, sid));
+
+statement ok
+INSERT INTO student VALUES
+    (1, 'Patrick'),
+    (2, 'David'),
+    (3, 'Alice'),
+    (4, 'Bob');
+
+#statement ok
+#INSERT INTO course VALUES
+#    (1, 1, 95),
+#    (1, 2, 90.5),
+#    (1, 3, 99),
+#    (2, 1, 89),
+#    (2, 2, 76),
+#    (2, 3, 50),
+#    (3, 1, 91),
+#    (3, 2, 92.5),
+#    (3, 3, 89),
+#    (4, 1, 45),
+#    (4, 2, 65),
+#    (4, 3, 77);
+
+#query TI rowsort
+#SELECT s.name, c.cid
+#FROM student AS s JOIN course AS c ON s.sid = c.sid
+#WHERE c.score = (SELECT min(score) FROM course WHERE sid = s.sid) AND s.sid < 4;
+#----
+#Alice 2
+#David 4
+#Patrick 4
+
+# NestedQueryInHavingTest
+
+statement ok
+TRUNCATE TABLE test;
+
+statement ok
+INSERT INTO test VALUES
+    (1, 22, 333),
+    (2, 11, 000),
+    (3, 33, 444),
+    (4, 00, 555);
+
+statement ok
+INSERT INTO test VALUES
+    (5, 11, 000),
+    (7, 22, 333);
+
+statement ok
+TRUNCATE TABLE test2;
+
+statement ok
+INSERT INTO test2 VALUES
+    (7, 22, '1st'),
+    (8, 11, '2nd'),
+    (11, 33, '3rd'),
+    (22, 00, '4th');
+
+statement ok
+DROP TABLE agg;
+
+statement ok
+CREATE TABLE agg (id INTEGER PRIMARY KEY, a INT, b INT);
+
+statement ok
+INSERT INTO agg VALUES
+    (1, 1, 22),
+    (2, 2, 33),
+    (3, 1, 11),
+    (4, 1, 11);
+
+#query II rowsort
+#SELECT sum(a) AS c, b
+#FROM test AS B
+#GROUP BY b
+#HAVING EXISTS (SELECT b FROM test2 WHERE a = B.b);
+#----
+#7 11
+#8 22
+#
+#query II rowsort
+#SELECT sum(a) AS c, b
+#FROM test AS B
+#GROUP BY b
+#HAVING EXISTS (SELECT avg(a) FROM agg WHERE b = B.b);
+#----
+#3 33
+#4 0
+#7 11
+#8 22
+#
+#query II rowsort
+#SELECT sum(a) AS c, b
+#FROM test AS B
+#GROUP BY b
+#HAVING EXISTS (SELECT avg(a) FROM agg WHERE b = B.b GROUP BY b HAVING avg(a) < 2);
+#----
+#7 11
+#8 22
