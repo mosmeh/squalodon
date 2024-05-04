@@ -9,6 +9,14 @@ use std::collections::HashSet;
 pub fn load() -> impl Iterator<Item = TableFunction> {
     [
         TableFunction {
+            name: "generate_series",
+            argument_types: &[Type::Integer, Type::Integer],
+            result_columns: vec![Column::new("generate_series", Type::Integer)],
+            eval: BoxedTableFn::new(|_, (start, end): (i64, i64)| {
+                Ok((start..=end).map(|i| Row::new(vec![i.into()])))
+            }),
+        },
+        TableFunction {
             name: "squalodon_columns",
             argument_types: &[],
             result_columns: vec![
