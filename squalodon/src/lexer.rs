@@ -348,7 +348,7 @@ impl<'a> Inner<'a> {
                 let ident = self.consume_string('"')?;
                 Ok(Token::Identifier(ident))
             }
-            _ if ch.is_alphanumeric() => {
+            _ if ch.is_alphanumeric() || ch == '_' => {
                 let mut s = self.consume_while(is_valid_identifier_char);
                 Ok(Token::parse_keyword(&s).unwrap_or_else(|| {
                     s.make_ascii_lowercase();
