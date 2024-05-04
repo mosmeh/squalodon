@@ -32,15 +32,16 @@ impl Parser<'_> {
         self.expect(Token::Insert)?;
         self.expect(Token::Into)?;
         let table_name = self.expect_identifier()?;
-        let column_names = self
-            .lexer
-            .consume_if_eq(Token::LeftParen)?
-            .then(|| -> ParserResult<_> {
-                let column_names = self.parse_comma_separated(Self::expect_identifier)?;
+        let mut column_names = None;
+        if *self.lexer.peek()? == Token::LeftParen {
+            // This can be either a list of column names or a subquery.
+            if matches!(*self.lexer.lookahead(1)?, Token::Identifier(_)) {
+                // This is a list of column names.
+                self.expect(Token::LeftParen)?;
+                column_names = Some(self.parse_comma_separated(Self::expect_identifier)?);
                 self.expect(Token::RightParen)?;
-                Ok(column_names)
-            })
-            .transpose()?;
+            }
+        }
         let query = self.parse_query()?;
         Ok(Insert {
             table_name,
