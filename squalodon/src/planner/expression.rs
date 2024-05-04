@@ -386,10 +386,10 @@ impl<'a> TypedExpression<'a> {
 
     fn unary_op(self, op: UnaryOp) -> PlannerResult<Self> {
         let ty = match (op, self.ty) {
-            (_, NullableType::Null) => return Ok(Value::Null.into()),
             (UnaryOp::Not, _) => NullableType::NonNull(Type::Boolean),
+            (UnaryOp::Plus | UnaryOp::Minus, NullableType::Null) => NullableType::Null,
             (UnaryOp::Plus | UnaryOp::Minus, NullableType::NonNull(ty)) if ty.is_numeric() => {
-                NullableType::NonNull(ty)
+                ty.into()
             }
             _ => return Err(PlannerError::TypeError),
         };
@@ -400,18 +400,22 @@ impl<'a> TypedExpression<'a> {
         let ty = match op {
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
                 match (self.ty, other.ty) {
-                    (NullableType::Null, _) | (_, NullableType::Null) => {
-                        return Ok(Value::Null.into())
+                    (NullableType::Null, NullableType::Null) => return Ok(Value::Null.into()),
+                    (NullableType::Null, NullableType::NonNull(ty))
+                    | (NullableType::NonNull(ty), NullableType::Null)
+                        if ty.is_numeric() =>
+                    {
+                        NullableType::NonNull(ty)
                     }
                     (
                         NullableType::NonNull(Type::Integer),
                         NullableType::NonNull(Type::Integer),
-                    ) => NullableType::NonNull(Type::Integer),
+                    ) => Type::Integer.into(),
                     (NullableType::NonNull(ty), NullableType::NonNull(Type::Real))
                     | (NullableType::NonNull(Type::Real), NullableType::NonNull(ty))
                         if ty.is_numeric() =>
                     {
-                        NullableType::NonNull(Type::Real)
+                        Type::Real.into()
                     }
                     _ => return Err(PlannerError::TypeError),
                 }
@@ -421,22 +425,27 @@ impl<'a> TypedExpression<'a> {
             | BinaryOp::Lt
             | BinaryOp::Le
             | BinaryOp::Gt
-            | BinaryOp::Ge
-            | BinaryOp::And
-            | BinaryOp::Or => match (self.ty, other.ty) {
-                (NullableType::Null, _) | (_, NullableType::Null) => NullableType::Null,
+            | BinaryOp::Ge => match (self.ty, other.ty) {
+                (NullableType::Null, _) | (_, NullableType::Null) => Type::Boolean.into(),
                 (NullableType::NonNull(lhs_ty), NullableType::NonNull(rhs_ty))
                     if lhs_ty == rhs_ty =>
                 {
-                    NullableType::NonNull(Type::Boolean)
+                    Type::Boolean.into()
                 }
                 _ => return Err(PlannerError::TypeError),
             },
+            BinaryOp::And | BinaryOp::Or => match (self.ty, other.ty) {
+                (
+                    NullableType::Null | NullableType::NonNull(Type::Boolean),
+                    NullableType::Null | NullableType::NonNull(Type::Boolean),
+                ) => Type::Boolean.into(),
+                _ => return Err(PlannerError::TypeError),
+            },
             BinaryOp::Concat => match (self.ty, other.ty) {
-                (NullableType::Null, _) | (_, NullableType::Null) => return Ok(Value::Null.into()),
-                (NullableType::NonNull(Type::Text), NullableType::NonNull(Type::Text)) => {
-                    NullableType::NonNull(Type::Text)
-                }
+                (
+                    NullableType::Null | NullableType::NonNull(Type::Text),
+                    NullableType::Null | NullableType::NonNull(Type::Text),
+                ) => Type::Text.into(),
                 _ => return Err(PlannerError::TypeError),
             },
         };

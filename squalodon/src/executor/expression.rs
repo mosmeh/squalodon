@@ -123,18 +123,14 @@ impl BinaryOp {
         rhs: &Expression<T::Column>,
     ) -> ExecutorResult<Value> {
         let lhs = lhs.eval(ctx, row)?;
-        if lhs == Value::Null {
-            return Ok(Value::Null);
-        }
         match (self, &lhs) {
             (Self::And, Value::Boolean(false)) => return Ok(Value::Boolean(false)),
             (Self::Or, Value::Boolean(true)) => return Ok(Value::Boolean(true)),
+            (Self::And | Self::Or, _) => (),
+            (_, Value::Null) => return Ok(Value::Null),
             _ => (),
         }
         let rhs = rhs.eval(ctx, row)?;
-        if rhs == Value::Null {
-            return Ok(Value::Null);
-        }
         self.eval_values(&lhs, &rhs)
     }
 
@@ -143,10 +139,29 @@ impl BinaryOp {
     }
 
     pub fn eval_values(self, lhs: &Value, rhs: &Value) -> ExecutorResult<Value> {
-        if lhs.is_null() || rhs.is_null() {
-            return Ok(Value::Null);
-        }
         match self {
+            _ if lhs.is_null() && rhs.is_null() => Ok(Value::Null),
+            Self::And => match (lhs, rhs) {
+                (Value::Boolean(false), Value::Null) | (Value::Null, Value::Boolean(false)) => {
+                    Ok(Value::Boolean(false))
+                }
+                (Value::Boolean(true), Value::Null) | (Value::Null, Value::Boolean(true)) => {
+                    Ok(Value::Null)
+                }
+                (Value::Boolean(lhs), Value::Boolean(rhs)) => Ok(Value::Boolean(*lhs && *rhs)),
+                _ => Err(ExecutorError::TypeError),
+            },
+            Self::Or => match (lhs, rhs) {
+                (Value::Boolean(true), Value::Null) | (Value::Null, Value::Boolean(true)) => {
+                    Ok(Value::Boolean(true))
+                }
+                (Value::Boolean(false), Value::Null) | (Value::Null, Value::Boolean(false)) => {
+                    Ok(Value::Null)
+                }
+                (Value::Boolean(lhs), Value::Boolean(rhs)) => Ok(Value::Boolean(*lhs || *rhs)),
+                _ => Err(ExecutorError::TypeError),
+            },
+            _ if lhs.is_null() || rhs.is_null() => Ok(Value::Null),
             Self::Add | Self::Sub | Self::Mul | Self::Div | Self::Mod => self.eval_number(lhs, rhs),
             Self::Eq => Ok(Value::Boolean(lhs == rhs)),
             Self::Ne => Ok(Value::Boolean(lhs != rhs)),
@@ -154,20 +169,6 @@ impl BinaryOp {
             Self::Le => Ok(Value::Boolean(lhs <= rhs)),
             Self::Gt => Ok(Value::Boolean(lhs > rhs)),
             Self::Ge => Ok(Value::Boolean(lhs >= rhs)),
-            Self::And => {
-                if let (Value::Boolean(lhs), Value::Boolean(rhs)) = (lhs, rhs) {
-                    Ok(Value::Boolean(*lhs && *rhs))
-                } else {
-                    Err(ExecutorError::TypeError)
-                }
-            }
-            Self::Or => {
-                if let (Value::Boolean(lhs), Value::Boolean(rhs)) = (lhs, rhs) {
-                    Ok(Value::Boolean(*lhs || *rhs))
-                } else {
-                    Err(ExecutorError::TypeError)
-                }
-            }
             Self::Concat => {
                 if let (Value::Text(lhs), Value::Text(rhs)) = (lhs, rhs) {
                     Ok(Value::Text(lhs.to_owned() + rhs))
