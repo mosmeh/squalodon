@@ -1,5 +1,7 @@
 use super::{
-    aggregate::AggregateCollection, expression::ExpressionBinder, PlanNode, Planner, PlannerResult,
+    aggregate::{AggregateCollection, AggregatePlanner},
+    expression::{ExpressionBinder, TypedExpression},
+    PlanNode, Planner, PlannerResult,
 };
 use crate::parser;
 use std::collections::HashMap;
@@ -21,7 +23,48 @@ impl<'a> Planner<'a> {
     ) -> PlannerResult<PlanNode<'a>> {
         let mut plan = self.plan_table_ref(&ExpressionBinder::new(self), select.from)?;
 
-        // Any occurrences of aggregate functions in SELECT, HAVING and ORDER BY
+        // Expand * in SELECT clause.
+        // This must be done early, because * should expand to all columns from
+        // the TableRef, not the columns available just before processing SELECT.
+
+        // Expanded expressions
+        let mut projection_exprs = Vec::new();
+        // Aliases for the projected columns (None for columns without aliases)
+        let mut column_aliases = Vec::new();
+
+        let outputs = plan.outputs();
+        for projection in &select.projections {
+            match projection {
+                parser::Projection::Wildcard => {
+                    let column_map = self.column_map();
+                    for output in &outputs {
+                        let column = &column_map[output];
+                        projection_exprs
+                            .push(parser::Expression::ColumnRef(column.column_ref().clone()));
+                        column_aliases.push(None);
+                    }
+                }
+                parser::Projection::Expression { expr, alias: None } => {
+                    projection_exprs.push(expr.clone());
+                    column_aliases.push(None);
+                }
+                parser::Projection::Expression {
+                    alias: Some(alias), ..
+                } => {
+                    projection_exprs.push(parser::Expression::ColumnRef(
+                        parser::ColumnRef::unqualified(alias.clone()),
+                    ));
+                    column_aliases.push(Some(alias.clone()));
+                }
+            }
+        }
+
+        if let Some(where_clause) = select.where_clause {
+            // WHERE cannot refer to aliases.
+            plan = self.plan_filter(&ExpressionBinder::new(self), plan, where_clause)?;
+        }
+
+        // Any occurrences of aggregate functions in SELECT, HAVING or ORDER BY
         // clauses make the query an aggregate query.
         // So we first gather all occurrences of aggregate functions into
         // aggregate_collection to determine if the query is an aggregate query.
@@ -47,71 +90,21 @@ impl<'a> Planner<'a> {
         }
         let mut aggregate_planner = aggregate_collection.finish();
 
-        // Next, we expand * and resolve aliases in SELECT clause.
-
-        // Expanded expressions
-        let mut projection_exprs = Vec::new();
-
-        // Aliases for the projected columns (None for columns without aliases)
-        let mut column_aliases = Vec::new();
-
-        // Map from alias to expression
-        let mut alias_map = HashMap::new();
-
-        let outputs = plan.outputs();
-        for projection in select.projections {
-            match projection {
-                parser::Projection::Wildcard => {
-                    let column_map = self.column_map();
-                    for output in &outputs {
-                        let column = &column_map[output];
-                        projection_exprs
-                            .push(parser::Expression::ColumnRef(column.column_ref().clone()));
-                        column_aliases.push(None);
-                    }
-                }
-                parser::Projection::Expression { expr, alias } => {
-                    let Some(alias) = alias else {
-                        projection_exprs.push(expr);
-                        column_aliases.push(None);
-                        continue;
-                    };
-
-                    let expr_binder = ExpressionBinder::new(self)
-                        .with_aliases(&alias_map)
-                        .with_aggregates(&aggregate_planner);
-                    let (new_plan, expr) = expr_binder.bind(plan, expr)?;
-                    plan = new_plan;
-
-                    projection_exprs.push(parser::Expression::ColumnRef(
-                        parser::ColumnRef::unqualified(alias.clone()),
-                    ));
-                    column_aliases.push(Some(alias.clone()));
-
-                    // Adding aliases one by one makes sure that aliases that
-                    // appear later in the SELECT clause can only refer to
-                    // aliases that appear earlier, preventing
-                    // circular references.
-                    // Aliases with the same name shadow previous aliases.
-                    alias_map.insert(alias, expr);
-                }
-            }
-        }
-
-        // Now we are ready to process the rest of the clauses with
-        // the aliases and aggregate results.
-
-        // WHERE and GROUP BY can refer to aliases but not aggregate results.
-        let expr_binder = ExpressionBinder::new(self).with_aliases(&alias_map);
-
-        if let Some(where_clause) = select.where_clause {
-            plan = self.plan_filter(&expr_binder, plan, where_clause)?;
-        }
+        // Bind aliases in SELECT clause.
+        let (mut plan, mut alias_map) =
+            self.bind_column_aliases(plan, &aggregate_planner, &select.projections)?;
 
         // The query is an aggregate query if there are any aggregate functions
         // or if there is a GROUP BY clause.
         if aggregate_planner.has_aggregates() || !select.group_by.is_empty() {
+            // GROUP BY can refer to aliases.
+            let expr_binder = ExpressionBinder::new(self).with_aliases(&alias_map);
             plan = aggregate_planner.plan(&expr_binder, plan, select.group_by)?;
+
+            // The aggregation removes non-aggregated columns and columns not
+            // present in the GROUP BY clause, so we need to rebind the aliases.
+            (plan, alias_map) =
+                self.bind_column_aliases(plan, &aggregate_planner, &select.projections)?;
         }
 
         // SELECT, HAVING and ORDER BY can refer to both aliases and
@@ -137,12 +130,9 @@ impl<'a> Planner<'a> {
             plan = self.plan_projections(&expr_binder, plan, projection_exprs, select.distinct)?;
         }
 
-        let plan = self.plan_limit(
-            &ExpressionBinder::new(self),
-            plan,
-            modifier.limit,
-            modifier.offset,
-        )?;
+        // LIMIT and OFFSET cannot refer to aliases or aggregate results.
+        let expr_binder = ExpressionBinder::new(self);
+        let plan = self.plan_limit(&expr_binder, plan, modifier.limit, modifier.offset)?;
 
         // Rename the columns according to the aliases.
         let mut column_map = self.column_map_mut();
@@ -155,6 +145,36 @@ impl<'a> Planner<'a> {
         }
 
         Ok(plan)
+    }
+
+    fn bind_column_aliases(
+        &self,
+        mut plan: PlanNode<'a>,
+        aggregates: &AggregatePlanner<'_, 'a>,
+        projections: &[parser::Projection],
+    ) -> PlannerResult<(PlanNode<'a>, HashMap<String, TypedExpression<'a>>)> {
+        let mut alias_map = HashMap::new();
+        for projection in projections {
+            if let parser::Projection::Expression {
+                expr,
+                alias: Some(alias),
+            } = projection
+            {
+                let expr_binder = ExpressionBinder::new(self)
+                    .with_aliases(&alias_map)
+                    .with_aggregates(aggregates);
+                let (new_plan, expr) = expr_binder.bind(plan, expr.clone())?;
+                plan = new_plan;
+
+                // Adding aliases one by one makes sure that aliases that
+                // appear later in the SELECT clause can only refer to
+                // aliases that appear earlier, preventing
+                // circular references.
+                // Aliases with the same name shadow previous aliases.
+                alias_map.insert(alias.clone(), expr);
+            }
+        }
+        Ok((plan, alias_map))
     }
 
     pub fn plan_table_ref(

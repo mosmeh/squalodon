@@ -323,10 +323,8 @@ impl<'b> AggregatePlanner<'_, 'b> {
         let plan = plan.project(&mut planner.column_map_mut(), exprs);
         let outputs = plan.outputs();
         let (aggregate_outputs, group_by_outputs) = outputs.split_at(aggregates.len());
-        if has_group_by {
-            for (group_by, output) in group_by.into_iter().zip(group_by_outputs) {
-                self.group_by.insert(group_by, *output);
-            }
+        for (group_by, output) in group_by.into_iter().zip(group_by_outputs) {
+            self.group_by.insert(group_by, *output);
         }
 
         let ops =
