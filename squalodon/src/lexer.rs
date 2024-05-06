@@ -116,6 +116,7 @@ keywords! {
     Commit
     Create
     Cross
+    Cycle
     Deallocate
     Decimal
     Default
@@ -136,6 +137,7 @@ keywords! {
     Having
     If
     ILike
+    Increment
     Index
     Inner
     Insert
@@ -147,6 +149,9 @@ keywords! {
     Last
     Like
     Limit
+    MaxValue
+    MinValue
+    No
     Not
     Null
     Nulls
@@ -160,9 +165,11 @@ keywords! {
     Reindex
     Rollback
     Select
+    Sequence
     Set
     Show
     SmallInt
+    Start
     Table
     Tables
     Text
@@ -178,6 +185,7 @@ keywords! {
     VarChar
     When
     Where
+    With
 }
 
 pub(crate) struct Lexer<'a> {

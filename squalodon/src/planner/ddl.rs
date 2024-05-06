@@ -1,6 +1,6 @@
 use super::{ColumnId, ExplainFormatter, Node, PlanNode, Planner, PlannerError, PlannerResult};
 use crate::{
-    catalog::{self, CatalogResult, Index, Table},
+    catalog::{self, CatalogResult, Index, Sequence, Table},
     parser,
     rows::ColumnIndex,
     CatalogError,
@@ -72,9 +72,43 @@ impl Node for CreateIndex<'_> {
 }
 
 #[derive(Clone)]
+pub struct CreateSequence {
+    pub name: String,
+    pub if_not_exists: bool,
+    pub increment_by: i64,
+    pub min_value: i64,
+    pub max_value: i64,
+    pub start_value: i64,
+    pub cycle: bool,
+}
+
+impl Node for CreateSequence {
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        let mut node = f.node("CreateSequence");
+        node.field("name", &self.name)
+            .field("increment by", self.increment_by)
+            .field("min value", self.min_value)
+            .field("max value", self.max_value)
+            .field("start value", self.start_value)
+            .field("cycle", self.cycle);
+    }
+
+    fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
+
+    fn num_rows(&self) -> usize {
+        0
+    }
+
+    fn cost(&self) -> f64 {
+        PlanNode::DEFAULT_COST
+    }
+}
+
+#[derive(Clone)]
 pub enum DropObject<'a> {
     Table(Table<'a>),
     Index { table: Table<'a>, name: String },
+    Sequence(Sequence<'a>),
 }
 
 impl Node for DropObject<'_> {
@@ -82,6 +116,7 @@ impl Node for DropObject<'_> {
         let name = match self {
             Self::Table(table) => table.name(),
             Self::Index { name, .. } => name,
+            Self::Sequence(sequence) => sequence.name(),
         };
         f.node("Drop").field("name", name);
     }
@@ -185,6 +220,10 @@ impl<'a> PlanNode<'a> {
         Self::CreateIndex(create_index)
     }
 
+    fn new_create_sequence(sequence: CreateSequence) -> Self {
+        Self::CreateSequence(sequence)
+    }
+
     fn new_drop(drop_object: DropObject<'a>) -> Self {
         Self::Drop(drop_object)
     }
@@ -264,6 +303,48 @@ impl<'a> Planner<'a> {
         Ok(PlanNode::new_create_index(create_index))
     }
 
+    #[allow(clippy::unused_self)]
+    pub fn plan_create_sequence(
+        &self,
+        create_sequence: parser::CreateSequence,
+    ) -> PlannerResult<PlanNode<'a>> {
+        let increment_by = create_sequence.increment_by.unwrap_or(1);
+        if increment_by == 0 {
+            return Err(PlannerError::InvalidSequenceParameters);
+        }
+        let min_value =
+            create_sequence
+                .min_value
+                .unwrap_or(if increment_by > 0 { 1 } else { i64::MIN });
+        let max_value =
+            create_sequence
+                .max_value
+                .unwrap_or(if increment_by > 0 { i64::MAX } else { -1 });
+        if min_value >= max_value {
+            return Err(PlannerError::InvalidSequenceParameters);
+        }
+        let start_value = create_sequence.start_value.unwrap_or({
+            if increment_by > 0 {
+                min_value
+            } else {
+                max_value
+            }
+        });
+        if start_value < min_value || start_value > max_value {
+            return Err(PlannerError::InvalidSequenceParameters);
+        }
+        let cycle = create_sequence.cycle.unwrap_or(false);
+        Ok(PlanNode::new_create_sequence(CreateSequence {
+            name: create_sequence.name,
+            if_not_exists: create_sequence.if_not_exists,
+            increment_by,
+            min_value,
+            max_value,
+            start_value,
+            cycle,
+        }))
+    }
+
     pub fn plan_drop(&self, drop_object: parser::DropObject) -> PlannerResult<PlanNode<'a>> {
         let result = match drop_object.kind {
             parser::ObjectKind::Table => {
@@ -277,6 +358,10 @@ impl<'a> Planner<'a> {
                         name: index.name().to_owned(),
                     })
             }
+            parser::ObjectKind::Sequence => self
+                .catalog
+                .sequence(&drop_object.name)
+                .map(DropObject::Sequence),
         };
         match result {
             Ok(drop_object) => Ok(PlanNode::new_drop(drop_object)),
@@ -309,15 +394,9 @@ impl<'a> Planner<'a> {
     }
 
     pub fn plan_reindex(&self, reindex: parser::Reindex) -> PlannerResult<PlanNode<'a>> {
-        let reindex = match reindex.kind {
-            parser::ObjectKind::Table => {
-                let table = self.catalog.table(&reindex.name)?;
-                Reindex::Table(table)
-            }
-            parser::ObjectKind::Index => {
-                let index = self.catalog.index(&reindex.name)?;
-                Reindex::Index(index)
-            }
+        let reindex = match reindex {
+            parser::Reindex::Table(name) => Reindex::Table(self.catalog.table(&name)?),
+            parser::Reindex::Index(name) => Reindex::Index(self.catalog.index(&name)?),
         };
         Ok(PlanNode::new_reindex(reindex))
     }

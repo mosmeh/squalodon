@@ -112,6 +112,33 @@ pub fn load() -> impl Iterator<Item = TableFunction> {
             }),
         },
         TableFunction {
+            name: "squalodon_sequences",
+            argument_types: &[],
+            result_columns: vec![
+                Column::new("name", Type::Text),
+                Column::new("increment_by", Type::Integer),
+                Column::new("min_value", Type::Integer),
+                Column::new("max_value", Type::Integer),
+                Column::new("start_value", Type::Integer),
+                Column::new("cycle", Type::Boolean),
+            ],
+            eval: BoxedTableFn::new(|ctx, ()| {
+                let mut rows = Vec::new();
+                for sequence in ctx.catalog().sequences() {
+                    let sequence = sequence?;
+                    rows.push(Row::new(vec![
+                        sequence.name().into(),
+                        sequence.increment_by().into(),
+                        sequence.min_value().into(),
+                        sequence.max_value().into(),
+                        sequence.start_value().into(),
+                        sequence.cycle().into(),
+                    ]));
+                }
+                Ok(rows.into_iter())
+            }),
+        },
+        TableFunction {
             name: "squalodon_tables",
             argument_types: &[],
             result_columns: vec![Column::new("name", Type::Text)],

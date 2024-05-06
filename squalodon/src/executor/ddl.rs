@@ -1,6 +1,9 @@
 use super::{ExecutionContext, ExecutorNode, ExecutorResult};
 use crate::{
-    planner::{Analyze, Constraint, CreateIndex, CreateTable, DropObject, Reindex, Truncate},
+    planner::{
+        Analyze, Constraint, CreateIndex, CreateSequence, CreateTable, DropObject, Reindex,
+        Truncate,
+    },
     CatalogError,
 };
 
@@ -50,10 +53,41 @@ impl ExecutorNode<'_> {
         Ok(Self::empty_result())
     }
 
-    pub fn drop_object(plan: DropObject) -> ExecutorResult<Self> {
+    pub fn create_sequence(ctx: &ExecutionContext, plan: CreateSequence) -> ExecutorResult<Self> {
+        let CreateSequence {
+            name,
+            if_not_exists,
+            increment_by,
+            min_value,
+            max_value,
+            start_value,
+            cycle,
+        } = plan;
+        let result = ctx.catalog().create_sequence(
+            &name,
+            increment_by,
+            min_value,
+            max_value,
+            start_value,
+            cycle,
+        );
+        match result {
+            Ok(_) => (),
+            Err(CatalogError::DuplicateEntry(_, _)) if if_not_exists => (),
+            Err(e) => return Err(e.into()),
+        }
+        Ok(Self::empty_result())
+    }
+
+    pub fn drop_object(ctx: &ExecutionContext, plan: DropObject) -> ExecutorResult<Self> {
         match plan {
             DropObject::Table(table) => table.drop_it()?,
             DropObject::Index { mut table, name } => table.drop_index(&name)?,
+            DropObject::Sequence(sequence) => {
+                let name = sequence.name().to_owned();
+                sequence.drop_it()?;
+                ctx.local().borrow_mut().sequence_values.remove(&name);
+            }
         }
         Ok(Self::empty_result())
     }

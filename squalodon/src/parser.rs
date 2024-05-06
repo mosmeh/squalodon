@@ -3,7 +3,9 @@ mod expression;
 mod mutation;
 mod query;
 
-pub use ddl::{Analyze, Constraint, CreateIndex, CreateTable, DropObject, ObjectKind, Reindex};
+pub use ddl::{
+    Analyze, Constraint, CreateIndex, CreateSequence, CreateTable, DropObject, ObjectKind, Reindex,
+};
 pub use expression::{BinaryOp, ColumnRef, Expression, FunctionArgs, FunctionCall, UnaryOp};
 pub use mutation::{Delete, Insert, Update};
 pub use query::{
@@ -48,6 +50,7 @@ pub enum Statement {
     Describe(String),
     CreateTable(CreateTable),
     CreateIndex(CreateIndex),
+    CreateSequence(CreateSequence),
     Drop(DropObject),
     Truncate(String),
     Analyze(Analyze),
@@ -244,6 +247,20 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(items)
+    }
+
+    fn parse_signed_integer_literal(&mut self) -> ParserResult<i64> {
+        let is_negative = if self.lexer.consume_if_eq(Token::Minus)? {
+            true
+        } else {
+            self.lexer.consume_if_eq(Token::Plus)?;
+            false
+        };
+        match self.lexer.consume()? {
+            Token::IntegerLiteral(i) if is_negative => Ok(-i),
+            Token::IntegerLiteral(i) => Ok(i),
+            token => Err(ParserError::unexpected(&token)),
+        }
     }
 
     fn expect(&mut self, expected: Token) -> ParserResult<()> {

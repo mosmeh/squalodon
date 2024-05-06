@@ -1,6 +1,7 @@
 mod blackhole;
 mod index;
 mod memory;
+mod sequence;
 mod table;
 
 pub use blackhole::Blackhole;
@@ -15,6 +16,9 @@ pub enum StorageError {
 
     #[error("NOT NULL constraint violated at column {0:?}")]
     NotNullConstraintViolation(String),
+
+    #[error("Reached maximum or minimum value of sequence")]
+    SequenceOverflow,
 
     #[error("Invalid encoding")]
     InvalidEncoding,

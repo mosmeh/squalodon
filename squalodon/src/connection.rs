@@ -15,8 +15,7 @@ use std::{cell::RefCell, collections::HashMap};
 pub struct Connection<'a, T: Storage> {
     db: &'a Database<T>,
     txn_status: RefCell<TransactionState<T::Transaction<'a>>>,
-    prepared_statements: RefCell<HashMap<String, Statement>>,
-    rng: RefCell<Rng>,
+    local: RefCell<ConnectionLocal>,
 }
 
 impl<'a, T: Storage> Connection<'a, T> {
@@ -24,8 +23,7 @@ impl<'a, T: Storage> Connection<'a, T> {
         Self {
             db,
             txn_status: TransactionState::Inactive.into(),
-            prepared_statements: HashMap::new().into(),
-            rng: Rng::new().into(),
+            local: ConnectionLocal::default().into(),
         }
     }
 
@@ -82,26 +80,28 @@ impl<'a, T: Storage> Connection<'a, T> {
         match statement {
             Statement::Prepare(prepare) => {
                 // Perform only parsing and no planning for now.
-                self.prepared_statements
+                self.local
                     .borrow_mut()
+                    .prepared_statements
                     .insert(prepare.name, *prepare.statement);
                 return Ok(Rows::empty());
             }
             Statement::Execute(execute) => {
                 let prepared_statement = self
-                    .prepared_statements
+                    .local
                     .borrow()
+                    .prepared_statements
                     .get(&execute.name)
                     .ok_or_else(|| Error::UnknownPreparedStatement(execute.name))?
                     .clone();
                 return self.execute_statement(prepared_statement, execute.params);
             }
             Statement::Deallocate(deallocate) => {
-                let mut prepared_statements = self.prepared_statements.borrow_mut();
+                let mut local = self.local.borrow_mut();
                 match deallocate {
-                    Deallocate::All => prepared_statements.clear(),
+                    Deallocate::All => local.prepared_statements.clear(),
                     Deallocate::Name(name) => {
-                        if prepared_statements.remove(&name).is_none() {
+                        if local.prepared_statements.remove(&name).is_none() {
                             return Err(Error::UnknownPreparedStatement(name));
                         }
                     }
@@ -124,7 +124,7 @@ impl<'a, T: Storage> Connection<'a, T> {
         };
 
         let catalog = self.db.catalog.with(txn);
-        let execution_ctx = ExecutionContext::new(catalog, &self.rng);
+        let execution_ctx = ExecutionContext::new(catalog, &self.local);
         let plan = planner::plan(&execution_ctx, statement, params)?;
         let plan = optimizer::optimize(plan)?;
         match execution_ctx.execute(plan) {
@@ -206,6 +206,13 @@ pub enum TransactionError {
     TransactionAborted,
 }
 
+#[derive(Default)]
+pub struct ConnectionLocal {
+    pub prepared_statements: HashMap<String, Statement>,
+    pub rng: Rng,
+    pub sequence_values: HashMap<String, i64>,
+}
+
 pub struct PreparedStatement<'conn, 'db, T: Storage> {
     conn: &'conn Connection<'db, T>,
     statement: Statement,
@@ -265,7 +272,7 @@ impl<T: Transaction> Inserter<'_, T> {
                 actual: values.len(),
             });
         }
-        let mut row = Vec::new();
+        let mut row = Vec::with_capacity(self.columns.len());
         for (value, column) in values.into_iter().zip(&self.columns) {
             let value = value
                 .cast(column.ty)

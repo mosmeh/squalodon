@@ -15,7 +15,9 @@ mod union;
 
 pub use aggregate::{Aggregate, AggregateOp, ApplyAggregateOp};
 pub use column::{Column, ColumnId, ColumnMap};
-pub use ddl::{Analyze, Constraint, CreateIndex, CreateTable, DropObject, Reindex, Truncate};
+pub use ddl::{
+    Analyze, Constraint, CreateIndex, CreateSequence, CreateTable, DropObject, Reindex, Truncate,
+};
 pub use explain::Explain;
 pub use expression::{CaseBranch, ExecutableExpression, Expression, PlanExpression};
 pub use filter::Filter;
@@ -59,6 +61,9 @@ pub enum PlannerError {
 
     #[error("Primary key is required")]
     NoPrimaryKey,
+
+    #[error("Invalid sequence parameters")]
+    InvalidSequenceParameters,
 
     #[error("Invalid argument")]
     InvalidArgument,
@@ -185,6 +190,7 @@ nodes! {
     Explain: Explain<'a>
     CreateTable: CreateTable
     CreateIndex: CreateIndex<'a>
+    CreateSequence: CreateSequence
     Drop: DropObject<'a>
     Truncate: Truncate<'a>
     Analyze: Analyze<'a>
@@ -333,6 +339,9 @@ impl<'a> Planner<'a> {
             }
             parser::Statement::CreateTable(create_table) => self.plan_create_table(create_table),
             parser::Statement::CreateIndex(create_index) => self.plan_create_index(create_index),
+            parser::Statement::CreateSequence(create_sequence) => {
+                self.plan_create_sequence(create_sequence)
+            }
             parser::Statement::Drop(drop_object) => self.plan_drop(drop_object),
             parser::Statement::Truncate(table_name) => self.plan_truncate(&table_name),
             parser::Statement::Analyze(analyze) => self.plan_analyze(analyze),

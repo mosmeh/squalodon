@@ -1,5 +1,6 @@
 mod function;
 mod index;
+mod sequence;
 mod table;
 
 pub use function::{
@@ -7,6 +8,7 @@ pub use function::{
     ScalarFunction, ScalarImpureFn, TableFn, TableFunction, TypedAggregator,
 };
 pub use index::Index;
+pub use sequence::Sequence;
 pub use table::{Column, Table};
 
 use crate::{
@@ -41,6 +43,7 @@ pub enum CatalogEntryKind {
     Metadata,
     Table,
     Index,
+    Sequence,
     ScalarFunction,
     AggregateFunction,
     TableFunction,
@@ -52,6 +55,7 @@ impl std::fmt::Display for CatalogEntryKind {
             Self::Metadata => "metadata",
             Self::Table => "table",
             Self::Index => "index",
+            Self::Sequence => "sequence",
             Self::ScalarFunction => "scalar function",
             Self::AggregateFunction => "aggregate function",
             Self::TableFunction => "table function",
@@ -60,15 +64,15 @@ impl std::fmt::Display for CatalogEntryKind {
 }
 
 impl CatalogEntryKind {
-    fn key(self, name: &str) -> Vec<u8> {
+    fn catalog_key<T: AsRef<[u8]>>(self, name: T) -> Vec<u8> {
         let mut key = ObjectId::CATALOG.serialize();
         key.extend_from_slice(&(self as u64).to_be_bytes());
-        key.extend_from_slice(name.as_bytes());
+        key.extend_from_slice(name.as_ref());
         key
     }
 
-    fn prefix(self) -> Vec<u8> {
-        self.key("")
+    fn catalog_prefix(self) -> Vec<u8> {
+        self.catalog_key("")
     }
 }
 
@@ -139,7 +143,7 @@ pub struct CatalogRef<'a> {
 
 impl<'a> CatalogRef<'a> {
     fn entry<T: DeserializeOwned>(&self, kind: CatalogEntryKind, name: &str) -> CatalogResult<T> {
-        let key = kind.key(name);
+        let key = kind.catalog_key(name);
         let bytes = self
             .txn
             .get(&key)
@@ -151,7 +155,7 @@ impl<'a> CatalogRef<'a> {
         &self,
         kind: CatalogEntryKind,
     ) -> impl Iterator<Item = CatalogResult<T>> + '_ {
-        let prefix = kind.prefix();
+        let prefix = kind.catalog_prefix();
         self.txn
             .prefix_scan(prefix)
             .map(|(_, v)| bincode::deserialize(&v).map_err(Into::into))
@@ -163,7 +167,7 @@ impl<'a> CatalogRef<'a> {
         name: &str,
         value: &T,
     ) -> CatalogResult<()> {
-        let key = kind.key(name);
+        let key = kind.catalog_key(name);
         let value = bincode::serialize(value)?;
         if self.txn.insert(&key, &value) {
             Ok(())
@@ -178,14 +182,14 @@ impl<'a> CatalogRef<'a> {
         name: &str,
         value: &T,
     ) -> CatalogResult<()> {
-        let key = kind.key(name);
+        let key = kind.catalog_key(name);
         let value = bincode::serialize(value)?;
         let _ = self.txn.insert(&key, &value);
         Ok(())
     }
 
     fn remove_entry(&self, kind: CatalogEntryKind, name: &str) -> CatalogResult<()> {
-        let key = kind.key(name);
+        let key = kind.catalog_key(name);
         self.txn
             .remove(&key)
             .ok_or_else(|| CatalogError::UnknownEntry(kind, name.to_owned()))?;

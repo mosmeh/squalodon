@@ -12,13 +12,13 @@ mod union;
 
 use crate::{
     catalog::CatalogRef,
+    connection::ConnectionLocal,
     planner::{self, ExecutableExpression, Plan, PlanNode},
     storage,
     types::NullableType,
     CatalogError, Column, Row, Rows, StorageError, Type, Value,
 };
 use aggregate::{HashAggregate, UngroupedAggregate};
-use fastrand::Rng;
 use filter::Filter;
 use join::{CrossProduct, HashJoin, NestedLoopJoin};
 use limit::Limit;
@@ -46,6 +46,9 @@ pub enum ExecutorError {
     #[error("Cannot evaluate the expression in the current context")]
     EvaluationError,
 
+    #[error("Values from the sequence are yet to be fetched in the current connection")]
+    SequenceNotFetched,
+
     #[error("Storage error: {0}")]
     Storage(#[from] StorageError),
 
@@ -57,24 +60,20 @@ pub type ExecutorResult<T> = std::result::Result<T, ExecutorError>;
 
 pub struct ExecutionContext<'a> {
     catalog: CatalogRef<'a>,
-    rng: &'a RefCell<Rng>,
+    local: &'a RefCell<ConnectionLocal>,
 }
 
 impl<'a> ExecutionContext<'a> {
-    pub fn new(catalog: CatalogRef<'a>, rng: &'a RefCell<Rng>) -> Self {
-        Self { catalog, rng }
+    pub fn new(catalog: CatalogRef<'a>, local: &'a RefCell<ConnectionLocal>) -> Self {
+        Self { catalog, local }
     }
 
     pub fn catalog(&self) -> &CatalogRef<'a> {
         &self.catalog
     }
 
-    pub fn random(&self) -> f64 {
-        self.rng.borrow_mut().f64()
-    }
-
-    pub fn set_seed(&self, seed: f64) {
-        self.rng.borrow_mut().seed(seed.to_bits());
+    pub fn local(&self) -> &RefCell<ConnectionLocal> {
+        self.local
     }
 
     pub fn execute(&self, plan: Plan) -> ExecutorResult<Rows> {
@@ -238,7 +237,8 @@ impl<'a> ExecutorNode<'a> {
             }
             PlanNode::CreateTable(plan) => Self::create_table(ctx, plan),
             PlanNode::CreateIndex(plan) => Self::create_index(plan),
-            PlanNode::Drop(plan) => Self::drop_object(plan),
+            PlanNode::CreateSequence(plan) => Self::create_sequence(ctx, plan),
+            PlanNode::Drop(plan) => Self::drop_object(ctx, plan),
             PlanNode::Truncate(plan) => Self::truncate(plan),
             PlanNode::Analyze(plan) => Self::analyze(ctx, plan),
             PlanNode::Reindex(plan) => Self::reindex(plan),

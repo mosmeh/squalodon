@@ -335,7 +335,9 @@ impl<T: Storage> Completer for RustylineHelper<'_, '_, T> {
                 UNION
                 SELECT column_name FROM squalodon_columns()
                 UNION
-                SELECT name FROM squalodon_functions()",
+                SELECT name FROM squalodon_functions()
+                UNION
+                SELECT name FROM squalodon_sequences()",
                 [],
             )
             .unwrap();

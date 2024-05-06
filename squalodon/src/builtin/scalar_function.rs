@@ -1,7 +1,7 @@
 use crate::{
     catalog::{BoxedScalarFn, ScalarFunction},
     types::NullableType,
-    ExecutorError, Null, Type,
+    CatalogError, ExecutorError, Null, Type,
 };
 use std::num::FpCategory;
 
@@ -11,6 +11,7 @@ pub fn load() -> impl Iterator<Item = ScalarFunction> {
         .chain(trigonometric())
         .chain(hyperbolic())
         .chain(string())
+        .chain(sequence())
 }
 
 fn math() -> impl Iterator<Item = ScalarFunction> {
@@ -152,14 +153,14 @@ fn random() -> impl Iterator<Item = ScalarFunction> {
             name: "random",
             argument_types: &[],
             return_type: Type::Real.into(),
-            eval: BoxedScalarFn::impure(|ctx, ()| Ok(ctx.random())),
+            eval: BoxedScalarFn::impure(|ctx, ()| Ok(ctx.local().borrow_mut().rng.f64())),
         },
         ScalarFunction {
             name: "setseed",
             argument_types: &[Type::Real],
             return_type: NullableType::Null,
-            eval: BoxedScalarFn::impure(|ctx, seed| {
-                ctx.set_seed(seed);
+            eval: BoxedScalarFn::impure(|ctx, seed: f64| {
+                ctx.local().borrow_mut().rng.seed(seed.to_bits());
                 Ok(Null)
             }),
         },
@@ -294,6 +295,46 @@ fn string() -> impl Iterator<Item = ScalarFunction> {
             argument_types: &[Type::Text],
             return_type: Type::Text.into(),
             eval: BoxedScalarFn::pure(|s: String| Ok(s.to_uppercase())),
+        },
+    ]
+    .into_iter()
+}
+
+fn sequence() -> impl Iterator<Item = ScalarFunction> {
+    [
+        ScalarFunction {
+            name: "currval",
+            argument_types: &[Type::Text],
+            return_type: Type::Integer.into(),
+            eval: BoxedScalarFn::impure(|ctx, name: String| {
+                match ctx.catalog().sequence(&name) {
+                    Ok(_) => (),
+                    Err(e @ CatalogError::UnknownEntry(_, _)) => {
+                        ctx.local().borrow_mut().sequence_values.remove(&name);
+                        return Err(e.into());
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+                let value = ctx
+                    .local()
+                    .borrow()
+                    .sequence_values
+                    .get(&name)
+                    .copied()
+                    .ok_or(ExecutorError::SequenceNotFetched)?;
+                Ok(value)
+            }),
+        },
+        ScalarFunction {
+            name: "nextval",
+            argument_types: &[Type::Text],
+            return_type: Type::Integer.into(),
+            eval: BoxedScalarFn::impure(|ctx, name: String| {
+                let sequence = ctx.catalog().sequence(&name)?;
+                let value = sequence.next_value()?;
+                ctx.local().borrow_mut().sequence_values.insert(name, value);
+                Ok(value)
+            }),
         },
     ]
     .into_iter()
