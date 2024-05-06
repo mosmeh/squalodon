@@ -56,14 +56,14 @@ impl<'a> Index<'a> {
         });
 
         let is_unique = self.is_unique();
-        let column_indexes = self.column_indexes().to_vec();
+        let num_columns = self.column_indexes().len();
         self.transaction()
             .prefix_range_scan(self.id().serialize(), (start, end))
             .map(move |(k, v)| {
                 let serde = MemcomparableSerde::new();
-                let mut indexed = Vec::with_capacity(column_indexes.len());
+                let mut indexed = Vec::with_capacity(num_columns);
                 let mut slice = &k[ObjectId::SERIALIZED_LEN..];
-                for _ in &column_indexes {
+                for _ in 0..num_columns {
                     let (value, len) = serde
                         .deserialize_from(slice)
                         .map_err(|_| StorageError::InvalidEncoding)?;
@@ -72,10 +72,14 @@ impl<'a> Index<'a> {
                 }
 
                 let row_key = if is_unique {
-                    assert!(slice.is_empty());
+                    if !slice.is_empty() {
+                        return Err(StorageError::InvalidEncoding);
+                    }
                     v
                 } else {
-                    assert!(v.is_empty());
+                    if !v.is_empty() {
+                        return Err(StorageError::InvalidEncoding);
+                    }
                     slice.to_vec()
                 };
                 Ok((indexed, row_key))

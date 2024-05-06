@@ -33,8 +33,9 @@ impl<'a> Table<'a> {
 
         let serialized = bincode::serialize(new_row)?;
         if new_row_key == old_row_key {
-            let new = self.transaction().insert(&new_row_key, &serialized);
-            assert!(!new);
+            if self.transaction().insert(&new_row_key, &serialized) {
+                return Err(StorageError::Inconsistent);
+            }
         } else {
             self.transaction()
                 .remove(&old_row_key)
@@ -83,8 +84,6 @@ impl<'a> Table<'a> {
         assert_eq!(row.len(), self.columns().len());
         for (value, column) in row.iter().zip(self.columns()) {
             assert!(value.ty().is_compatible_with(column.ty));
-        }
-        for (value, column) in row.iter().zip(self.columns()) {
             if column.is_nullable {
                 continue;
             }
