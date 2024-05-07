@@ -38,7 +38,7 @@ pub enum Expression {
 impl std::fmt::Display for Expression {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            Self::Constant(value) => value.fmt(f),
+            Self::Constant(value) => std::fmt::Debug::fmt(value, f),
             Self::ColumnRef(column_ref) => column_ref.fmt(f),
             Self::Cast { expr, ty } => write!(f, "CAST({expr} AS {ty})"),
             Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
