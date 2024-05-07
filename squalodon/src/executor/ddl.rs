@@ -81,20 +81,35 @@ impl ExecutorNode<'_> {
 
     pub fn drop_object(ctx: &ExecutionContext, plan: DropObject) -> ExecutorResult<Self> {
         match plan {
-            DropObject::Table(table) => table.drop_it()?,
-            DropObject::Index { mut table, name } => table.drop_index(&name)?,
-            DropObject::Sequence(sequence) => {
-                let name = sequence.name().to_owned();
-                sequence.drop_it()?;
-                ctx.local().borrow_mut().sequence_values.remove(&name);
+            DropObject::Table(tables) => {
+                for table in tables {
+                    table.drop_it()?;
+                }
+            }
+            DropObject::Index(indexes) => {
+                for index in indexes {
+                    index.table().clone().drop_index(index.name())?;
+                }
+            }
+            DropObject::Sequence(sequences) => {
+                let names: Vec<_> = sequences.iter().map(|s| s.name().to_owned()).collect();
+                for sequence in sequences {
+                    sequence.drop_it()?;
+                }
+                // Remove only after al the sequences are successfully dropped
+                for name in names {
+                    ctx.local().borrow_mut().sequence_values.remove(&name);
+                }
             }
         }
         Ok(Self::empty_result())
     }
 
     pub fn truncate(plan: Truncate) -> ExecutorResult<Self> {
-        let Truncate { table } = plan;
-        table.truncate()?;
+        let Truncate { tables } = plan;
+        for table in tables {
+            table.truncate()?;
+        }
         Ok(Self::empty_result())
     }
 

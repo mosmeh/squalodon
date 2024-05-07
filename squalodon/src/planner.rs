@@ -343,7 +343,7 @@ impl<'a> Planner<'a> {
                 self.plan_create_sequence(create_sequence)
             }
             parser::Statement::Drop(drop_object) => self.plan_drop(drop_object),
-            parser::Statement::Truncate(table_name) => self.plan_truncate(&table_name),
+            parser::Statement::Truncate(table_names) => self.plan_truncate(&table_names),
             parser::Statement::Analyze(analyze) => self.plan_analyze(analyze),
             parser::Statement::Reindex(reindex) => self.plan_reindex(reindex),
             parser::Statement::Query(query) => self.plan_query(query),

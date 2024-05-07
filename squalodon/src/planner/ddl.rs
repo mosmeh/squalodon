@@ -106,19 +106,31 @@ impl Node for CreateSequence {
 
 #[derive(Clone)]
 pub enum DropObject<'a> {
-    Table(Table<'a>),
-    Index { table: Table<'a>, name: String },
-    Sequence(Sequence<'a>),
+    Table(Vec<Table<'a>>),
+    Index(Vec<Index<'a>>),
+    Sequence(Vec<Sequence<'a>>),
 }
 
 impl Node for DropObject<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
-        let name = match self {
-            Self::Table(table) => table.name(),
-            Self::Index { name, .. } => name,
-            Self::Sequence(sequence) => sequence.name(),
-        };
-        f.node("Drop").field("name", name);
+        let mut node = f.node("Drop");
+        match self {
+            Self::Table(tables) => {
+                for table in tables {
+                    node.field("table", table.name());
+                }
+            }
+            Self::Index(indexes) => {
+                for index in indexes {
+                    node.field("index", index.name());
+                }
+            }
+            Self::Sequence(sequences) => {
+                for sequence in sequences {
+                    node.field("sequence", sequence.name());
+                }
+            }
+        }
     }
 
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
@@ -134,12 +146,15 @@ impl Node for DropObject<'_> {
 
 #[derive(Clone)]
 pub struct Truncate<'a> {
-    pub table: Table<'a>,
+    pub tables: Vec<Table<'a>>,
 }
 
 impl Node for Truncate<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
-        f.node("Truncate").field("table", self.table.name());
+        let mut node = f.node("Truncate");
+        for table in &self.tables {
+            node.field("table", table.name());
+        }
     }
 
     fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
@@ -228,8 +243,8 @@ impl<'a> PlanNode<'a> {
         Self::Drop(drop_object)
     }
 
-    fn new_truncate(table: Table<'a>) -> Self {
-        Self::Truncate(Truncate { table })
+    fn new_truncate(tables: Vec<Table<'a>>) -> Self {
+        Self::Truncate(Truncate { tables })
     }
 
     fn new_analyze(analyze: Analyze<'a>) -> Self {
@@ -347,20 +362,23 @@ impl<'a> Planner<'a> {
 
     pub fn plan_drop(&self, drop_object: parser::DropObject) -> PlannerResult<PlanNode<'a>> {
         let result = match drop_object.kind {
-            parser::ObjectKind::Table => {
-                self.catalog.table(&drop_object.name).map(DropObject::Table)
-            }
-            parser::ObjectKind::Index => {
-                self.catalog
-                    .index(&drop_object.name)
-                    .map(|index| DropObject::Index {
-                        table: index.table().clone(),
-                        name: index.name().to_owned(),
-                    })
-            }
-            parser::ObjectKind::Sequence => self
-                .catalog
-                .sequence(&drop_object.name)
+            parser::ObjectKind::Table => drop_object
+                .names
+                .iter()
+                .map(|name| self.catalog.table(name))
+                .collect::<CatalogResult<Vec<_>>>()
+                .map(DropObject::Table),
+            parser::ObjectKind::Index => drop_object
+                .names
+                .iter()
+                .map(|name| self.catalog.index(name))
+                .collect::<CatalogResult<Vec<_>>>()
+                .map(DropObject::Index),
+            parser::ObjectKind::Sequence => drop_object
+                .names
+                .iter()
+                .map(|name| self.catalog.sequence(name))
+                .collect::<CatalogResult<Vec<_>>>()
                 .map(DropObject::Sequence),
         };
         match result {
@@ -372,9 +390,12 @@ impl<'a> Planner<'a> {
         }
     }
 
-    pub fn plan_truncate(&self, table_name: &str) -> PlannerResult<PlanNode<'a>> {
-        let table = self.catalog.table(table_name)?;
-        Ok(PlanNode::new_truncate(table))
+    pub fn plan_truncate(&self, table_names: &[String]) -> PlannerResult<PlanNode<'a>> {
+        let tables = table_names
+            .iter()
+            .map(|name| self.catalog.table(name))
+            .collect::<CatalogResult<_>>()?;
+        Ok(PlanNode::new_truncate(tables))
     }
 
     pub fn plan_analyze(&self, analyze: parser::Analyze) -> PlannerResult<PlanNode<'a>> {

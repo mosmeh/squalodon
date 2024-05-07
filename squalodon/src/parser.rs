@@ -52,7 +52,7 @@ pub enum Statement {
     CreateIndex(CreateIndex),
     CreateSequence(CreateSequence),
     Drop(DropObject),
-    Truncate(String),
+    Truncate(Vec<String>),
     Analyze(Analyze),
     Reindex(Reindex),
     Query(Query),

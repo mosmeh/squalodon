@@ -36,7 +36,7 @@ pub struct CreateSequence {
 
 #[derive(Debug, Clone)]
 pub struct DropObject {
-    pub name: String,
+    pub names: Vec<String>,
     pub kind: ObjectKind,
     pub if_exists: bool,
 }
@@ -273,18 +273,18 @@ impl Parser<'_> {
             .then(|| self.expect(Token::Exists))
             .transpose()?
             .is_some();
-        let name = self.expect_identifier()?;
+        let names = self.parse_comma_separated(Self::expect_identifier)?;
         Ok(DropObject {
-            name,
+            names,
             kind,
             if_exists,
         })
     }
 
-    pub fn parse_truncate(&mut self) -> ParserResult<String> {
+    pub fn parse_truncate(&mut self) -> ParserResult<Vec<String>> {
         self.expect(Token::Truncate)?;
         self.lexer.consume_if_eq(Token::Table)?;
-        self.expect_identifier()
+        self.parse_comma_separated(Self::expect_identifier)
     }
 
     pub fn parse_analyze(&mut self) -> ParserResult<Analyze> {
