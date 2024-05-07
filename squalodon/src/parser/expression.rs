@@ -448,7 +448,7 @@ impl Parser<'_> {
             }
             Token::LeftParen => {
                 let inner = match self.lexer.peek()? {
-                    Token::Select | Token::Values | Token::LeftParen => {
+                    token if token.is_query_prefix() => {
                         let query = self.parse_query()?;
                         Expression::ScalarSubquery(Box::new(query))
                     }

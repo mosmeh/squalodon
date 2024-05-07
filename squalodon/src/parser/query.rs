@@ -466,6 +466,12 @@ impl Parser<'_> {
                 projections = vec![Projection::Wildcard];
                 from = TableRefKind::Values(Values { rows }).into();
             }
+            Token::Table => {
+                self.lexer.consume()?;
+                let name = self.expect_identifier()?;
+                projections = vec![Projection::Wildcard];
+                from = TableRefKind::BaseTable { name }.into();
+            }
             token => return Err(ParserError::unexpected(token)),
         };
         Ok(Select {

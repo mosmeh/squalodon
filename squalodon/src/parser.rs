@@ -122,6 +122,16 @@ impl Iterator for Parser<'_> {
     }
 }
 
+impl Token {
+    /// Returns true if the token can be the first token in a query.
+    fn is_query_prefix(&self) -> bool {
+        matches!(
+            self,
+            Self::Select | Self::Values | Self::Table | Self::LeftParen
+        )
+    }
+}
+
 impl<'a> Parser<'a> {
     pub fn new(s: &'a str) -> Self {
         Self {
@@ -179,9 +189,7 @@ impl<'a> Parser<'a> {
             Token::Drop => self.parse_drop().map(Statement::Drop),
             Token::Truncate => self.parse_truncate().map(Statement::Truncate),
             Token::Reindex => self.parse_reindex().map(Statement::Reindex),
-            Token::Select | Token::Values | Token::LeftParen => {
-                self.parse_query().map(Statement::Query)
-            }
+            token if token.is_query_prefix() => self.parse_query().map(Statement::Query),
             Token::Insert => self.parse_insert().map(Statement::Insert),
             Token::Update => self.parse_update().map(Statement::Update),
             Token::Delete => self.parse_delete().map(Statement::Delete),
