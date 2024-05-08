@@ -1,5 +1,5 @@
 statement ok
-CREATE TABLE __mock_table_tas_2024 (github_id VARCHAR PRIMARY KEY, office_hour VARCHAR);
+CREATE TABLE __mock_table_tas_2024 (github_id VARCHAR, office_hour VARCHAR);
 
 statement ok
 INSERT INTO __mock_table_tas_2024 VALUES
@@ -16,7 +16,7 @@ INSERT INTO __mock_table_tas_2024 VALUES
 
 statement ok
 CREATE TABLE __mock_table_schedule (
-    day_of_week VARCHAR PRIMARY KEY,
+    day_of_week VARCHAR,
     has_lecture INTEGER
 );
 
@@ -31,21 +31,21 @@ INSERT INTO __mock_table_schedule VALUES
     ('Sunday', 0);
 
 statement ok
-CREATE TABLE test_simple_seq_1 (col1 INTEGER PRIMARY KEY);
+CREATE TABLE test_simple_seq_1 (col1 INTEGER NOT NULL);
 
 statement ok
 INSERT INTO test_simple_seq_1 VALUES
     (0), (1), (2), (3), (4), (5), (6), (7), (8), (9);
 
 statement ok
-CREATE TABLE test_simple_seq_2 (col1 INTEGER PRIMARY KEY, col2 INTEGER);
+CREATE TABLE test_simple_seq_2 (col1 INTEGER NOT NULL, col2 INTEGER NOT NULL);
 
 statement ok
 INSERT INTO test_simple_seq_2 VALUES
     (0, 10), (1, 11), (2, 12), (3, 13), (4, 14), (5, 15), (6, 16), (7, 17), (8, 18), (9, 19);
 
 statement ok
-CREATE TABLE __mock_table_1 (colA INTEGER PRIMARY KEY, colB INTEGER);
+CREATE TABLE __mock_table_1 (colA INTEGER, colB INTEGER);
 
 statement ok
 INSERT INTO __mock_table_1 VALUES
@@ -151,7 +151,7 @@ INSERT INTO __mock_table_1 VALUES
     (99, 9900);
 
 statement ok
-CREATE TABLE __mock_table_123 (number INTEGER PRIMARY KEY);
+CREATE TABLE __mock_table_123 (number INTEGER);
 
 statement ok
 INSERT INTO __mock_table_123 VALUES (1), (2), (3);
@@ -197,7 +197,7 @@ select * from test_simple_seq_1 s1 inner join test_simple_seq_2 s2 on s1.col1 + 
 #9 NULL NULL
 
 statement ok
-create table t1(v1 int primary key);
+create table t1(v1 int);
 
 statement ok
 insert into t1 (select * from __mock_table_123);
@@ -221,7 +221,7 @@ create index t1_v1 on t1(v1);
 
 
 statement ok
-create table temp_1(colA int primary key, colB int, colC int, colD int);
+create table temp_1(colA int, colB int, colC int, colD int);
 
 statement ok
 insert into temp_1 values
@@ -328,7 +328,7 @@ insert into temp_1 values
 
 
 statement ok
-create table temp_2(colA int primary key, colB int, colC int);
+create table temp_2(colA int, colB int, colC int);
 
 statement ok
 insert into temp_2 values
@@ -434,7 +434,7 @@ insert into temp_2 values
     (99, 722, 9);
 
 statement ok
-create table temp_3(colA int primary key, colB int);
+create table temp_3(colA int, colB int);
 
 statement ok
 insert into temp_3 values
@@ -534,20 +534,20 @@ select * from temp_2 t2 inner join test_simple_seq_2 s2 on t2.colB < s2.col2;
 
 # Duplicate element in join key
 statement ok
-create table t2(id integer primary key, v1 int, v2 int);
+create table t2(v1 int, v2 int);
 
 statement ok
 insert into t2 values
-    (0, 0, 45),
-    (1, 0, 45),
-    (2, 0, 65),
-    (3, 1, 45),
-    (4, 1, 45),
-    (5, 1, 65),
-    (6, 2, 45);
+    (0, 45),
+    (0, 45),
+    (0, 65),
+    (1, 45),
+    (1, 45),
+    (1, 65),
+    (2, 45);
 
 statement ok
-create table t3(v1 int, v2 int, primary key (v1, v2));
+create table t3(v1 int, v2 int);
 
 statement ok
 insert into t3 values
@@ -567,7 +567,7 @@ insert into t3 values
     (6, 2);
 
 query IIIII rowsort
-select colA, colB, colC, v1, v2 from temp_2 inner join t2 on v2 = colA;
+select * from temp_2 inner join t2 on v2 = colA;
 ----
 45 518 5 0 45
 45 518 5 0 45

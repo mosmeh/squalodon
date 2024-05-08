@@ -1,6 +1,6 @@
 # Create a table
 statement ok
-create table t1(v1 int primary key, v2 int, v3 int);
+create table t1(v1 int, v2 int, v3 int);
 
 statement ok
 insert into t1 values (1, 50, 645), (2, 40, 721), (4, 20, 445), (5, 10, 445), (3, 30, 645);

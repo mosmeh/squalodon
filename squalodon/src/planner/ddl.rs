@@ -12,7 +12,7 @@ pub struct CreateTable {
     pub name: String,
     pub if_not_exists: bool,
     pub columns: Vec<catalog::Column>,
-    pub primary_keys: Vec<ColumnIndex>,
+    pub primary_keys: Option<Vec<ColumnIndex>>,
     pub constraints: Vec<Constraint>,
 }
 
@@ -264,6 +264,9 @@ impl<'a> Planner<'a> {
     ) -> PlannerResult<PlanNode<'a>> {
         let mut column_names = HashSet::new();
         for column in &create_table.columns {
+            if catalog::Column::RESERVED_NAMES.contains(&column.name.as_str()) {
+                return Err(PlannerError::ReservedName(column.name.clone()));
+            }
             if !column_names.insert(column.name.as_str()) {
                 return Err(PlannerError::DuplicateColumn(column.name.clone()));
             }
@@ -289,14 +292,11 @@ impl<'a> Planner<'a> {
                 }
             }
         }
-        if primary_keys.is_none() {
-            return Err(PlannerError::NoPrimaryKey);
-        }
         let create_table = CreateTable {
             name: create_table.name,
             if_not_exists: create_table.if_not_exists,
             columns,
-            primary_keys: primary_keys.unwrap(),
+            primary_keys,
             constraints: constraints.into_iter().collect(),
         };
         Ok(PlanNode::new_create_table(create_table))

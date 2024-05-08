@@ -1,5 +1,5 @@
 statement ok
-CREATE TABLE __mock_table_tas_2024 (github_id VARCHAR PRIMARY KEY, office_hour VARCHAR);
+CREATE TABLE __mock_table_tas_2024 (github_id VARCHAR, office_hour VARCHAR);
 
 statement ok
 INSERT INTO __mock_table_tas_2024 VALUES
@@ -15,14 +15,14 @@ INSERT INTO __mock_table_tas_2024 VALUES
     ('thelongmarch-azx', 'Monday');
 
 statement ok
-CREATE TABLE test_simple_seq_2 (col1 INTEGER PRIMARY KEY, col2 INTEGER);
+CREATE TABLE test_simple_seq_2 (col1 INTEGER NOT NULL, col2 INTEGER NOT NULL);
 
 statement ok
 INSERT INTO test_simple_seq_2 VALUES
     (0, 10), (1, 11), (2, 12), (3, 13), (4, 14), (5, 15), (6, 16), (7, 17), (8, 18), (9, 19);
 
 statement ok
-CREATE TABLE __mock_table_123 (number INTEGER PRIMARY KEY);
+CREATE TABLE __mock_table_123 (number INTEGER);
 
 statement ok
 INSERT INTO __mock_table_123 VALUES (1), (2), (3);
@@ -90,7 +90,7 @@ select * from test_simple_seq_2 limit 15;
 # Harder Test with sort and limit
 
 statement ok
-create table temp_1(colA int primary key, colB int, colC int, colD int);
+create table temp_1(colA int, colB int, colC int, colD int);
 
 statement ok
 insert into temp_1 values
@@ -197,7 +197,7 @@ insert into temp_1 values
 
 
 statement ok
-create table temp_2(colA int primary key, colB int, colC int);
+create table temp_2(colA int, colB int, colC int);
 
 statement ok
 insert into temp_2 values

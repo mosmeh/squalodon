@@ -1,13 +1,13 @@
 # Create a table
 statement ok
-create table t1(id int primary key, v1 int, v2 varchar, v3 int);
+create table t1(v1 int, v2 varchar, v3 int);
 
 # Insert once
 statement ok
-insert into t1 values (0, 0, '🥰', 10), (1, 1, '🥰🥰', 11), (2, 2, '🥰🥰🥰', 12), (3, 3, '🥰🥰🥰🥰', 13), (4, 4, '🥰🥰🥰🥰🥰', 14);
+insert into t1 values (0, '🥰', 10), (1, '🥰🥰', 11), (2, '🥰🥰🥰', 12), (3, '🥰🥰🥰🥰', 13), (4, '🥰🥰🥰🥰🥰', 14);
 
 query ITI
-select v1, v2, v3 from t1;
+select * from t1;
 ----
 0 🥰 10
 1 🥰🥰 11
@@ -20,7 +20,7 @@ statement ok
 update t1 set v3 = 445 where v1 >= 3;
 
 query ITI
-select v1, v2, v3 from t1;
+select * from t1;
 ----
 0 🥰 10
 1 🥰🥰 11
@@ -31,11 +31,11 @@ select v1, v2, v3 from t1;
 
 # Insert more
 statement ok
-insert into t1 values (5, 0, '🥰', 10), (6, 1, '🥰🥰', 11), (7, 2, '🥰🥰🥰', 12), (8, 3, '🥰🥰🥰🥰', 13), (9, 4, '🥰🥰🥰🥰🥰', 14);
+insert into t1 values (0, '🥰', 10), (1, '🥰🥰', 11), (2, '🥰🥰🥰', 12), (3, '🥰🥰🥰🥰', 13), (4, '🥰🥰🥰🥰🥰', 14);
 
 
 query ITI
-select v1, v2, v3 from t1;
+select * from t1;
 ----
 0 🥰 10
 1 🥰🥰 11
@@ -53,7 +53,7 @@ statement ok
 update t1 set v3 = 645 where v1 >= 3;
 
 query ITI rowsort
-select v1, v2, v3 from t1;
+select * from t1;
 ----
 0 🥰 10
 0 🥰 10
@@ -71,7 +71,7 @@ statement ok
 update t1 set v3 = 645 where v1 >= 5;
 
 query ITI rowsort
-select v1, v2, v3 from t1;
+select * from t1;
 ----
 0 🥰 10
 0 🥰 10
@@ -88,7 +88,7 @@ statement ok
 update t1 set v3 = v3 + v1;
 
 query ITI rowsort
-select v1, v2, v3 from t1;
+select * from t1;
 ----
 0 🥰 10
 0 🥰 10

@@ -1,5 +1,5 @@
 statement ok
-CREATE TABLE __mock_table_tas_2024 (github_id VARCHAR PRIMARY KEY, office_hour VARCHAR);
+CREATE TABLE __mock_table_tas_2024 (github_id VARCHAR, office_hour VARCHAR);
 
 statement ok
 INSERT INTO __mock_table_tas_2024 VALUES
@@ -24,7 +24,7 @@ select count(*) from __mock_table_tas_2024;
 
 # Create a table
 statement ok
-create table t1(v1 int primary key);
+create table t1(v1 int);
 
 # Simple aggregation over the table
 statement ok
@@ -37,7 +37,7 @@ select count(*), min(v1), max(v1), count(v1), sum(v1) from t1;
 
 # Create yet another table
 statement ok
-create table t2(v1 int primary key, v2 int);
+create table t2(v1 int, v2 int);
 
 # Insert something
 statement ok

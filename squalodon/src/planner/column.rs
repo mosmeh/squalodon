@@ -6,6 +6,7 @@ pub struct Column {
     canonical_name: parser::ColumnRef,
     alias: Option<parser::ColumnRef>,
     ty: NullableType,
+    is_hidden: bool,
 }
 
 impl Column {
@@ -17,22 +18,18 @@ impl Column {
             },
             alias: None,
             ty: ty.into(),
+            is_hidden: false,
         }
     }
 
-    pub fn with_table_name(
-        table_name: impl Into<String>,
-        column_name: impl Into<String>,
-        ty: impl Into<NullableType>,
-    ) -> Self {
-        Self {
-            canonical_name: parser::ColumnRef {
-                table_name: Some(table_name.into()),
-                column_name: column_name.into(),
-            },
-            alias: None,
-            ty: ty.into(),
-        }
+    pub fn with_table_name(mut self, table_name: impl Into<String>) -> Self {
+        self.canonical_name.table_name = Some(table_name.into());
+        self
+    }
+
+    pub fn with_hidden(mut self, yes: bool) -> Self {
+        self.is_hidden = yes;
+        self
     }
 
     pub fn canonical_name(&self) -> Cow<str> {
@@ -53,6 +50,10 @@ impl Column {
 
     pub fn column_ref(&self) -> &parser::ColumnRef {
         self.alias.as_ref().unwrap_or(&self.canonical_name)
+    }
+
+    pub fn is_hidden(&self) -> bool {
+        self.is_hidden
     }
 
     pub fn is_match<T: ColumnRef>(&self, column_ref: &T) -> bool {

@@ -1,5 +1,5 @@
 statement ok
-CREATE TABLE __mock_table_1 (colA int primary key, colB int);
+CREATE TABLE __mock_table_1 (colA int, colB int);
 
 statement ok
 INSERT INTO __mock_table_1 VALUES
@@ -105,13 +105,13 @@ INSERT INTO __mock_table_1 VALUES
     (99, 9900);
 
 statement ok
-CREATE TABLE __mock_table_123 (number INTEGER PRIMARY KEY);
+CREATE TABLE __mock_table_123 (number INTEGER);
 
 statement ok
 INSERT INTO __mock_table_123 VALUES (1), (2), (3);
 
 statement ok
-create table temp_1(colA int primary key, colB int, colC int, colD int);
+create table temp_1(colA int, colB int, colC int, colD int);
 
 statement ok
 insert into temp_1 values
@@ -218,7 +218,7 @@ insert into temp_1 values
 
 
 statement ok
-create table temp_2(colA int primary key, colB int, colC int);
+create table temp_2(colA int, colB int, colC int);
 
 statement ok
 insert into temp_2 values
@@ -324,7 +324,7 @@ insert into temp_2 values
     (99, 722, 9);
 
 statement ok
-create table temp_3(colA int primary key, colB int);
+create table temp_3(colA int, colB int);
 
 statement ok
 insert into temp_3 values
@@ -381,7 +381,7 @@ select * from temp_3 t3 inner join temp_2 t2 on t3.colB = t2.colA;
 
 # Left join
 statement ok
-create table t1(v1 int primary key);
+create table t1(v1 int);
 
 statement ok
 insert into t1 (select * from __mock_table_123);

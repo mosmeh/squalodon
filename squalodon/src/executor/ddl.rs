@@ -1,10 +1,12 @@
 use super::{ExecutionContext, ExecutorNode, ExecutorResult};
 use crate::{
+    catalog, parser,
     planner::{
         Analyze, Constraint, CreateIndex, CreateSequence, CreateTable, DropObject, Reindex,
         Truncate,
     },
-    CatalogError,
+    rows::ColumnIndex,
+    CatalogError, Type,
 };
 
 impl ExecutorNode<'_> {
@@ -12,19 +14,45 @@ impl ExecutorNode<'_> {
         let CreateTable {
             name,
             if_not_exists,
-            columns,
+            mut columns,
             primary_keys,
             constraints,
         } = plan;
+        let primary_keys = if let Some(p) = primary_keys {
+            p
+        } else {
+            let sequence_name = rowid_sequence_name(&name);
+            ctx.catalog()
+                .create_sequence(&sequence_name, 1, 1, i64::MAX, 1, false)?;
+
+            // Add a hidden column.
+            let column_index = ColumnIndex(columns.len());
+            let column = catalog::Column {
+                name: catalog::Column::ROWID.to_owned(),
+                ty: Type::Integer,
+                is_nullable: false,
+                default_value: parser::Expression::Function(parser::FunctionCall {
+                    name: "nextval".to_owned(),
+                    args: parser::FunctionArgs::Expressions(vec![parser::Expression::Constant(
+                        sequence_name.into(),
+                    )]),
+                    is_distinct: false,
+                })
+                .into(),
+            };
+            assert!(column.is_hidden());
+            // Add to the end to avoid changing the indexes of the other columns.
+            columns.push(column);
+            vec![column_index]
+        };
         let result = ctx.catalog().create_table(&name, &columns, &primary_keys);
-        match result {
-            Ok(_) => (),
+        let mut table = match result {
+            Ok(table) => table,
             Err(CatalogError::DuplicateEntry(_, _)) if if_not_exists => {
                 return Ok(Self::empty_result())
             }
             Err(e) => return Err(e.into()),
-        }
-        let mut table = ctx.catalog().table(&name)?;
+        };
         for constraint in constraints {
             match constraint {
                 Constraint::Unique(column_indexes) => {
@@ -83,6 +111,20 @@ impl ExecutorNode<'_> {
         match plan {
             DropObject::Table(tables) => {
                 for table in tables {
+                    if table
+                        .columns()
+                        .iter()
+                        .any(|column| column.name == catalog::Column::ROWID)
+                    {
+                        match ctx.catalog.sequence(&rowid_sequence_name(table.name())) {
+                            Ok(sequence) => sequence.drop_it()?,
+                            Err(CatalogError::UnknownEntry(_, _)) => {
+                                // User dropped the sequence manually.
+                            }
+                            Err(e) => return Err(e.into()),
+                        }
+                    }
+
                     table.drop_it()?;
                 }
             }
@@ -136,4 +178,8 @@ impl ExecutorNode<'_> {
         }
         Ok(Self::empty_result())
     }
+}
+
+fn rowid_sequence_name(table_name: &str) -> String {
+    format!("{}_{}_seq", table_name, catalog::Column::ROWID)
 }

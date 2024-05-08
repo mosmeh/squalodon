@@ -43,7 +43,7 @@ impl<'a> Table<'a> {
         name: String,
         column_indexes: &[ColumnIndex],
         is_unique: bool,
-    ) -> CatalogResult<ObjectId> {
+    ) -> CatalogResult<Index<'a>> {
         assert!(!column_indexes.is_empty());
 
         let id = self.catalog.generate_object_id()?;
@@ -63,7 +63,7 @@ impl<'a> Table<'a> {
 
         let index = Index::new(index_def, self.clone());
         index.reindex()?;
-        Ok(id)
+        Ok(index)
     }
 
     pub fn drop_index(&mut self, name: &str) -> CatalogResult<()> {
@@ -128,6 +128,15 @@ pub struct Column {
     pub default_value: Option<Expression>,
 }
 
+impl Column {
+    pub const RESERVED_NAMES: &'static [&'static str] = &[Self::ROWID];
+    pub const ROWID: &'static str = "rowid";
+
+    pub fn is_hidden(&self) -> bool {
+        self.name == Self::ROWID
+    }
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Statistics {
     num_rows: u64,
@@ -167,17 +176,20 @@ impl<'a> CatalogRef<'a> {
         name: &str,
         columns: &[Column],
         primary_keys: &[ColumnIndex],
-    ) -> CatalogResult<ObjectId> {
-        let id = self.generate_object_id()?;
-        let table_def = TableDef {
-            id,
+    ) -> CatalogResult<Table<'a>> {
+        let def = TableDef {
+            id: self.generate_object_id()?,
             name: name.to_owned(),
             columns: columns.to_owned(),
             primary_keys: primary_keys.to_owned(),
             index_names: Vec::new(),
             statistics: Statistics::default(),
         };
-        self.insert_entry(CatalogEntryKind::Table, name, &table_def)?;
-        Ok(id)
+        self.insert_entry(CatalogEntryKind::Table, name, &def)?;
+        Ok(Table {
+            catalog: self.clone(),
+            def,
+            index_defs: Vec::new(),
+        })
     }
 }

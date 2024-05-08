@@ -1,39 +1,39 @@
 # VarcharTest
 
 statement ok
-CREATE TABLE foo (id INTEGER PRIMARY KEY, name VARCHAR);
+CREATE TABLE foo (name VARCHAR);
 
 statement ok
 INSERT INTO foo VALUES
-    (1, 'Alice'),
-    (2, 'Peter'),
-    (3, 'Cathy'),
-    (4, 'Bob'),
-    (5, 'Alicia'),
-    (6, 'David'),
-    (7, NULL);
+    ('Alice'),
+    ('Peter'),
+    ('Cathy'),
+    ('Bob'),
+    ('Alicia'),
+    ('David'),
+    (NULL);
 
 query T
-SELECT name FROM foo WHERE name = 'Alice';
+SELECT * FROM foo WHERE name = 'Alice';
 ----
 Alice
 
 query T
-SELECT name FROM foo WHERE name = 'david';
+SELECT * FROM foo WHERE name = 'david';
 ----
 
 query T
-SELECT name FROM foo WHERE name = 'Ann';
+SELECT * FROM foo WHERE name = 'Ann';
 ----
 
 query T
-SELECT name FROM foo WHERE name = 'Alice' OR name = 'Alicia';
+SELECT * FROM foo WHERE name = 'Alice' OR name = 'Alicia';
 ----
 Alice
 Alicia
 
 query T
-SELECT name FROM foo WHERE name != 'Bob' AND name != 'David';
+SELECT * FROM foo WHERE name != 'Bob' AND name != 'David';
 ----
 Alice
 Peter
@@ -41,7 +41,7 @@ Cathy
 Alicia
 
 query T
-SELECT name FROM foo WHERE name >= 'A' AND name <= 'D';
+SELECT * FROM foo WHERE name >= 'A' AND name <= 'D';
 ----
 Alice
 Cathy
@@ -49,24 +49,24 @@ Bob
 Alicia
 
 query T
-SELECT name FROM foo WHERE name > 'David';
+SELECT * FROM foo WHERE name > 'David';
 ----
 Peter
 
 query T
-SELECT name FROM foo WHERE name <= 'Alicia';
+SELECT * FROM foo WHERE name <= 'Alicia';
 ----
 Alice
 Alicia
 
 query T
-SELECT name FROM foo WHERE name LIKE '%li%';
+SELECT * FROM foo WHERE name LIKE '%li%';
 ----
 Alice
 Alicia
 
 query T
-SELECT name FROM foo WHERE name LIKE '_____';
+SELECT * FROM foo WHERE name LIKE '_____';
 ----
 Alice
 Peter
@@ -74,5 +74,5 @@ Cathy
 David
 
 query T
-SELECT name FROM foo WHERE name LIKE '%th';
+SELECT * FROM foo WHERE name LIKE '%th';
 ----

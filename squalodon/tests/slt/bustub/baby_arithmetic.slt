@@ -44,7 +44,7 @@ select null < 2 or 2 < 3;
 t
 
 statement ok
-CREATE TABLE __mock_table_1 (colA INTEGER PRIMARY KEY, colB INTEGER);
+CREATE TABLE __mock_table_1 (colA INTEGER, colB INTEGER);
 
 statement ok
 select colA + colB, colA, colB, colA - colB from __mock_table_1;

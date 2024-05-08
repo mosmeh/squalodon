@@ -36,6 +36,9 @@ pub fn load() -> impl Iterator<Item = TableFunction> {
                         is_primary_key[column_index.0] = true;
                     }
                     for (column, is_primary_key) in table.columns().iter().zip(is_primary_key) {
+                        if column.is_hidden() {
+                            continue;
+                        }
                         let default_value = column
                             .default_value
                             .as_ref()

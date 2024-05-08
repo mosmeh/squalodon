@@ -1,7 +1,7 @@
 # CreateIndexAfterInsertTest
 
 statement ok
-CREATE TABLE test (a INT PRIMARY KEY, b INT, c INT, d VARCHAR);
+CREATE TABLE test (a INT, b INT, c INT, d VARCHAR);
 
 statement ok
 INSERT INTO test VALUES
@@ -24,7 +24,7 @@ statement ok
 DROP TABLE test;
 
 statement ok
-CREATE TABLE test (a INT PRIMARY KEY, b INT, c INT, d VARCHAR);
+CREATE TABLE test (a INT, b INT, c INT, d VARCHAR);
 
 statement ok
 INSERT INTO test VALUES

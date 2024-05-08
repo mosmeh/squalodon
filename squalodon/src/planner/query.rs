@@ -39,6 +39,11 @@ impl<'a> Planner<'a> {
                     let column_map = self.column_map();
                     for output in &outputs {
                         let column = &column_map[output];
+                        if column.is_hidden() {
+                            // Hidden columns are not included in expansion
+                            // of *, but can be referred to explicitly.
+                            continue;
+                        }
                         projection_exprs
                             .push(parser::Expression::ColumnRef(column.column_ref().clone()));
                         column_aliases.push(None);

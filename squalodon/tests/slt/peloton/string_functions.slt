@@ -1,7 +1,7 @@
 # LengthTest
 
 statement ok
-CREATE TABLE foo (id INTEGER PRIMARY KEY, name VARCHAR);
+CREATE TABLE foo (id INTEGER, name VARCHAR);
 
 statement ok
 INSERT INTO foo VALUES

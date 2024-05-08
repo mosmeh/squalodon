@@ -1,5 +1,5 @@
 statement ok
-CREATE TABLE __mock_table_tas_2024 (github_id VARCHAR PRIMARY KEY, office_hour VARCHAR);
+CREATE TABLE __mock_table_tas_2024 (github_id VARCHAR, office_hour VARCHAR);
 
 statement ok
 INSERT INTO __mock_table_tas_2024 VALUES

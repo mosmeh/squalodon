@@ -1,6 +1,6 @@
 statement ok
 CREATE TABLE __mock_table_schedule (
-    day_of_week VARCHAR PRIMARY KEY,
+    day_of_week VARCHAR,
     has_lecture INTEGER
 );
 

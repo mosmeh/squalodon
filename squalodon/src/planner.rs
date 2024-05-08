@@ -59,8 +59,8 @@ pub enum PlannerError {
     #[error("Multiple primary keys are not allowed")]
     MultiplePrimaryKeys,
 
-    #[error("Primary key is required")]
-    NoPrimaryKey,
+    #[error("{0:?} is a reserved name")]
+    ReservedName(String),
 
     #[error("Invalid sequence parameters")]
     InvalidSequenceParameters,

@@ -3,7 +3,7 @@ use super::{
     Column, ColumnId, ColumnMap, ExplainFormatter, Node, PlanNode, Planner, PlannerError,
     PlannerResult,
 };
-use crate::{catalog::Table, parser, Type};
+use crate::{catalog::Table, parser, Type, Value};
 
 #[derive(Clone)]
 pub struct Insert<'a> {
@@ -118,14 +118,19 @@ impl<'a> Planner<'a> {
         let mut plan = self.plan_query(insert.query)?;
         let outputs = plan.outputs();
 
-        if outputs.len() > table.columns().len() {
-            return Err(PlannerError::ColumnCountMismatch {
-                expected: table.columns().len(),
-                actual: outputs.len(),
-            });
-        }
-
         let column_mapping = if let Some(column_names) = insert.column_names {
+            if outputs.len() != column_names.len() {
+                return Err(PlannerError::ColumnCountMismatch {
+                    expected: column_names.len(),
+                    actual: outputs.len(),
+                });
+            }
+            if column_names.len() > table.columns().len() {
+                return Err(PlannerError::ColumnCountMismatch {
+                    expected: table.columns().len(),
+                    actual: column_names.len(),
+                });
+            }
             let mut mapping = vec![None; table.columns().len()];
             for (column_name, source_column_id) in column_names.into_iter().zip(outputs) {
                 let dest_index = table
@@ -135,41 +140,48 @@ impl<'a> Planner<'a> {
                     .ok_or_else(|| PlannerError::UnknownColumn(column_name.clone()))?;
                 match &mut mapping[dest_index] {
                     Some(_) => return Err(PlannerError::DuplicateColumn(column_name)),
-                    i @ None => *i = Some(source_column_id),
+                    id @ None => *id = Some(source_column_id),
                 }
             }
             mapping
         } else {
-            outputs
-                .into_iter()
-                .map(Some)
-                .chain(std::iter::repeat(None))
-                .take(table.columns().len())
+            let num_hidden_columns = table
+                .columns()
+                .iter()
+                .filter(|column| column.is_hidden())
+                .count();
+            if outputs.len() + num_hidden_columns > table.columns().len() {
+                return Err(PlannerError::ColumnCountMismatch {
+                    expected: table.columns().len() - num_hidden_columns,
+                    actual: outputs.len(),
+                });
+            }
+            let mut output_iter = outputs.into_iter();
+            table
+                .columns()
+                .iter()
+                .map(|column| {
+                    if column.is_hidden() {
+                        None
+                    } else {
+                        output_iter.next()
+                    }
+                })
                 .collect()
         };
-
-        let num_provided_columns = column_mapping
-            .iter()
-            .zip(table.columns())
-            .filter(|(mapping, column)| mapping.is_some() || column.default_value.is_some())
-            .count();
-        if num_provided_columns != table.columns().len() {
-            return Err(PlannerError::ColumnCountMismatch {
-                expected: table.columns().len(),
-                actual: num_provided_columns,
-            });
-        }
 
         let mut exprs = Vec::with_capacity(table.columns().len());
         let mut column_map = self.column_map_mut();
         for (source_column_id, dest_column) in column_mapping.into_iter().zip(table.columns()) {
             let TypedExpression { mut expr, ty } = if let Some(id) = source_column_id {
                 PlanExpression::ColumnRef(id).into_typed(column_map[id].ty())
-            } else {
-                let default_value = dest_column.default_value.clone().unwrap();
-                let (new_plan, expr) = ExpressionBinder::new(self).bind(plan, default_value)?;
+            } else if let Some(default_value) = &dest_column.default_value {
+                let (new_plan, expr) =
+                    ExpressionBinder::new(self).bind(plan, default_value.clone())?;
                 plan = new_plan;
                 expr
+            } else {
+                Value::Null.into()
             };
             if !ty.is_compatible_with(dest_column.ty) {
                 if !ty.can_cast_to(dest_column.ty) {

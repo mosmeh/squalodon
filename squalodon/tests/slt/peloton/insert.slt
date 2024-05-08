@@ -5,7 +5,7 @@ statement ok
 CREATE TABLE test2 (a INT PRIMARY KEY, b INT, c INT);
 
 statement ok
-CREATE TABLE test3 (a INT PRIMARY KEY, b CHAR, c VARCHAR);
+CREATE TABLE test3 (a INT, b CHAR, c VARCHAR);
 
 statement ok
 CREATE TABLE test4 (
@@ -38,14 +38,14 @@ CREATE TABLE test5 (
 );
 
 statement ok
-CREATE TABLE test6 (a INT PRIMARY KEY, b INT, c INT);
+CREATE TABLE test6 (a INT, b INT, c INT);
 
 statement ok
-CREATE TABLE test7 (a INT PRIMARY KEY, b INT, c INT);
+CREATE TABLE test7 (a INT, b INT, c INT);
 
 statement ok
 CREATE TABLE test8 (
-    num1 INT PRIMARY KEY,
+    num1 INT,
     num2 INT,
     num3 INT NOT NULL
 );
@@ -249,7 +249,7 @@ INSERT INTO t VALUES (3, 'abc');
 
 statement ok
 CREATE TABLE foo (
-    id1 INT PRIMARY KEY,
+    id1 INT,
     id2 BIGINT,
     id3 SMALLINT,
     id4 INTEGER,

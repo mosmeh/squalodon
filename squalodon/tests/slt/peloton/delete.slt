@@ -1,7 +1,7 @@
 # SimpleDeleteSQLTest
 
 statement ok
-CREATE TABLE department_table (dept_id INT PRIMARY KEY, dept_name VARCHAR);
+CREATE TABLE department_table (dept_id INT, dept_name VARCHAR);
 
 statement ok
 INSERT INTO department_table(dept_id,dept_name) VALUES (1,'hello_1');

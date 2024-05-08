@@ -1,6 +1,6 @@
 statement ok
 CREATE TABLE test (
-    a INTEGER PRIMARY KEY,
+    a INTEGER,
     b SMALLINT,
     c INT,
     d BIGINT,

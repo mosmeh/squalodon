@@ -1,5 +1,5 @@
 statement ok
-CREATE TABLE test_simple_seq_2 (col1 INTEGER PRIMARY KEY, col2 INTEGER);
+CREATE TABLE test_simple_seq_2 (col1 INTEGER NOT NULL, col2 INTEGER NOT NULL);
 
 statement ok
 INSERT INTO test_simple_seq_2 VALUES
@@ -29,7 +29,7 @@ select * from test_simple_seq_2 order by col1 desc limit 15;
 0 10
 
 statement ok
-create table temp_1(colA int primary key, colB int, colC int, colD int);
+create table temp_1(colA int, colB int, colC int, colD int);
 
 statement ok
 insert into temp_1 values
@@ -136,7 +136,7 @@ insert into temp_1 values
 
 
 statement ok
-create table temp_2(colA int primary key, colB int, colC int);
+create table temp_2(colA int, colB int, colC int);
 
 statement ok
 insert into temp_2 values

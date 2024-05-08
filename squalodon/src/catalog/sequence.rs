@@ -85,10 +85,9 @@ impl<'a> CatalogRef<'a> {
         max_value: i64,
         start_value: i64,
         cycle: bool,
-    ) -> CatalogResult<ObjectId> {
-        let id = self.generate_object_id()?;
+    ) -> CatalogResult<Sequence<'a>> {
         let def = SequenceDef {
-            id,
+            id: self.generate_object_id()?,
             name: name.to_owned(),
             increment_by,
             min_value,
@@ -97,6 +96,9 @@ impl<'a> CatalogRef<'a> {
             cycle,
         };
         self.insert_entry(CatalogEntryKind::Sequence, name, &def)?;
-        Ok(id)
+        Ok(Sequence {
+            catalog: self.clone(),
+            def,
+        })
     }
 }
