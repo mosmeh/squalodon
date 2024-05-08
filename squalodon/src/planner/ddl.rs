@@ -1,4 +1,7 @@
-use super::{ColumnId, ExplainFormatter, Node, PlanNode, Planner, PlannerError, PlannerResult};
+use super::{
+    expression::ExpressionBinder, ColumnId, ExplainFormatter, Node, PlanNode, Planner,
+    PlannerError, PlannerResult,
+};
 use crate::{
     catalog::{self, CatalogResult, Index, Sequence, Table},
     parser,
@@ -269,6 +272,10 @@ impl<'a> Planner<'a> {
             }
             if !column_names.insert(column.name.as_str()) {
                 return Err(PlannerError::DuplicateColumn(column.name.clone()));
+            }
+            if let Some(expr) = &column.default_value {
+                // Try to bind the expression to check if it's valid.
+                ExpressionBinder::new(self).bind_without_source(expr.clone())?;
             }
         }
         let mut primary_keys = None;
