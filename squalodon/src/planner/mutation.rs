@@ -1,5 +1,5 @@
 use super::{
-    expression::{ExpressionBinder, PlanExpression, TypedExpression},
+    expression::{ExpressionBinder, PlanExpression},
     Column, ColumnId, ColumnMap, ExplainFormatter, Node, PlanNode, Planner, PlannerError,
     PlannerResult,
 };
@@ -173,7 +173,7 @@ impl<'a> Planner<'a> {
         let mut exprs = Vec::with_capacity(table.columns().len());
         let mut column_map = self.column_map_mut();
         for (source_column_id, dest_column) in column_mapping.into_iter().zip(table.columns()) {
-            let TypedExpression { mut expr, ty } = if let Some(id) = source_column_id {
+            let expr = if let Some(id) = source_column_id {
                 PlanExpression::ColumnRef(id).into_typed(column_map[id].ty())
             } else if let Some(default_value) = &dest_column.default_value {
                 let (new_plan, expr) =
@@ -183,13 +183,7 @@ impl<'a> Planner<'a> {
             } else {
                 Value::Null.into()
             };
-            if !ty.is_compatible_with(dest_column.ty) {
-                if !ty.can_cast_to(dest_column.ty) {
-                    return Err(PlannerError::TypeError);
-                }
-                expr = expr.cast(dest_column.ty);
-            }
-            exprs.push(expr.into_typed(dest_column.ty));
+            exprs.push(expr.cast(dest_column.ty)?);
         }
         let plan = plan.project(&mut column_map, exprs);
 
@@ -220,21 +214,9 @@ impl<'a> Planner<'a> {
             if expr.is_some() {
                 return Err(PlannerError::DuplicateColumn(column.name.clone()));
             }
-            let (
-                new_plan,
-                TypedExpression {
-                    expr: mut bound_expr,
-                    ty,
-                },
-            ) = expr_binder.bind(plan, set.expr)?;
+            let (new_plan, bound_expr) = expr_binder.bind(plan, set.expr)?;
             plan = new_plan;
-            if !ty.is_compatible_with(column.ty) {
-                if !ty.can_cast_to(column.ty) {
-                    return Err(PlannerError::TypeError);
-                }
-                bound_expr = bound_expr.cast(column.ty);
-            }
-            *expr = Some(bound_expr.into_typed(column.ty));
+            *expr = Some(bound_expr.cast(column.ty)?);
         }
 
         // The input of the Update node should consist of the old and new values

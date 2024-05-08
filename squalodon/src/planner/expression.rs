@@ -99,7 +99,7 @@ impl std::fmt::Display for ExpressionDisplay<'_, '_> {
 }
 
 impl<'a> PlanExpression<'a> {
-    pub fn cast(self, ty: Type) -> Self {
+    fn cast(self, ty: Type) -> Self {
         if let Self::Constant(value) = &self {
             if let Some(value) = value.cast(ty) {
                 return Self::Constant(value);
@@ -385,6 +385,20 @@ impl<'a> TypedExpression<'a> {
         }
     }
 
+    pub fn cast(self, ty: Type) -> PlannerResult<Self> {
+        if self.ty.is_compatible_with(ty) {
+            return Ok(self);
+        }
+        if self.ty.can_cast_to(ty) {
+            Ok(Self {
+                expr: self.expr.cast(ty),
+                ty: ty.into(),
+            })
+        } else {
+            Err(PlannerError::TypeError)
+        }
+    }
+
     fn unary_op(self, op: UnaryOp) -> PlannerResult<Self> {
         let ty = match (op, self.ty) {
             (UnaryOp::Not, _) => NullableType::NonNull(Type::Boolean),
@@ -524,9 +538,8 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
                 Ok((source, expr))
             }
             parser::Expression::Cast { expr, ty } => {
-                let (plan, TypedExpression { expr, .. }) = self.bind(source, *expr)?;
-                let expr = expr.cast(ty);
-                Ok((plan, expr.into_typed(ty)))
+                let (plan, expr) = self.bind(source, *expr)?;
+                Ok((plan, expr.cast(ty)?))
             }
             parser::Expression::UnaryOp { op, expr } => {
                 let (plan, expr) = self.bind(source, *expr)?;

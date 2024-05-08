@@ -75,13 +75,13 @@ impl NullableType {
         }
     }
 
-    pub fn can_cast_to<T: Into<Self>>(self, other: T) -> bool {
-        match (self, other.into()) {
+    pub fn can_cast_to(self, other: Type) -> bool {
+        match (self, other) {
             (Self::Null | Self::NonNull(Type::Text), _)
-            | (_, Self::Null | Self::NonNull(Type::Text))
-            | (Self::NonNull(Type::Integer), Self::NonNull(Type::Real | Type::Boolean))
-            | (Self::NonNull(Type::Real | Type::Boolean), Self::NonNull(Type::Integer)) => true,
-            (Self::NonNull(a), Self::NonNull(b)) if a == b => true,
+            | (_, Type::Text)
+            | (Self::NonNull(Type::Integer), Type::Real | Type::Boolean)
+            | (Self::NonNull(Type::Real | Type::Boolean), Type::Integer) => true,
+            (Self::NonNull(a), b) if a == b => true,
             _ => false,
         }
     }
