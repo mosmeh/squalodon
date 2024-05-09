@@ -161,7 +161,7 @@ impl std::fmt::Display for Projection {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TableRef {
     pub kind: TableRefKind,
-    pub alias: Option<String>,
+    pub alias: Option<TableAlias>,
 }
 
 impl std::fmt::Display for TableRef {
@@ -209,6 +209,29 @@ impl std::fmt::Display for TableRefKind {
             }
             Self::Values(values) => write!(f, "({values})"),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TableAlias {
+    pub table_alias: String,
+    pub column_aliases: Option<Vec<String>>,
+}
+
+impl std::fmt::Display for TableAlias {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.table_alias)?;
+        if let Some(column_aliases) = &self.column_aliases {
+            f.write_str("(")?;
+            for (i, column_alias) in column_aliases.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(", ")?;
+                }
+                f.write_str(column_alias)?;
+            }
+            f.write_str(")")?;
+        }
+        Ok(())
     }
 }
 
@@ -504,7 +527,14 @@ impl Parser<'_> {
             Ok(Projection::Wildcard)
         } else {
             let expr = self.parse_expr()?;
-            let alias = self.try_parse_alias()?;
+            let alias = match self.lexer.peek()? {
+                Token::As => {
+                    self.lexer.consume()?;
+                    Some(self.expect_identifier()?)
+                }
+                Token::Identifier(_) => Some(self.expect_identifier()?),
+                _ => None,
+            };
             Ok(Projection::Expression { expr, alias })
         }
     }
@@ -583,7 +613,7 @@ impl Parser<'_> {
                 } else {
                     TableRefKind::BaseTable { name }
                 };
-                let alias = self.try_parse_alias()?;
+                let alias = self.try_parse_table_alias()?;
                 Ok(TableRef { kind, alias })
             }
             Token::LeftParen => {
@@ -592,13 +622,13 @@ impl Parser<'_> {
                     let mut inner = self.parse_table_ref()?;
                     self.expect(Token::RightParen)?;
                     if inner.alias.is_none() {
-                        inner.alias = self.try_parse_alias()?;
+                        inner.alias = self.try_parse_table_alias()?;
                     }
                     Ok(inner)
                 } else {
                     let kind = TableRefKind::Subquery(self.parse_query()?.into());
                     self.expect(Token::RightParen)?;
-                    let alias = self.try_parse_alias()?;
+                    let alias = self.try_parse_table_alias()?;
                     Ok(TableRef { kind, alias })
                 }
             }
@@ -638,14 +668,27 @@ impl Parser<'_> {
         })
     }
 
-    fn try_parse_alias(&mut self) -> ParserResult<Option<String>> {
-        Ok(match self.lexer.peek()? {
+    fn try_parse_table_alias(&mut self) -> ParserResult<Option<TableAlias>> {
+        let table_alias = match self.lexer.peek()? {
             Token::As => {
                 self.lexer.consume()?;
-                Some(self.expect_identifier()?)
+                self.expect_identifier()?
             }
-            Token::Identifier(_) => Some(self.expect_identifier()?),
-            _ => None,
-        })
+            Token::Identifier(_) => self.expect_identifier()?,
+            _ => return Ok(None),
+        };
+        let column_aliases = self
+            .lexer
+            .consume_if_eq(Token::LeftParen)?
+            .then(|| -> ParserResult<_> {
+                let column_aliases = self.parse_comma_separated(Self::expect_identifier)?;
+                self.expect(Token::RightParen)?;
+                Ok(column_aliases)
+            })
+            .transpose()?;
+        Ok(Some(TableAlias {
+            table_alias,
+            column_aliases,
+        }))
     }
 }

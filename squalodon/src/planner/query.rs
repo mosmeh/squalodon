@@ -3,7 +3,7 @@ use super::{
     expression::{ExpressionBinder, TypedExpression},
     PlanNode, Planner, PlannerResult,
 };
-use crate::parser;
+use crate::{parser, PlannerError};
 use std::collections::HashMap;
 
 impl<'a> Planner<'a> {
@@ -199,9 +199,24 @@ impl<'a> Planner<'a> {
             parser::TableRefKind::Values(values) => self.plan_values(expr_binder, values)?,
         };
         if let Some(alias) = table_ref.alias {
+            let outputs = plan.outputs();
             let mut column_map = self.column_map_mut();
-            for id in plan.outputs() {
-                column_map[id].set_table_alias(alias.clone());
+            if let Some(column_aliases) = alias.column_aliases {
+                if outputs.len() != column_aliases.len() {
+                    return Err(PlannerError::ColumnCountMismatch {
+                        expected: outputs.len(),
+                        actual: column_aliases.len(),
+                    });
+                }
+                for (id, column_alias) in outputs.into_iter().zip(column_aliases) {
+                    let column = &mut column_map[id];
+                    column.set_table_alias(alias.table_alias.clone());
+                    column.set_column_alias(column_alias);
+                }
+            } else {
+                for id in outputs {
+                    column_map[id].set_table_alias(alias.table_alias.clone());
+                }
             }
         }
         Ok(plan)
