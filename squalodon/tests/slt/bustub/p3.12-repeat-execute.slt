@@ -1,8 +1,4 @@
-statement ok
-CREATE TABLE __mock_table_123 (a INTEGER);
-
-statement ok
-INSERT INTO __mock_table_123 VALUES (1), (2), (3);
+include fixtures.slt.inc
 
 # Put everything on the right side of NLJ
 

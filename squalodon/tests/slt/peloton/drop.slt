@@ -1,7 +1,7 @@
 # DropTableTest
 
 statement ok
-CREATE TABLE test (a INT PRIMARY KEY, b INT);
+CREATE TABLE test(a INT PRIMARY KEY, b INT);
 
 statement ok
 INSERT INTO test VALUES (1, 10);
@@ -20,7 +20,7 @@ SELECT * FROM test;
 # DropIndexTest
 
 statement ok
-CREATE TABLE test (a INT PRIMARY KEY, b INT);
+CREATE TABLE test(a INT PRIMARY KEY, b INT);
 
 statement ok
 CREATE INDEX idx ON test(a);

@@ -1,16 +1,6 @@
-statement ok
-CREATE TABLE test (
-    a INTEGER,
-    b SMALLINT,
-    c INT,
-    d BIGINT,
-    e DECIMAL
-);
-
-statement ok
-INSERT INTO test VALUES (1, 2, 3, 4, 5.0);
-
 # SimpleProjectionSQLTest
+
+include fixtures/projection.slt.inc
 
 query IIIIIIIR
 SELECT a+a, a-a, a*a, a/a, a+b, a+c, a+d, CAST(a+e AS REAL) FROM test;
@@ -33,31 +23,20 @@ SELECT d+d, d-d, d*d, d/d, d+a, d+b, d+c, CAST(d+e AS REAL) FROM test;
 8 0 16 1 5 6 7 9
 
 query RRRRRRRR
-SELECT
-    CAST(e+e AS REAL),
-    CAST(e-e AS REAL),
-    CAST(e*e AS REAL),
-    CAST(e/e AS REAL),
-    CAST(e+a AS REAL),
-    CAST(e+b AS REAL),
-    CAST(e+c AS REAL),
-    CAST(e+d AS REAL)
-FROM test;
+SELECT CAST(e+e AS REAL), CAST(e-e AS REAL), CAST(e*e AS REAL), CAST(e/e AS REAL), CAST(e+a AS REAL), CAST(e+b AS REAL), CAST(e+c AS REAL), CAST(e+d AS REAL) FROM test;
 ----
 10 0 25 1 6 7 8 9
 
 # ProjectionSQLTest
 
+include fixtures/projection.slt.inc
+
 query IIII
-SELECT a*5+b, -1+c, 6, a FROM test;
+SELECT a*5+b, -1+c, 6, a from test;
 ----
 7 2 6 1
 
 query RRR
-SELECT
-    CAST(d+e*2.0 AS REAL),
-    CAST(e AS REAL),
-    CAST(e+(2*c) AS REAL)
-FROM test;
+SELECT CAST(d+e*2.0 AS REAL), CAST(e AS REAL), CAST(e+(2*c) AS REAL) from test;
 ----
 14 5 11

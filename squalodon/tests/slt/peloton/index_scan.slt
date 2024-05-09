@@ -1,13 +1,6 @@
 # CreateIndexAfterInsertTest
 
-statement ok
-CREATE TABLE test (a INT, b INT, c INT, d VARCHAR);
-
-statement ok
-INSERT INTO test VALUES
-    (1, 22, 333, 'abcd'),
-    (2, 33, 111, 'bcda'),
-    (3, 11, 222, 'bcd');
+include fixtures/index_scan.slt.inc
 
 statement ok
 CREATE INDEX i1 ON test (a);
@@ -20,20 +13,10 @@ SELECT b FROM test WHERE a < 3;
 
 # CreateIndexAfterInsertOnMultipleColumnsTest
 
-statement ok
-DROP TABLE test;
+include fixtures/index_scan.slt.inc
 
 statement ok
-CREATE TABLE test (a INT, b INT, c INT, d VARCHAR);
-
-statement ok
-INSERT INTO test VALUES
-    (1, 22, 333, 'abcd'),
-    (2, 33, 111, 'bcda'),
-    (3, 11, 222, 'bcd');
-
-statement ok
-CREATE INDEX i1 ON test (b, c);
+CREATE INDEX i1 ON test(b, c);
 
 query I
 SELECT a FROM test WHERE b < 33 AND c > 100 ORDER BY a;
@@ -44,13 +27,13 @@ SELECT a FROM test WHERE b < 33 AND c > 100 ORDER BY a;
 # SQLTest
 
 statement ok
-CREATE TABLE department_table (dept_id INT PRIMARY KEY, dept_name VARCHAR);
+CREATE TABLE department_table(dept_id INT PRIMARY KEY, dept_name VARCHAR);
 
 statement ok
-INSERT INTO department_table (dept_id, dept_name) VALUES
-    (1, 'hello_1'),
+INSERT INTO department_table(dept_id, dept_name) VALUES
+    (1,'hello_1'),
     (2, 'hello_2'),
-    (3, 'hello_2');
+    (3,'hello_2');
 
 query IT
 SELECT * FROM department_table WHERE dept_id = 1;
@@ -73,50 +56,40 @@ SELECT COUNT(*) FROM department_table WHERE dept_id > 1;
 2
 
 query I
-SELECT COUNT(*) FROM department_table WHERE dept_id < 3 AND dept_id > 1;
+SELECT COUNT(*) FROM department_table WHERE dept_id < 3 and dept_id > 1;
 ----
 1
 
 query I
-SELECT COUNT(*) FROM department_table WHERE dept_id < 3 AND dept_id > 2;
+SELECT COUNT(*) FROM department_table WHERE dept_id < 3 and dept_id > 2;
 ----
 0
 
 query I
-SELECT COUNT(*) FROM department_table WHERE dept_id = 2 AND dept_name = 'hello_2';
+SELECT COUNT(*) FROM department_table WHERE dept_id = 2 and dept_name = 'hello_2';
 ----
 1
 
 query I
-SELECT COUNT(*)
-FROM department_table
-WHERE dept_id = 2 AND dept_name = 'hello_2' AND dept_name = 'hello_2';
+SELECT COUNT(*) FROM department_table WHERE dept_id = 2 and dept_name = 'hello_2' and dept_name = 'hello_2';
 ----
 1
 
 query I
-SELECT COUNT(*)
-FROM department_table
-WHERE dept_id = 1 AND dept_name = 'hello_2' AND dept_name = 'hello_2';
+SELECT COUNT(*) FROM department_table WHERE dept_id = 1 and dept_name = 'hello_2' and dept_name = 'hello_2';
 ----
 0
 
 query I
-SELECT COUNT(*)
-FROM department_table
-WHERE dept_id = 2 AND dept_name = 'hello_1' AND dept_name = 'hello_2';
+SELECT COUNT(*) FROM department_table WHERE dept_id = 2 and dept_name = 'hello_1' and dept_name = 'hello_2';
 ----
 0
 
 statement ok
-UPDATE department_table
-SET dept_name = 'hahaha'
-WHERE dept_id = 2 AND dept_name = 'hello_2' AND dept_name = 'hello_2';
+UPDATE department_table set dept_name = 'hahaha' WHERE dept_id = 2 and dept_name = 'hello_2' and dept_name = 'hello_2';
 
 statement ok
-UPDATE department_table
-SET dept_name = 'hahaha'
-WHERE dept_id = 2 AND dept_name = 'hello_2';
+UPDATE department_table set dept_name = 'hahaha' WHERE dept_id = 2 and dept_name = 'hello_2';
 
 statement ok
-UPDATE department_table SET dept_name = 'hahaha' WHERE dept_id = 2;
+UPDATE department_table set dept_name = 'hahaha' WHERE dept_id = 2;

@@ -1,8 +1,4 @@
-statement ok
-CREATE TABLE __mock_table_123 (number INTEGER);
-
-statement ok
-INSERT INTO __mock_table_123 VALUES (1), (2), (3);
+include fixtures.slt.inc
 
 statement ok
 create table t1(v1 int);

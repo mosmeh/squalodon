@@ -1,7 +1,7 @@
 # UpdatePrimaryIndexTest
 
 statement ok
-CREATE TABLE test (a INT PRIMARY KEY, b INT, c INT);
+CREATE TABLE test(a INT PRIMARY KEY, b INT, c INT);
 
 statement ok
 INSERT INTO test VALUES
@@ -20,7 +20,7 @@ statement error
 UPDATE test SET a=2 WHERE c=300;
 
 query III
-SELECT * FROM test;
+SELECT * from test;
 ----
 1 10 100
 2 20 200
@@ -30,7 +30,7 @@ statement ok
 UPDATE test SET a=5 WHERE c=300;
 
 query III
-SELECT * FROM test;
+SELECT * from test;
 ----
 1 10 100
 2 20 200

@@ -1,176 +1,98 @@
-statement ok
-CREATE TABLE test (
-    s SMALLINT,
-    i INTEGER,
-    bi BIGINT,
-    r REAL,
-    t TEXT,
-    bp BPCHAR,
-    vc VARCHAR,
-    ts TEXT
-);
-
-statement ok
-INSERT INTO test VALUES
-    (1, 1, 1, 1.0, 'text1', '1', 'varchar1', '2016-06-22 19:10:21-00'),
-    (2, 2, 2, 2.0, 'text2', '2', 'varchar2', '2016-06-22 19:10:22-00'),
-    (3, 3, 3, 3.0, 'text3', '3', 'varchar3', '2016-06-22 19:10:23-00'),
-    (1, 1, 1, 1.0, 'text1', '1', 'varchar1', '2016-06-22 19:10:21-00'),
-    (2, 2, 2, 2.0, 'text2', '2', 'varchar2', '2016-06-22 19:10:22-00'),
-    (3, 3, 3, 3.0, 'text3', '3', 'varchar3', '2016-06-22 19:10:23-00'),
-    (1, 1, 1, 1.0, 'text1', '1', 'varchar1', '2016-06-22 19:10:21-00'),
-    (2, 2, 2, 2.0, 'text2', '2', 'varchar2', '2016-06-22 19:10:22-00'),
-    (3, 3, 3, 3.0, 'text3', '3', 'varchar3', '2016-06-22 19:10:23-00');
-
 # DistinctAggregateCountTest
+
+include fixtures/distinct_aggregate.slt.inc
+
 query IIIIIIIII
-SELECT
-    count(*),
-    count(DISTINCT s),
-    count(DISTINCT i),
-    count(DISTINCT bi),
-    count(DISTINCT r),
-    count(DISTINCT t),
-    count(DISTINCT bp),
-    count(DISTINCT vc),
-    count(DISTINCT ts)
-FROM test;
+SELECT COUNT(*), COUNT(distinct s), COUNT(distinct i), COUNT(distinct bi), COUNT(distinct r), COUNT(distinct t), COUNT(distinct bp), COUNT(distinct vc), COUNT(distinct ts) FROM test;
 ----
 9 3 3 3 3 3 3 3 3
 
 # DistinctAggregateMaxTest
+
+include fixtures/distinct_aggregate.slt.inc
+
 query IIIIRTTTT
-SELECT
-    count(*),
-    max(DISTINCT s),
-    max(DISTINCT i),
-    max(DISTINCT bi),
-    max(DISTINCT r),
-    max(DISTINCT t),
-    max(DISTINCT bp),
-    max(DISTINCT vc),
-    max(DISTINCT ts)
-FROM test;
+SELECT COUNT(*),  MAX(distinct s), MAX(distinct i), MAX(distinct bi), MAX(distinct r), MAX(distinct t), MAX(distinct bp), MAX(distinct vc), MAX(distinct ts) FROM test;
 ----
 9 3 3 3 3 text3 3 varchar3 2016-06-22 19:10:23-00
 
 # DistinctAggregateMinTest
+
+include fixtures/distinct_aggregate.slt.inc
+
 query IIIIRTTTT
-SELECT
-    count(*),
-    min(DISTINCT s),
-    min(DISTINCT i),
-    min(DISTINCT bi),
-    min(DISTINCT r),
-    min(DISTINCT t),
-    min(DISTINCT bp),
-    min(DISTINCT vc),
-    min(DISTINCT ts)
-FROM test;
+SELECT COUNT(*), MIN(distinct s), MIN(distinct i), MIN(distinct bi), MIN(distinct r), MIN(distinct t), MIN(distinct bp), MIN(distinct vc), MIN(distinct ts) FROM test;
 ----
 9 1 1 1 1 text1 1 varchar1 2016-06-22 19:10:21-00
 
 # DistinctAggregateAvgTest
+
+include fixtures/distinct_aggregate.slt.inc
+
 query IRRRR
-SELECT
-    count(*),
-    CAST(avg(DISTINCT s) AS REAL),
-    CAST(avg(DISTINCT i) AS REAL),
-    CAST(avg(DISTINCT bi) AS REAL),
-    avg(DISTINCT r)
-FROM test;
+SELECT COUNT(*), CAST(AVG(distinct s) AS REAL), CAST(AVG(distinct i) AS REAL), CAST(AVG(distinct bi) AS REAL), AVG(distinct r) FROM test;
 ----
 9 2 2 2 2
 
 # DistinctAggregateSumTest
+
+include fixtures/distinct_aggregate.slt.inc
+
 query IIIIR
-SELECT
-    count(*),
-    sum(DISTINCT s),
-    sum(DISTINCT i),
-    sum(DISTINCT bi),
-    sum(DISTINCT r)
-FROM test;
+SELECT COUNT(*), SUM(distinct s), SUM(distinct i), SUM(distinct bi), SUM(distinct r) FROM test;
 ----
 9 6 6 6 6
 
 # DistinctAggregateGroupByCountTest
+
+include fixtures/distinct_aggregate.slt.inc
+
 query IIIIIIII
-SELECT
-    count(*),
-    count(DISTINCT i),
-    count(DISTINCT bi),
-    count(DISTINCT r),
-    count(DISTINCT t),
-    count(DISTINCT bp),
-    count(DISTINCT vc),
-    count(DISTINCT ts)
-FROM test
-GROUP BY s;
+SELECT COUNT(*), COUNT(distinct i), COUNT(distinct bi), COUNT(distinct r), COUNT(distinct t), COUNT(distinct bp), COUNT(distinct vc), COUNT(distinct ts) FROM test GROUP BY s;
 ----
 3 1 1 1 1 1 1 1
 3 1 1 1 1 1 1 1
 3 1 1 1 1 1 1 1
 
 # DistinctAggregateGroupByMaxTest
+
+include fixtures/distinct_aggregate.slt.inc
+
 query IIIRTTTT rowsort
-SELECT
-    count(*),
-    max(DISTINCT i),
-    max(DISTINCT bi),
-    max(DISTINCT r),
-    max(DISTINCT t),
-    max(DISTINCT bp),
-    max(DISTINCT vc),
-    max(DISTINCT ts)
-FROM test
-GROUP BY s;
+SELECT COUNT(*), MAX(distinct i), MAX(distinct bi), MAX(distinct r), MAX(distinct t), MAX(distinct bp), MAX(distinct vc), MAX(distinct ts) FROM test GROUP BY s;
 ----
 3 1 1 1 text1 1 varchar1 2016-06-22 19:10:21-00
 3 2 2 2 text2 2 varchar2 2016-06-22 19:10:22-00
 3 3 3 3 text3 3 varchar3 2016-06-22 19:10:23-00
 
 # DistinctAggregateGroupByMinTest
+
+include fixtures/distinct_aggregate.slt.inc
+
 query IIIRTTTT rowsort
-SELECT
-    count(*),
-    min(DISTINCT i),
-    min(DISTINCT bi),
-    min(DISTINCT r),
-    min(DISTINCT t),
-    min(DISTINCT bp),
-    min(DISTINCT vc),
-    min(DISTINCT ts)
-FROM test
-GROUP BY s;
+SELECT COUNT(*), MIN(distinct i), MIN(distinct bi), MIN(distinct r), MIN(distinct t), MIN(distinct bp), MIN(distinct vc), MIN(distinct ts) FROM test GROUP BY s;
 ----
 3 1 1 1 text1 1 varchar1 2016-06-22 19:10:21-00
 3 2 2 2 text2 2 varchar2 2016-06-22 19:10:22-00
 3 3 3 3 text3 3 varchar3 2016-06-22 19:10:23-00
 
 # DistinctAggregateGroupByAvgTest
+
+include fixtures/distinct_aggregate.slt.inc
+
 query IRRR rowsort
-SELECT
-    count(*),
-    CAST(avg(DISTINCT i) AS REAL),
-    CAST(avg(DISTINCT bi) AS REAL),
-    avg(DISTINCT r)
-FROM test
-GROUP BY s;
+SELECT COUNT(*), CAST(AVG(distinct i) AS REAL), CAST(AVG(distinct bi) AS REAL), AVG(distinct r) FROM test GROUP BY s;
 ----
 3 1 1 1
 3 2 2 2
 3 3 3 3
 
 # DistinctAggregateGroupBySumTest
+
+include fixtures/distinct_aggregate.slt.inc
+
 query IIIR rowsort
-SELECT
-    count(*),
-    sum(DISTINCT i),
-    sum(DISTINCT bi),
-    sum(DISTINCT r)
-FROM test
-GROUP BY s;
+SELECT COUNT(*), SUM(distinct i), SUM(distinct bi), SUM(distinct r) FROM test GROUP BY s;
 ----
 3 1 1 1
 3 2 2 2

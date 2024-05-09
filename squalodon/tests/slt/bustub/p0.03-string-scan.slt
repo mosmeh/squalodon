@@ -1,18 +1,4 @@
-statement ok
-CREATE TABLE __mock_table_schedule (
-    day_of_week VARCHAR,
-    has_lecture INTEGER
-);
-
-statement ok
-INSERT INTO __mock_table_schedule VALUES
-    ('Monday', 1),
-    ('Tuesday', 0),
-    ('Wednesday', 1),
-    ('Thursday', 0),
-    ('Friday', 0),
-    ('Saturday', 0),
-    ('Sunday', 0);
+include fixtures.slt.inc
 
 query TTTI rowsort
 select day_of_week, upper(day_of_week), lower(day_of_week), has_lecture from __mock_table_schedule;

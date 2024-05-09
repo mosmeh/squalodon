@@ -1,7 +1,7 @@
 # VarcharTest
 
 statement ok
-CREATE TABLE foo (name VARCHAR);
+CREATE TABLE foo(name varchar);
 
 statement ok
 INSERT INTO foo VALUES

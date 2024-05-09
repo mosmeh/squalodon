@@ -1,3 +1,5 @@
+include fixtures.slt.inc
+
 query I
 select 1 + 2;
 ----
@@ -42,9 +44,6 @@ query B
 select null < 2 or 2 < 3;
 ----
 t
-
-statement ok
-CREATE TABLE __mock_table_1 (colA INTEGER, colB INTEGER);
 
 statement ok
 select colA + colB, colA, colB, colA - colB from __mock_table_1;

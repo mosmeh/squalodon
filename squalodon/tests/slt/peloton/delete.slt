@@ -1,7 +1,7 @@
 # SimpleDeleteSQLTest
 
 statement ok
-CREATE TABLE department_table (dept_id INT, dept_name VARCHAR);
+CREATE TABLE department_table(dept_id int, dept_name varchar);
 
 statement ok
 INSERT INTO department_table(dept_id,dept_name) VALUES (1,'hello_1');
@@ -18,12 +18,12 @@ statement ok
 INSERT INTO department_table(dept_id,dept_name) VALUES (3,'hello_3');
 
 query I
-SELECT count(dept_name) from department_table;
+SELECT COUNT(dept_name) from department_table;
 ----
 3
 
 query I
-SELECT max(dept_id) FROM department_table;
+SELECT MAX(dept_id) FROM department_table;
 ----
 3
 

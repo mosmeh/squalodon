@@ -1,7 +1,7 @@
 # SimpleUpdateSQLTest
 
 statement ok
-CREATE TABLE test (a INT PRIMARY KEY, b REAL);
+CREATE TABLE test(a INT PRIMARY KEY, b real);
 
 statement ok
 INSERT INTO test VALUES (0, 1);
@@ -10,33 +10,34 @@ statement ok
 UPDATE test SET b = 2.0 WHERE a = 0;
 
 query R
-SELECT b FROM test;
+SELECT b from test;
 ----
 2
 
 statement ok
-UPDATE test SET b = 3.0 WHERE a = 0;
+UPDATE test SET b = 2.0 WHERE a = 0;
+
+statement ok
+UPDATE test SET b = 2 WHERE a = 0;
 
 query R
 SELECT b FROM test;
 ----
-3
+2
 
 # ComplexUpdateSQLTest
 
 statement ok
-CREATE TABLE employees (e_id INT PRIMARY KEY, salary REAL, bonus REAL);
+CREATE TABLE employees(e_id int primary key, salary real, bonus real);
 
 statement ok
 INSERT INTO employees VALUES (0, 1.1, 0.5);
 
 statement ok
-UPDATE employees
-SET salary = 2 + salary + bonus*salary + 3*(salary+1)+0.1*bonus*salary
-WHERE e_id = 0;
+UPDATE employees SET salary = 2 + salary + bonus*salary + 3*(salary+1)+0.1*bonus*salary WHERE e_id = 0;
 
 query R
-SELECT salary FROM employees;
+SELECT salary from employees;
 ----
 10.005
 
@@ -87,7 +88,7 @@ statement ok
 UPDATE test SET a = a/2;
 
 query I
-SELECT a FROM test;
+SELECT a from test;
 ----
 5
 

@@ -1,18 +1,4 @@
-statement ok
-CREATE TABLE __mock_table_tas_2024 (github_id VARCHAR, office_hour VARCHAR);
-
-statement ok
-INSERT INTO __mock_table_tas_2024 VALUES
-    ('AlSchlo', 'Friday'),
-    ('walkingcabbages', 'Thursday'),
-    ('averyqi115', 'Friday'),
-    ('lanlou1554', 'Wednesday'),
-    ('sweetsuro', 'Thursday'),
-    ('ChaosZhai', 'Yesterday'),
-    ('SDTheSlayer', 'Monday'),
-    ('xx01cyx', 'Tuesday'),
-    ('yliang412', 'Tuesday'),
-    ('thelongmarch-azx', 'Monday');
+include fixtures.slt.inc
 
 # How many TAs are there in 2024 Spring?
 query I

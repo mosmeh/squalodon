@@ -1,10 +1,10 @@
 # LengthTest
 
 statement ok
-CREATE TABLE foo (id INTEGER, name VARCHAR);
+CREATE TABLE foo(id integer, name varchar);
 
 statement ok
-INSERT INTO foo VALUES
+insert into foo values
     (0, 'a'),
     (1, 'aa'),
     (2, 'aaa'),
@@ -39,7 +39,7 @@ INSERT INTO foo VALUES
     (31, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
 
 query I
-SELECT length(name) FROM foo;
+select length(name) from foo;
 ----
 1
 2

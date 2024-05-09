@@ -1,46 +1,37 @@
 # EmptyTableTest
 
 statement ok
-CREATE TABLE xxx (a INT PRIMARY KEY, b INT);
+CREATE TABLE xxx(a INT PRIMARY KEY, b INT);
 
 query I
-SELECT min(b) FROM xxx;
+SELECT MIN(b) FROM xxx;
 ----
 NULL
 
 query I
-SELECT max(b) FROM xxx;
+SELECT MAX(b) FROM xxx;
 ----
 NULL
 
 query R
-SELECT avg(b) FROM xxx;
+SELECT AVG(b) FROM xxx;
 ----
 NULL
 
 query I
-SELECT sum(b) FROM xxx;
+SELECT SUM(b) FROM xxx;
 ----
 NULL
 
 query I
-SELECT count(b) FROM xxx;
+SELECT COUNT(b) FROM xxx;
 ----
 0
 
 # MinMaxTest
 
 statement ok
-CREATE TABLE test (
-    a INT PRIMARY KEY,
-    b SMALLINT,
-    c INT,
-    d BIGINT,
-    e DECIMAL,
-    f REAL,
-    g VARCHAR,
-    h TEXT
-);
+CREATE TABLE test(a INT PRIMARY KEY, b SMALLINT, c INT, d BIGINT, e DECIMAL, f REAL, g VARCHAR, h TEXT);
 
 statement ok
 INSERT INTO test VALUES
@@ -50,71 +41,71 @@ INSERT INTO test VALUES
     (3, 3, 3, 3, 3.0, 3.0, '33', '2016-12-06 00:00:03-04');
 
 query I
-SELECT min(b) FROM test;
+SELECT min(b) from test;
 ----
 1
 
 query I
-SELECT max(b) FROM test;
+SELECT max(b) from test;
 ----
 4
 
 query I
-SELECT min(a) FROM test;
+SELECT min(a) from test;
 ----
 1
 
 query I
-SELECT max(a) FROM test;
+SELECT max(a) from test;
 ----
 4
 
 query I
-SELECT min(d) FROM test;
+SELECT min(d) from test;
 ----
 1
 
 query I
-SELECT max(d) FROM test;
+SELECT max(d) from test;
 ----
 4
 
 query R
-SELECT CAST(min(e) AS REAL) FROM test;
+SELECT cast(min(e) as real) from test;
 ----
 1
 
 query R
-SELECT CAST(max(e) AS REAL) FROM test;
+SELECT cast(max(e) as real) from test;
 ----
 4
 
 query R
-SELECT min(f) FROM test;
+SELECT min(f) from test;
 ----
 1
 
 query R
-SELECT max(f) FROM test;
+SELECT max(f) from test;
 ----
 4
 
 query T
-SELECT min(g) FROM test;
+SELECT min(g) from test;
 ----
 15
 
 query T
-SELECT max(g) FROM test;
+SELECT max(g) from test;
 ----
 41
 
 query T
-SELECT min(h) FROM test;
+SELECT min(h) from test;
 ----
 2016-12-06 00:00:01-04
 
 query T
-SELECT max(h) FROM test;
+SELECT max(h) from test;
 ----
 2016-12-06 00:00:04-04

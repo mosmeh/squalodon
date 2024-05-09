@@ -1,13 +1,7 @@
-statement ok
-CREATE TABLE test (a INT PRIMARY KEY, b INT, c INT, d VARCHAR);
-
-statement ok
-INSERT INTO test VALUES
-    (1, 22, 333, 'abcd'),
-    (2, 22, 333, 'abc'),
-    (3, 11, 222, 'abcd');
-
 # DistinctIntTest
+
+include fixtures/distinct.slt.inc
+
 query I rowsort
 SELECT DISTINCT b FROM test;
 ----
@@ -15,6 +9,9 @@ SELECT DISTINCT b FROM test;
 22
 
 # DistinctVarcharTest
+
+include fixtures/distinct.slt.inc
+
 query T rowsort
 SELECT DISTINCT d FROM test;
 ----
@@ -22,6 +19,9 @@ abc
 abcd
 
 # DistinctTupleTest
+
+include fixtures/distinct.slt.inc
+
 query II rowsort
 SELECT DISTINCT b, c FROM test;
 ----
@@ -31,15 +31,10 @@ SELECT DISTINCT b, c FROM test;
 # DistinctStarTest
 
 statement ok
-DROP TABLE test;
+DROP TABLE IF EXISTS test;
 
 statement ok
-CREATE TABLE test (
-    a INT,
-    b INT,
-    c INT,
-    d VARCHAR
-);
+CREATE TABLE test(a INT, b INT, c INT, d VARCHAR);
 
 statement ok
 INSERT INTO test VALUES
@@ -56,7 +51,7 @@ SELECT DISTINCT * FROM test;
 # DistinctDateTimeTest
 
 statement ok
-DROP TABLE test;
+DROP TABLE IF EXISTS test;
 
 statement ok
 CREATE TABLE test(a INT, b TEXT);
