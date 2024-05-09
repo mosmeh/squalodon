@@ -1,3 +1,20 @@
+# PerformanceTest
+
+statement ok
+CREATE TABLE test(a INT PRIMARY KEY, b INT, c INT, d INT, e TEXT);
+
+statement ok
+CREATE INDEX idx_order ON test (b,c);
+
+statement ok
+INSERT INTO test SELECT i, 1, (random() + 1) * 50, i, '2016-12-06 00:00:02-04' FROM generate_series(0, 99) as s (i);
+
+statement ok
+SELECT c from test WHERE b=1 ORDER BY c LIMIT 10;
+
+statement ok
+SELECT c from test WHERE b=1 ORDER BY c;
+
 # OrderByWithColumnsTest
 
 include fixtures/order_by.slt.inc

@@ -283,6 +283,15 @@ fn string() -> impl Iterator<Item = ScalarFunction> {
             }),
         },
         ScalarFunction {
+            name: "repeat",
+            argument_types: &[Type::Text, Type::Integer],
+            return_type: Type::Text.into(),
+            eval: BoxedScalarFn::pure(|(s, n): (String, i64)| {
+                let n = n.try_into().map_err(|_| ExecutorError::OutOfRange)?;
+                Ok(s.repeat(n))
+            }),
+        },
+        ScalarFunction {
             name: "replace",
             argument_types: &[Type::Text, Type::Text, Type::Text],
             return_type: Type::Text.into(),

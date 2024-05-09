@@ -1,0 +1,26 @@
+statement ok
+CREATE VIEW __mock_t1 (x, y, z) AS
+SELECT i / 10000, i % 10000, i FROM generate_series(0, 999999) s (i);
+
+statement ok
+create table t1(x int, y int, z int);
+
+statement ok
+create index t1xy on t1(x, y);
+
+statement ok
+INSERT INTO t1 SELECT * FROM __mock_t1;
+
+query III rowsort
+select * from t1 where x >= 90 and y = 10;
+----
+90 10 900010
+91 10 910010
+92 10 920010
+93 10 930010
+94 10 940010
+95 10 950010
+96 10 960010
+97 10 970010
+98 10 980010
+99 10 990010

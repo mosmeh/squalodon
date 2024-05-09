@@ -146,6 +146,28 @@ INSERT INTO __mock_table_schedule VALUES
     ('Sunday', 0);
 
 statement ok
+DROP TABLE IF EXISTS __mock_agg_input_small;
+
+statement ok
+CREATE TABLE __mock_agg_input_small (v1 INTEGER, v2 INTEGER, v3 INTEGER, v4 INTEGER, v5 INTEGER, v6 VARCHAR);
+
+statement ok
+INSERT INTO __mock_agg_input_small
+SELECT (i + 2) % 10, i, (i + 50) % 100, i / 100, 233, repeat('💩', (i % 8) + 1)
+FROM generate_series(0, 999) as s (i);
+
+statement ok
+DROP TABLE IF EXISTS __mock_agg_input_big;
+
+statement ok
+CREATE TABLE __mock_agg_input_big (v1 INTEGER, v2 INTEGER, v3 INTEGER, v4 INTEGER, v5 INTEGER, v6 VARCHAR);
+
+statement ok
+INSERT INTO __mock_agg_input_big
+SELECT (i + 2) % 10, i, (i + 50) % 100, i / 1000, 233, repeat('💩', (i % 16) + 1)
+FROM generate_series(0, 9999) as s (i);
+
+statement ok
 DROP TABLE IF EXISTS __mock_graph;
 
 statement ok

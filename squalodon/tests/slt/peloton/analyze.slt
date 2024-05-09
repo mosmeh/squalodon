@@ -1,0 +1,17 @@
+# AnalyzeAllTablesTest
+
+include fixtures/analyze.slt.inc
+
+statement ok
+ANALYZE;
+
+# AnalyzeSingleTableTest
+
+include fixtures/analyze.slt.inc
+
+statement ok
+ANALYZE test;
+
+# AnalyzeTableWithColumnsTest
+#statement ok
+#ANALYZE test (a);

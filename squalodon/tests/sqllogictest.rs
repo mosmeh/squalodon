@@ -5,8 +5,15 @@ use sqllogictest::{
 use squalodon::{storage::Memory, Error, Type};
 
 fn main() {
-    let paths = harness::glob("tests/slt/**/*.slt").expect("failed to find test files");
-    let tests: Vec<_> = paths
+    let mut tests = collect_tests("tests/slt/**/*.slt", false);
+    tests.append(&mut collect_tests("tests/slt/**/*.slt.slow", true));
+    assert!(!tests.is_empty(), "no sqllogictest found");
+    harness::run(&Arguments::from_args(), tests).exit()
+}
+
+fn collect_tests(pattern: &str, ignored: bool) -> Vec<Trial> {
+    harness::glob(pattern)
+        .expect("failed to find test files")
         .map(|entry| {
             let path = entry.expect("failed to read glob entry");
             let name = path.display().to_string();
@@ -16,10 +23,9 @@ fn main() {
                 tester.run_file(&path)?;
                 Ok(())
             })
+            .with_ignored_flag(ignored)
         })
-        .collect();
-    assert!(!tests.is_empty(), "no sqllogictest found");
-    harness::run(&Arguments::from_args(), tests).exit()
+        .collect()
 }
 
 #[derive(Default)]
