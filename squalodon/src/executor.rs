@@ -238,6 +238,7 @@ impl<'a> ExecutorNode<'a> {
             PlanNode::CreateTable(plan) => Self::create_table(ctx, plan),
             PlanNode::CreateIndex(plan) => Self::create_index(plan),
             PlanNode::CreateSequence(plan) => Self::create_sequence(ctx, plan),
+            PlanNode::CreateView(plan) => Self::create_view(ctx, plan),
             PlanNode::Drop(plan) => Self::drop_object(ctx, plan),
             PlanNode::Truncate(plan) => Self::truncate(plan),
             PlanNode::Analyze(plan) => Self::analyze(ctx, plan),

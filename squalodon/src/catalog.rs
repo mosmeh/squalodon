@@ -2,6 +2,7 @@ mod function;
 mod index;
 mod sequence;
 mod table;
+mod view;
 
 pub use function::{
     AggregateFunction, AggregateInitFnPtr, Aggregator, BoxedScalarFn, BoxedTableFn, Function,
@@ -10,6 +11,7 @@ pub use function::{
 pub use index::Index;
 pub use sequence::Sequence;
 pub use table::{Column, Table};
+pub use view::View;
 
 use crate::{
     builtin,
@@ -44,6 +46,7 @@ pub enum CatalogEntryKind {
     Table,
     Index,
     Sequence,
+    View,
     ScalarFunction,
     AggregateFunction,
     TableFunction,
@@ -56,6 +59,7 @@ impl std::fmt::Display for CatalogEntryKind {
             Self::Table => "table",
             Self::Index => "index",
             Self::Sequence => "sequence",
+            Self::View => "view",
             Self::ScalarFunction => "scalar function",
             Self::AggregateFunction => "aggregate function",
             Self::TableFunction => "table function",

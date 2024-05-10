@@ -2,8 +2,8 @@ use super::{ExecutionContext, ExecutorNode, ExecutorResult};
 use crate::{
     catalog, parser,
     planner::{
-        Analyze, Constraint, CreateIndex, CreateSequence, CreateTable, DropObject, Reindex,
-        Truncate,
+        Analyze, Constraint, CreateIndex, CreateSequence, CreateTable, CreateView, DropObject,
+        Reindex, Truncate,
     },
     rows::ColumnIndex,
     CatalogError, Type,
@@ -107,6 +107,16 @@ impl ExecutorNode<'_> {
         Ok(Self::empty_result())
     }
 
+    pub fn create_view(ctx: &ExecutionContext, plan: CreateView) -> ExecutorResult<Self> {
+        let CreateView(parser::CreateView {
+            name,
+            column_names,
+            query,
+        }) = plan;
+        ctx.catalog().create_view(&name, column_names, *query)?;
+        Ok(Self::empty_result())
+    }
+
     pub fn drop_object(ctx: &ExecutionContext, plan: DropObject) -> ExecutorResult<Self> {
         match plan {
             DropObject::Table(tables) => {
@@ -141,6 +151,11 @@ impl ExecutorNode<'_> {
                 // Remove only after al the sequences are successfully dropped
                 for name in names {
                     ctx.local().borrow_mut().sequence_values.remove(&name);
+                }
+            }
+            DropObject::View(views) => {
+                for view in views {
+                    view.drop_it()?;
                 }
             }
         }

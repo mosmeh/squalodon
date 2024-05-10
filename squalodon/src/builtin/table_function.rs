@@ -154,6 +154,30 @@ pub fn load() -> impl Iterator<Item = TableFunction> {
                 Ok(rows.into_iter())
             }),
         },
+        TableFunction {
+            name: "squalodon_views",
+            argument_types: &[],
+            result_columns: vec![
+                Column::new("name", Type::Text),
+                Column::new("columns", Type::Text),
+                Column::new("sql", Type::Text),
+            ],
+            eval: BoxedTableFn::new(|ctx, ()| {
+                let mut rows = Vec::new();
+                for view in ctx.catalog().views() {
+                    let view = view?;
+                    rows.push(Row::new(vec![
+                        view.name().into(),
+                        view.column_names()
+                            .map(|names| names.join(", "))
+                            .unwrap_or_default()
+                            .into(),
+                        view.query().to_string().into(),
+                    ]));
+                }
+                Ok(rows.into_iter())
+            }),
+        },
     ]
     .into_iter()
 }

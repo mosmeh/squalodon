@@ -1,4 +1,4 @@
-use super::{Parser, ParserResult, Statement};
+use super::{Parser, ParserResult, Query, Statement};
 use crate::{catalog::Column, lexer::Token, ParserError};
 
 #[derive(Debug, Clone)]
@@ -35,6 +35,13 @@ pub struct CreateSequence {
 }
 
 #[derive(Debug, Clone)]
+pub struct CreateView {
+    pub name: String,
+    pub column_names: Option<Vec<String>>,
+    pub query: Box<Query>,
+}
+
+#[derive(Debug, Clone)]
 pub struct DropObject {
     pub names: Vec<String>,
     pub kind: ObjectKind,
@@ -46,6 +53,7 @@ pub enum ObjectKind {
     Table,
     Index,
     Sequence,
+    View,
 }
 
 impl std::fmt::Display for ObjectKind {
@@ -54,6 +62,7 @@ impl std::fmt::Display for ObjectKind {
             Self::Table => "TABLE",
             Self::Index => "INDEX",
             Self::Sequence => "SEQUENCE",
+            Self::View => "VIEW",
         })
     }
 }
@@ -76,6 +85,7 @@ impl Parser<'_> {
             Token::Table => self.parse_create_table().map(Statement::CreateTable),
             Token::Index | Token::Unique => self.parse_create_index().map(Statement::CreateIndex),
             Token::Sequence => self.parse_create_sequence().map(Statement::CreateSequence),
+            Token::View => self.parse_create_view().map(Statement::CreateView),
             token => Err(ParserError::unexpected(token)),
         }
     }
@@ -256,6 +266,27 @@ impl Parser<'_> {
         })
     }
 
+    fn parse_create_view(&mut self) -> ParserResult<CreateView> {
+        self.expect(Token::View)?;
+        let name = self.expect_identifier()?;
+        let column_names = self
+            .lexer
+            .consume_if_eq(Token::LeftParen)?
+            .then(|| -> ParserResult<_> {
+                let column_names = self.parse_comma_separated(Self::expect_identifier)?;
+                self.expect(Token::RightParen)?;
+                Ok(column_names)
+            })
+            .transpose()?;
+        self.expect(Token::As)?;
+        let query = self.parse_query()?;
+        Ok(CreateView {
+            name,
+            column_names,
+            query: Box::new(query),
+        })
+    }
+
     pub fn parse_drop(&mut self) -> ParserResult<DropObject> {
         self.expect(Token::Drop)?;
         let kind = if self.lexer.consume_if_eq(Token::Table)? {
@@ -264,6 +295,8 @@ impl Parser<'_> {
             ObjectKind::Index
         } else if self.lexer.consume_if_eq(Token::Sequence)? {
             ObjectKind::Sequence
+        } else if self.lexer.consume_if_eq(Token::View)? {
+            ObjectKind::View
         } else {
             return Err(ParserError::unexpected(self.lexer.peek()?));
         };

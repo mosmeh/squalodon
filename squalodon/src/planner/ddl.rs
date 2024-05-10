@@ -3,7 +3,7 @@ use super::{
     PlannerError, PlannerResult,
 };
 use crate::{
-    catalog::{self, CatalogResult, Index, Sequence, Table},
+    catalog::{self, CatalogResult, Index, Sequence, Table, View},
     parser,
     rows::ColumnIndex,
     CatalogError,
@@ -108,10 +108,37 @@ impl Node for CreateSequence {
 }
 
 #[derive(Clone)]
+pub struct CreateView(pub parser::CreateView);
+
+impl Node for CreateView {
+    fn fmt_explain(&self, f: &ExplainFormatter) {
+        let mut node = f.node("CreateView");
+        node.field("name", &self.0.name);
+        if let Some(column_names) = &self.0.column_names {
+            for column_name in column_names {
+                node.field("column", column_name);
+            }
+        }
+        node.field("query", &self.0.query);
+    }
+
+    fn append_outputs(&self, _: &mut Vec<ColumnId>) {}
+
+    fn num_rows(&self) -> usize {
+        0
+    }
+
+    fn cost(&self) -> f64 {
+        PlanNode::DEFAULT_COST
+    }
+}
+
+#[derive(Clone)]
 pub enum DropObject<'a> {
     Table(Vec<Table<'a>>),
     Index(Vec<Index<'a>>),
     Sequence(Vec<Sequence<'a>>),
+    View(Vec<View<'a>>),
 }
 
 impl Node for DropObject<'_> {
@@ -131,6 +158,11 @@ impl Node for DropObject<'_> {
             Self::Sequence(sequences) => {
                 for sequence in sequences {
                     node.field("sequence", sequence.name());
+                }
+            }
+            Self::View(views) => {
+                for view in views {
+                    node.field("view", view.name());
                 }
             }
         }
@@ -240,6 +272,10 @@ impl<'a> PlanNode<'a> {
 
     fn new_create_sequence(sequence: CreateSequence) -> Self {
         Self::CreateSequence(sequence)
+    }
+
+    fn new_create_view(create_view: CreateView) -> Self {
+        Self::CreateView(create_view)
     }
 
     fn new_drop(drop_object: DropObject<'a>) -> Self {
@@ -367,6 +403,29 @@ impl<'a> Planner<'a> {
         }))
     }
 
+    pub fn plan_create_view(&self, create_view: parser::CreateView) -> PlannerResult<PlanNode<'a>> {
+        let plan = self.plan_query((*create_view.query).clone())?;
+
+        if let Some(column_names) = &create_view.column_names {
+            let expected = plan.outputs().len();
+            if column_names.len() != expected {
+                return Err(PlannerError::ColumnCountMismatch {
+                    expected,
+                    actual: column_names.len(),
+                });
+            }
+
+            let mut dedup_set = HashSet::new();
+            for column_name in column_names {
+                if !dedup_set.insert(column_name) {
+                    return Err(PlannerError::DuplicateColumn(column_name.clone()));
+                }
+            }
+        }
+
+        Ok(PlanNode::new_create_view(CreateView(create_view)))
+    }
+
     pub fn plan_drop(&self, drop_object: parser::DropObject) -> PlannerResult<PlanNode<'a>> {
         let result = match drop_object.kind {
             parser::ObjectKind::Table => drop_object
@@ -387,6 +446,12 @@ impl<'a> Planner<'a> {
                 .map(|name| self.catalog.sequence(name))
                 .collect::<CatalogResult<Vec<_>>>()
                 .map(DropObject::Sequence),
+            parser::ObjectKind::View => drop_object
+                .names
+                .iter()
+                .map(|name| self.catalog.view(name))
+                .collect::<CatalogResult<Vec<_>>>()
+                .map(DropObject::View),
         };
         match result {
             Ok(drop_object) => Ok(PlanNode::new_drop(drop_object)),

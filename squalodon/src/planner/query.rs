@@ -188,9 +188,7 @@ impl<'a> Planner<'a> {
         table_ref: parser::TableRef,
     ) -> PlannerResult<PlanNode<'a>> {
         let plan = match table_ref.kind {
-            parser::TableRefKind::BaseTable { name } => {
-                self.plan_base_table(self.catalog.table(&name)?)
-            }
+            parser::TableRefKind::BaseTable { name } => self.plan_base_table(&name)?,
             parser::TableRefKind::Join(join) => self.plan_join(expr_binder, *join)?,
             parser::TableRefKind::Subquery(query) => self.plan_query(*query)?,
             parser::TableRefKind::Function { name, args } => {

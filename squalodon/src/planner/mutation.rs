@@ -197,7 +197,7 @@ impl<'a> Planner<'a> {
         let table = self.catalog.table(&update.table_name)?;
         let expr_binder = ExpressionBinder::new(self);
 
-        let mut plan = self.plan_base_table(table.clone());
+        let mut plan = self.plan_base_table(&update.table_name)?;
         if let Some(where_clause) = update.where_clause {
             plan = self.plan_filter(&expr_binder, plan, where_clause)?;
         }
@@ -241,7 +241,8 @@ impl<'a> Planner<'a> {
 
     pub fn plan_delete(&self, delete: parser::Delete) -> PlannerResult<PlanNode<'a>> {
         let table = self.catalog.table(&delete.table_name)?;
-        let mut plan = self.plan_base_table(table.clone());
+
+        let mut plan = self.plan_base_table(&delete.table_name)?;
         if let Some(where_clause) = delete.where_clause {
             plan = self.plan_filter(&ExpressionBinder::new(self), plan, where_clause)?;
         }

@@ -4,7 +4,8 @@ mod mutation;
 mod query;
 
 pub use ddl::{
-    Analyze, Constraint, CreateIndex, CreateSequence, CreateTable, DropObject, ObjectKind, Reindex,
+    Analyze, Constraint, CreateIndex, CreateSequence, CreateTable, CreateView, DropObject,
+    ObjectKind, Reindex,
 };
 pub use expression::{BinaryOp, ColumnRef, Expression, FunctionArgs, FunctionCall, UnaryOp};
 pub use mutation::{Delete, Insert, Update};
@@ -51,6 +52,7 @@ pub enum Statement {
     CreateTable(CreateTable),
     CreateIndex(CreateIndex),
     CreateSequence(CreateSequence),
+    CreateView(CreateView),
     Drop(DropObject),
     Truncate(Vec<String>),
     Analyze(Analyze),

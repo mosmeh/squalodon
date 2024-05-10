@@ -16,7 +16,8 @@ mod union;
 pub use aggregate::{Aggregate, AggregateOp, ApplyAggregateOp};
 pub use column::{Column, ColumnId, ColumnMap};
 pub use ddl::{
-    Analyze, Constraint, CreateIndex, CreateSequence, CreateTable, DropObject, Reindex, Truncate,
+    Analyze, Constraint, CreateIndex, CreateSequence, CreateTable, CreateView, DropObject, Reindex,
+    Truncate,
 };
 pub use explain::Explain;
 pub use expression::{CaseBranch, ExecutableExpression, Expression, PlanExpression};
@@ -191,6 +192,7 @@ nodes! {
     CreateTable: CreateTable
     CreateIndex: CreateIndex<'a>
     CreateSequence: CreateSequence
+    CreateView: CreateView
     Drop: DropObject<'a>
     Truncate: Truncate<'a>
     Analyze: Analyze<'a>
@@ -342,6 +344,7 @@ impl<'a> Planner<'a> {
             parser::Statement::CreateSequence(create_sequence) => {
                 self.plan_create_sequence(create_sequence)
             }
+            parser::Statement::CreateView(create_view) => self.plan_create_view(create_view),
             parser::Statement::Drop(drop_object) => self.plan_drop(drop_object),
             parser::Statement::Truncate(table_names) => self.plan_truncate(&table_names),
             parser::Statement::Analyze(analyze) => self.plan_analyze(analyze),

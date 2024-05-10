@@ -8,7 +8,7 @@ use crate::{
     parser,
     planner::expression::TypedExpression,
     types::NullableType,
-    PlannerError, Value,
+    CatalogError, PlannerError, Value,
 };
 use std::ops::Bound;
 
@@ -224,8 +224,26 @@ impl<'a> PlanNode<'a> {
 }
 
 impl<'a> Planner<'a> {
-    pub fn plan_base_table(&self, table: Table<'a>) -> PlanNode<'a> {
-        PlanNode::new_table_scan(&mut self.column_map_mut(), table)
+    pub fn plan_base_table(&self, name: &str) -> PlannerResult<PlanNode<'a>> {
+        match self.catalog.view(name) {
+            Ok(view) => {
+                let plan = self.plan_query(view.query().clone())?;
+                if let Some(column_names) = view.column_names() {
+                    let mut column_map = self.column_map_mut();
+                    for (id, column_name) in plan.outputs().into_iter().zip(column_names) {
+                        let column = &mut column_map[id];
+                        column.set_table_alias(name.to_owned());
+                        column.set_column_alias(column_name);
+                    }
+                }
+                return Ok(plan);
+            }
+            Err(CatalogError::UnknownEntry(_, _)) => (),
+            Err(e) => return Err(e.into()),
+        }
+
+        let table = self.catalog.table(name)?;
+        Ok(PlanNode::new_table_scan(&mut self.column_map_mut(), table))
     }
 
     pub fn plan_table_function(

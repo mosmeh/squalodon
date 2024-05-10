@@ -183,6 +183,7 @@ keywords! {
     Using
     Values
     VarChar
+    View
     When
     Where
     With
