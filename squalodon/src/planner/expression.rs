@@ -58,7 +58,13 @@ impl std::fmt::Display for ExpressionDisplay<'_, '_> {
             Self::Constant(value) => std::fmt::Debug::fmt(value, f),
             Self::ColumnRef(c) => c.fmt(f),
             Self::Cast { expr, ty } => write!(f, "CAST({expr} AS {ty})"),
-            Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
+            Self::UnaryOp { op, expr } => {
+                if op.is_prefix() {
+                    write!(f, "({op} {expr})")
+                } else {
+                    write!(f, "({expr} {op})")
+                }
+            }
             Self::BinaryOp { op, lhs, rhs } => {
                 write!(f, "({lhs} {op} {rhs})")
             }
@@ -401,12 +407,18 @@ impl<'a> TypedExpression<'a> {
 
     fn unary_op(self, op: UnaryOp) -> PlannerResult<Self> {
         let ty = match (op, self.ty) {
-            (UnaryOp::Not, _) => NullableType::NonNull(Type::Boolean),
+            (UnaryOp::Not | UnaryOp::IsNull, _)
+            | (
+                UnaryOp::IsTrue | UnaryOp::IsFalse,
+                NullableType::Null | NullableType::NonNull(Type::Boolean),
+            ) => Type::Boolean.into(),
             (UnaryOp::Plus | UnaryOp::Minus, NullableType::Null) => NullableType::Null,
             (UnaryOp::Plus | UnaryOp::Minus, NullableType::NonNull(ty)) if ty.is_numeric() => {
                 ty.into()
             }
-            _ => return Err(PlannerError::TypeError),
+            _ => {
+                return Err(PlannerError::TypeError);
+            }
         };
         Ok(self.expr.unary_op(op).into_typed(ty))
     }

@@ -41,7 +41,13 @@ impl std::fmt::Display for Expression {
             Self::Constant(value) => std::fmt::Debug::fmt(value, f),
             Self::ColumnRef(column_ref) => column_ref.fmt(f),
             Self::Cast { expr, ty } => write!(f, "CAST({expr} AS {ty})"),
-            Self::UnaryOp { op, expr } => write!(f, "({op} {expr})"),
+            Self::UnaryOp { op, expr } => {
+                if op.is_prefix() {
+                    write!(f, "({op} {expr})")
+                } else {
+                    write!(f, "({expr} {op})")
+                }
+            }
             Self::BinaryOp { op, lhs, rhs } => write!(f, "({lhs} {op} {rhs})"),
             Self::Case {
                 branches,
@@ -69,6 +75,23 @@ impl std::fmt::Display for Expression {
             Self::ScalarSubquery(query) => write!(f, "({query})"),
             Self::Exists(query) => write!(f, "EXISTS ({query})"),
             Self::Parameter(i) => write!(f, "${i}"),
+        }
+    }
+}
+
+impl Expression {
+    fn unary_op(self, op: UnaryOp) -> Self {
+        Self::UnaryOp {
+            op,
+            expr: self.into(),
+        }
+    }
+
+    fn binary_op(self, op: BinaryOp, other: Self) -> Self {
+        Self::BinaryOp {
+            op,
+            lhs: self.into(),
+            rhs: other.into(),
         }
     }
 }
@@ -104,11 +127,38 @@ impl ColumnRef {
     }
 }
 
+/*
+Operator Precedence
+https://www.postgresql.org/docs/16/sql-syntax-lexical.html#SQL-PRECEDENCE
+
+|    | Operator/Element              | Associativity | Description                                        | Implemented |
+|----|-------------------------------|---------------|----------------------------------------------------|------------ |
+| 16 | .                             | left          | table/column name separator                        | Yes         |
+| 15 | ::                            | left          | PostgreSQL-style typecast                          |             |
+| 14 | [ ]                           | left          | array element selection                            |             |
+| 13 | + -                           | right         | unary plus, unary minus                            | Yes         |
+| 12 | COLLATE                       | left          | collation selection                                |             |
+| 11 | AT                            | left          | AT TIME ZONE                                       |             |
+| 10 | ^                             | left          | exponentiation                                     |             |
+|  9 | * / %                         | left          | multiplication, division, modulo                   | Yes         |
+|  8 | + -                           | left          | addition, subtraction                              | Yes         |
+|  7 | (any other operator)          | left          | all other native and user-defined operators        | Partially   |
+|  6 | BETWEEN IN LIKE ILIKE SIMILAR |               | range containment, set membership, string matching | Partially   |
+|  5 | < > = <= >= <>                |               | comparison operators                               | Yes         |
+|  4 | IS ISNULL NOTNULL             |               | IS TRUE, IS FALSE, IS NULL, IS DISTINCT FROM, etc. | Partially   |
+|  3 | NOT                           | right         | logical negation                                   | Yes         |
+|  2 | AND                           | left          | logical conjunction                                | Yes         |
+|  1 | OR                            | left          | logical disjunction                                | Yes         |
+ */
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UnaryOp {
     Plus,
     Minus,
     Not,
+    IsNull,
+    IsTrue,
+    IsFalse,
 }
 
 impl std::fmt::Display for UnaryOp {
@@ -117,27 +167,30 @@ impl std::fmt::Display for UnaryOp {
             Self::Plus => "+",
             Self::Minus => "-",
             Self::Not => "NOT",
+            Self::IsNull => "IS NULL",
+            Self::IsTrue => "IS TRUE",
+            Self::IsFalse => "IS FALSE",
         })
     }
 }
 
 impl UnaryOp {
-    fn from_token(token: &Token) -> Option<Self> {
-        Some(match token {
-            Token::Plus => Self::Plus,
-            Token::Minus => Self::Minus,
-            Token::Not => Self::Not,
-            _ => return None,
-        })
+    pub fn is_prefix(self) -> bool {
+        matches!(self, Self::Plus | Self::Minus | Self::Not)
     }
 
-    fn priority(self) -> usize {
-        // https://www.sqlite.org/lang_expr.html#operators_and_parse_affecting_attributes
+    const fn precedence(self) -> usize {
         match self {
-            Self::Plus | Self::Minus => 9,
+            Self::Plus | Self::Minus => 13,
+            Self::IsNull | Self::IsTrue | Self::IsFalse => 4,
             Self::Not => 3,
         }
     }
+}
+
+struct PostfixOp {
+    op: UnaryOp,
+    not: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -180,34 +233,12 @@ impl std::fmt::Display for BinaryOp {
 }
 
 impl BinaryOp {
-    fn from_token(token: &Token) -> Option<Self> {
-        Some(match token {
-            Token::And => Self::And,
-            Token::Or => Self::Or,
-            Token::Percent => Self::Mod,
-            Token::Asterisk => Self::Mul,
-            Token::Plus => Self::Add,
-            Token::Minus => Self::Sub,
-            Token::Slash => Self::Div,
-            Token::Lt => Self::Lt,
-            Token::Eq => Self::Eq,
-            Token::Gt => Self::Gt,
-            Token::Ne => Self::Ne,
-            Token::Le => Self::Le,
-            Token::Ge => Self::Ge,
-            Token::PipePipe => Self::Concat,
-            _ => return None,
-        })
-    }
-
-    const fn priority(self) -> usize {
-        // https://www.sqlite.org/lang_expr.html#operators_and_parse_affecting_attributes
+    const fn precedence(self) -> usize {
         match self {
-            Self::Concat => 8,
-            Self::Mul | Self::Div | Self::Mod => 7,
-            Self::Add | Self::Sub => 6,
-            Self::Lt | Self::Le | Self::Gt | Self::Ge => 5,
-            Self::Eq | Self::Ne => 4,
+            Self::Mul | Self::Div | Self::Mod => 9,
+            Self::Add | Self::Sub => 8,
+            Self::Concat => 7,
+            Self::Eq | Self::Ne | Self::Lt | Self::Le | Self::Gt | Self::Ge => 5,
             Self::And => 2,
             Self::Or => 1,
         }
@@ -220,11 +251,10 @@ enum InfixOp {
 }
 
 impl InfixOp {
-    fn priority(&self) -> usize {
-        // https://www.sqlite.org/lang_expr.html#operators_and_parse_affecting_attributes
+    const fn precedence(&self) -> usize {
         match self {
-            Self::Binary(op) => op.priority(),
-            Self::Like { .. } => 4,
+            Self::Binary(op) => op.precedence(),
+            Self::Like { .. } => 6,
         }
     }
 }
@@ -287,31 +317,24 @@ impl Parser<'_> {
         self.parse_sub_expr(0)
     }
 
-    fn parse_sub_expr(&mut self, min_priority: usize) -> ParserResult<Expression> {
-        let mut expr = match UnaryOp::from_token(self.lexer.peek()?) {
-            Some(op) => {
-                self.lexer.consume()?;
-                let expr = self.parse_sub_expr(op.priority())?;
-                Expression::UnaryOp {
-                    op,
-                    expr: expr.into(),
-                }
-            }
+    fn parse_sub_expr(&mut self, min_precedence: usize) -> ParserResult<Expression> {
+        let mut expr = match self.try_parse_prefix_op()? {
+            Some(op) => self.parse_sub_expr(op.precedence())?.unary_op(op),
             None => self.parse_atom()?,
         };
         loop {
-            let Some(op) = self.try_parse_infix_op(min_priority)? else {
+            if let Some(PostfixOp { op, not }) = self.try_parse_postfix_op(min_precedence)? {
+                expr = expr.unary_op(op);
+                if not {
+                    expr = expr.unary_op(UnaryOp::Not);
+                }
+            }
+            let Some(op) = self.try_parse_infix_op(min_precedence)? else {
                 break;
             };
-            let rhs = self.parse_sub_expr(op.priority())?;
+            let rhs = self.parse_sub_expr(op.precedence())?;
             match op {
-                InfixOp::Binary(op) => {
-                    expr = Expression::BinaryOp {
-                        op,
-                        lhs: expr.into(),
-                        rhs: rhs.into(),
-                    };
-                }
+                InfixOp::Binary(op) => expr = expr.binary_op(op, rhs),
                 InfixOp::Like {
                     case_insensitive,
                     not,
@@ -322,10 +345,7 @@ impl Parser<'_> {
                         case_insensitive,
                     };
                     if not {
-                        expr = Expression::UnaryOp {
-                            op: UnaryOp::Not,
-                            expr: expr.into(),
-                        };
+                        expr = expr.unary_op(UnaryOp::Not);
                     }
                 }
             }
@@ -333,7 +353,46 @@ impl Parser<'_> {
         Ok(expr)
     }
 
-    fn try_parse_infix_op(&mut self, min_priority: usize) -> ParserResult<Option<InfixOp>> {
+    fn try_parse_prefix_op(&mut self) -> ParserResult<Option<UnaryOp>> {
+        let op = match self.lexer.peek()? {
+            Token::Plus => UnaryOp::Plus,
+            Token::Minus => UnaryOp::Minus,
+            Token::Not => UnaryOp::Not,
+            _ => return Ok(None),
+        };
+        self.lexer.consume()?;
+        Ok(Some(op))
+    }
+
+    fn try_parse_postfix_op(&mut self, min_precedence: usize) -> ParserResult<Option<PostfixOp>> {
+        if *self.lexer.peek()? != Token::Is {
+            return Ok(None);
+        }
+        let not = *self.lexer.lookahead(1)? == Token::Not;
+        let token = if not {
+            self.lexer.lookahead(2)? // Skip IS NOT
+        } else {
+            self.lexer.lookahead(1)? // Skip IS
+        };
+        let op = match token {
+            Token::Null => UnaryOp::IsNull,
+            Token::True => UnaryOp::IsTrue,
+            Token::False => UnaryOp::IsFalse,
+            _ if not => return Err(ParserError::unexpected(token)),
+            _ => return Ok(None),
+        };
+        if op.precedence() <= min_precedence {
+            return Ok(None);
+        }
+        self.expect(Token::Is)?;
+        if not {
+            self.expect(Token::Not)?;
+        }
+        self.lexer.consume()?;
+        Ok(Some(PostfixOp { op, not }))
+    }
+
+    fn try_parse_infix_op(&mut self, min_precedence: usize) -> ParserResult<Option<InfixOp>> {
         let not = *self.lexer.peek()? == Token::Not;
         let token = if not {
             self.lexer.lookahead(1)? // Skip NOT
@@ -350,12 +409,23 @@ impl Parser<'_> {
                 not,
             },
             token if not => return Err(ParserError::unexpected(token)),
-            token => match BinaryOp::from_token(token) {
-                Some(op) => InfixOp::Binary(op),
-                None => return Ok(None),
-            },
+            Token::And => InfixOp::Binary(BinaryOp::And),
+            Token::Or => InfixOp::Binary(BinaryOp::Or),
+            Token::Percent => InfixOp::Binary(BinaryOp::Mod),
+            Token::Asterisk => InfixOp::Binary(BinaryOp::Mul),
+            Token::Plus => InfixOp::Binary(BinaryOp::Add),
+            Token::Minus => InfixOp::Binary(BinaryOp::Sub),
+            Token::Slash => InfixOp::Binary(BinaryOp::Div),
+            Token::Lt => InfixOp::Binary(BinaryOp::Lt),
+            Token::Eq => InfixOp::Binary(BinaryOp::Eq),
+            Token::Gt => InfixOp::Binary(BinaryOp::Gt),
+            Token::Ne => InfixOp::Binary(BinaryOp::Ne),
+            Token::Le => InfixOp::Binary(BinaryOp::Le),
+            Token::Ge => InfixOp::Binary(BinaryOp::Ge),
+            Token::PipePipe => InfixOp::Binary(BinaryOp::Concat),
+            _ => return Ok(None),
         };
-        if op.priority() <= min_priority {
+        if op.precedence() <= min_precedence {
             return Ok(None);
         }
         if not {

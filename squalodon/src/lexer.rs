@@ -144,6 +144,7 @@ keywords! {
     Int
     Integer
     Into
+    Is
     Join
     Key
     Last

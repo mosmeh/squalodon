@@ -108,7 +108,13 @@ impl UnaryOp {
             (Self::Plus, Value::Real(v)) => Ok(Value::Real(*v)),
             (Self::Minus, Value::Integer(v)) => Ok(Value::Integer(-v)),
             (Self::Minus, Value::Real(v)) => Ok(Value::Real(-v)),
-            (Self::Not, Value::Boolean(v)) => Ok(Value::Boolean(!v)),
+            (Self::Not | Self::IsFalse, Value::Boolean(v)) => Ok(Value::Boolean(!v)),
+            (Self::Plus | Self::Minus | Self::Not, Value::Null) => Ok(Value::Null),
+            (Self::IsNull, Value::Null) => Ok(Value::Boolean(true)),
+            (Self::IsNull, _) | (Self::IsTrue | Self::IsFalse, Value::Null) => {
+                Ok(Value::Boolean(false))
+            }
+            (Self::IsTrue, Value::Boolean(v)) => Ok(Value::Boolean(*v)),
             _ => Err(ExecutorError::TypeError),
         }
     }

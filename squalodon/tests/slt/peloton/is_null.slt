@@ -1,0 +1,32 @@
+statement ok
+create table a(id int, value int);
+
+statement ok
+insert into a values
+    (1, 1),
+    (2, null),
+    (3, null),
+    (4, 4);
+
+# InsertNullTest
+query II
+select * from a;
+----
+1 1
+2 NULL
+3 NULL
+4 4
+
+# IsNullWhereTest
+query II
+select * from a where value is null;
+----
+2 NULL
+3 NULL
+
+# IsNotNullWhereTest
+query II
+select * from a where value is not null;
+----
+1 1
+4 4
