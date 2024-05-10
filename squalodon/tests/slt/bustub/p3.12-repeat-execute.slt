@@ -3,7 +3,7 @@ include fixtures.slt.inc
 # Put everything on the right side of NLJ
 
 statement ok
-create table t1(v1 int, v2 varchar);
+create table t1(v1 int, v2 varchar(128));
 
 statement ok
 insert into t1 values (0, '🥰'), (1, '🥰🥰');

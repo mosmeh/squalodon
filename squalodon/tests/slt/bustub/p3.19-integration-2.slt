@@ -5,15 +5,15 @@ include fixtures.slt.inc
 
 statement ok
 -- still the graph :)
-CREATE TABLE graph(src int, dst int, src_label VARCHAR, dst_label VARCHAR, distance int);
+CREATE TABLE graph(src int, dst int, src_label VARCHAR(8), dst_label VARCHAR(8), distance int);
 
 statement ok
 -- and we materialize the result
-CREATE TABLE result(src int, dst int, src_label VARCHAR, dst_label VARCHAR, distance int, steps int);
+CREATE TABLE result(src int, dst int, src_label VARCHAR(8), dst_label VARCHAR(8), distance int, steps int);
 
 statement ok
 -- temp table (as we don't support union and insert into the table selected from)
-CREATE TABLE tmp(src int, dst int, src_label VARCHAR, dst_label VARCHAR, distance int, steps int);
+CREATE TABLE tmp(src int, dst int, src_label VARCHAR(8), dst_label VARCHAR(8), distance int, steps int);
 
 statement ok
 INSERT INTO graph SELECT * FROM __mock_graph;

@@ -28,7 +28,7 @@ statement ok
 DROP TABLE IF EXISTS test3;
 
 statement ok
-CREATE TABLE test3(a INT, b CHAR, c VARCHAR);
+CREATE TABLE test3(a INT, b CHAR(4), c VARCHAR(10));
 
 statement ok
 DROP TABLE IF EXISTS test4;

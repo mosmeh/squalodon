@@ -1,6 +1,6 @@
 # Create a table
 statement ok
-create table t1(v1 int, v2 varchar, v3 int);
+create table t1(v1 int, v2 varchar(128), v3 int);
 
 # Insert once
 statement ok
@@ -45,7 +45,7 @@ select * from t1;
 
 # Create another table, insert with select *
 statement ok
-create table t2(v1 int, v2 varchar, v3 int);
+create table t2(v1 int, v2 varchar(128), v3 int);
 
 statement ok
 insert into t2 select * from t1;
@@ -109,7 +109,7 @@ select * from t2;
 
 # Create a table
 statement ok
-create table t3(v1 int, v2 varchar, v3 int);
+create table t3(v1 int, v2 varchar(128), v3 int);
 
 # Insert with projection
 statement ok

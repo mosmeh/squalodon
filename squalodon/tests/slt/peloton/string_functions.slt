@@ -1,7 +1,7 @@
 # LengthTest
 
 statement ok
-CREATE TABLE foo(id integer, name varchar);
+CREATE TABLE foo(id integer, name varchar(32));
 
 statement ok
 insert into foo values

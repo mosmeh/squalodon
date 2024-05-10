@@ -621,7 +621,7 @@ SELECT test.a, test1.a, test2.a, test3.c FROM test, test1, test2, test3 WHERE te
 include fixtures/optimizer.slt.inc
 
 statement ok
-create table foo(a int, b varchar, primary key(a, b));
+create table foo(a int, b varchar(32), primary key(a, b));
 
 statement ok
 create index sk0 on foo(a);
@@ -643,7 +643,7 @@ select * from foo where b = '313';
 include fixtures/optimizer.slt.inc
 
 statement ok
-CREATE TABLE test2(a int primary key, b int, c varchar);
+CREATE TABLE test2(a int primary key, b int, c varchar(32));
 
 statement ok
 INSERT INTO test2 VALUES
@@ -806,7 +806,7 @@ INSERT INTO agg VALUES
 #11
 
 statement ok
-create table student(sid int primary key, name varchar);
+create table student(sid int primary key, name varchar(32));
 
 statement ok
 create table course (cid int, sid int, score real);
@@ -850,7 +850,7 @@ INSERT INTO test VALUES
     (7, 22, 333);
 
 statement ok
-CREATE TABLE test2(a int primary key, b int, c varchar);
+CREATE TABLE test2(a int primary key, b int, c varchar(32));
 
 statement ok
 INSERT INTO test2 VALUES

@@ -1,7 +1,7 @@
 include fixtures.slt.inc
 
 statement ok
-CREATE TABLE graph(src int, dst int, src_label VARCHAR, dst_label VARCHAR, distance int);
+CREATE TABLE graph(src int, dst int, src_label VARCHAR(8), dst_label VARCHAR(8), distance int);
 
 statement ok
 INSERT INTO graph SELECT * FROM __mock_graph;

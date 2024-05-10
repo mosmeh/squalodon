@@ -236,7 +236,18 @@ impl<'a> Parser<'a> {
             Token::Integer | Token::BigInt | Token::Int | Token::SmallInt => Type::Integer,
             Token::Real | Token::Decimal => Type::Real,
             Token::Boolean => Type::Boolean,
-            Token::Text | Token::Char | Token::BpChar | Token::VarChar => Type::Text,
+            Token::Text => Type::Text,
+            Token::BpChar | Token::Char | Token::VarChar => {
+                if self.lexer.consume_if_eq(Token::LeftParen)? {
+                    // Length limit is ignored.
+                    match self.lexer.peek()? {
+                        Token::IntegerLiteral(_) => self.lexer.consume()?,
+                        token => return Err(ParserError::unexpected(token)),
+                    };
+                    self.expect(Token::RightParen)?;
+                }
+                Type::Text
+            }
             Token::Blob | Token::ByteA => Type::Blob,
             token => return Err(ParserError::unexpected(&token)),
         };

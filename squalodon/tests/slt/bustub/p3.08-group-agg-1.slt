@@ -23,7 +23,7 @@ statement ok
 -- v4: cursor / 100
 -- v5: 233
 -- v6: some magic string
-create table t1(v1 int, v2 int, v3 int, v4 int, v5 int, v6 varchar);
+create table t1(v1 int, v2 int, v3 int, v4 int, v5 int, v6 varchar(128));
 
 query IIII
 select v5, min(v1), sum(v2), count(*) from t1 group by v5; -- no groups, no output
