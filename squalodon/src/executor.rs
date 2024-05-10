@@ -82,8 +82,8 @@ impl<'a> ExecutionContext<'a> {
             .columns()
             .map(|column| {
                 Column {
-                    name: column.column_name,
-                    ty: match column.ty {
+                    name: column.simple_name().to_owned(),
+                    ty: match column.ty() {
                         NullableType::NonNull(ty) => ty,
                         NullableType::Null => Type::Integer, // Arbitrarily choose INTEGER
                     },

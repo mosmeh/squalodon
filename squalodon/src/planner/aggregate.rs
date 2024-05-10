@@ -23,7 +23,7 @@ impl Node for Aggregate<'_> {
             Self::Ungrouped { source, ops } => {
                 let mut node = f.node("UngroupedAggregate");
                 for op in ops {
-                    node.field("aggregate", f.column_map()[op.output].name());
+                    node.field("aggregate", f.column_map()[op.output].canonical_name());
                 }
                 node.child(source);
             }
@@ -31,12 +31,12 @@ impl Node for Aggregate<'_> {
                 let mut node = f.node("HashAggregate");
                 for op in ops {
                     if let AggregateOp::ApplyAggregate(ApplyAggregateOp { output, .. }) = op {
-                        node.field("aggregate", f.column_map()[output].name());
+                        node.field("aggregate", f.column_map()[output].canonical_name());
                     }
                 }
                 for op in ops {
                     if let AggregateOp::GroupBy { target } = op {
-                        node.field("group by", f.column_map()[target].name());
+                        node.field("group by", f.column_map()[target].canonical_name());
                     }
                 }
                 node.child(source);
@@ -306,7 +306,7 @@ impl<'b> AggregatePlanner<'_, 'b> {
                 let expr = aggregate
                     .arg
                     .clone()
-                    .into_typed(column_map[aggregate.output].ty);
+                    .into_typed(column_map[aggregate.output].ty());
                 exprs.push(expr);
             }
         }

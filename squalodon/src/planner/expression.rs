@@ -247,7 +247,8 @@ impl<'a> PlanExpression<'a> {
     }
 
     pub(super) fn display<'b>(&self, column_map: &'b ColumnMap) -> ExpressionDisplay<'a, 'b> {
-        self.clone().map_column_ref(|id| column_map[id].name())
+        self.clone()
+            .map_column_ref(|id| column_map[id].canonical_name())
     }
 
     fn map_column_ref<T, F>(self, f: F) -> Expression<'a, T>
@@ -504,7 +505,7 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
             .and_then(|aggregates| aggregates.resolve_group_by(&expr))
         {
             let expr = PlanExpression::ColumnRef(column_id)
-                .into_typed(self.planner.column_map()[column_id].ty);
+                .into_typed(self.planner.column_map()[column_id].ty());
             return Ok((source, expr));
         }
 
@@ -630,7 +631,7 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
                     .aggregates
                     .and_then(|aggregates| aggregates.resolve_aggregate_function(&function_call))
                 {
-                    let ty = self.planner.column_map()[id].ty;
+                    let ty = self.planner.column_map()[id].ty();
                     let expr = PlanExpression::ColumnRef(id).into_typed(ty);
                     return Ok((source, expr));
                 }
@@ -694,7 +695,7 @@ impl<'a, 'b> ExpressionBinder<'a, 'b> {
 
                 // Equivalent to `SELECT assert_single_row(subquery)`
                 let mut column_map = self.planner.column_map_mut();
-                let subquery_type = column_map[input].ty;
+                let subquery_type = column_map[input].ty();
                 let output = column_map.insert(Column::new(column_name, subquery_type));
                 let subquery = subquery.ungrouped_aggregate(vec![ApplyAggregateOp {
                     function: &ASSERT_SINGLE_ROW,

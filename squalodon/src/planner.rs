@@ -227,19 +227,7 @@ impl<'a> PlanNode<'a> {
     ) -> PlannerResult<TypedExpression<'a>> {
         let mut candidates = self.outputs().into_iter().filter_map(|id| {
             let column = &column_map[id];
-            if column.column_name != column_ref.column_name() {
-                return None;
-            }
-            match (&column.table_name, column_ref.table_name()) {
-                (Some(a), Some(b)) if a == b => Some((id, column)),
-                (_, None) => {
-                    // If the column reference does not specify
-                    // a table name, it ambiguously matches any column
-                    // with the same name.
-                    Some((id, column))
-                }
-                (_, Some(_)) => None,
-            }
+            column.is_match(&column_ref).then_some((id, column))
         });
         let (id, column) = candidates
             .next()
@@ -249,7 +237,7 @@ impl<'a> PlanNode<'a> {
                 column_ref.column_name().to_owned(),
             ));
         }
-        Ok(PlanExpression::ColumnRef(id).into_typed(column.ty))
+        Ok(PlanExpression::ColumnRef(id).into_typed(column.ty()))
     }
 
     fn produces_no_rows(&self) -> bool {

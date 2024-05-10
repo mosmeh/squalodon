@@ -158,11 +158,11 @@ impl<'a> PlanNode<'a> {
             .columns()
             .iter()
             .map(|column| {
-                column_map.insert(Column {
-                    table_name: Some(table.name().to_owned()),
-                    column_name: column.name.clone(),
-                    ty: column.ty.into(),
-                })
+                column_map.insert(Column::with_table_name(
+                    table.name(),
+                    &column.name,
+                    column.ty,
+                ))
             })
             .collect();
         Self::Scan(Scan::Seq { table, outputs })

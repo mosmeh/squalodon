@@ -40,7 +40,10 @@ impl<'a> PlanNode<'a> {
             });
         }
         for (left, right) in left_outputs.iter().zip(right_outputs.iter()) {
-            if !column_map[left].ty.is_compatible_with(column_map[right].ty) {
+            if !column_map[left]
+                .ty()
+                .is_compatible_with(column_map[right].ty())
+            {
                 return Err(PlannerError::TypeError);
             }
         }

@@ -22,7 +22,7 @@ impl Node for Project<'_> {
     fn fmt_explain(&self, f: &ExplainFormatter) {
         let mut node = f.node("Project");
         for (id, _) in &self.projections {
-            node.field("expression", f.column_map()[id].name());
+            node.field("expression", f.column_map()[id].canonical_name());
         }
         node.child(&self.source);
     }
@@ -90,7 +90,7 @@ impl<'a> PlanNode<'a> {
                 // them because it may increase the size of the plan tree.
                 let (column_types, exprs): (Vec<_>, Vec<_>) = projections
                     .into_iter()
-                    .map(|(id, expr)| (column_map[id].ty, expr))
+                    .map(|(id, expr)| (column_map[id].ty(), expr))
                     .unzip();
                 return PlanNode::new_expression_scan(column_map, vec![exprs], column_types);
             }
@@ -205,7 +205,7 @@ impl<'a> Planner<'a> {
                 let exprs = outputs
                     .into_iter()
                     .take(num_projected_columns)
-                    .map(|id| PlanExpression::ColumnRef(id).into_typed(column_map[id].ty))
+                    .map(|id| PlanExpression::ColumnRef(id).into_typed(column_map[id].ty()))
                     .collect();
                 Ok(plan.project(&mut column_map, exprs))
             }

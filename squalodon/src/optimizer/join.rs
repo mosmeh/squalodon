@@ -35,7 +35,7 @@ fn optimize_inner<'a>(
             let mut column_map = column_map.borrow_mut();
             let exprs = original_outputs
                 .into_iter()
-                .map(|id| PlanExpression::ColumnRef(id).into_typed(column_map[id].ty))
+                .map(|id| PlanExpression::ColumnRef(id).into_typed(column_map[id].ty()))
                 .collect();
             Ok(optimized_plan.project(&mut column_map, exprs))
         },

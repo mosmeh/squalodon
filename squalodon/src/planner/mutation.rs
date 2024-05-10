@@ -164,7 +164,7 @@ impl<'a> Planner<'a> {
         let mut column_map = self.column_map_mut();
         for (source_column_id, dest_column) in column_mapping.into_iter().zip(table.columns()) {
             let TypedExpression { mut expr, ty } = if let Some(id) = source_column_id {
-                PlanExpression::ColumnRef(id).into_typed(column_map[id].ty)
+                PlanExpression::ColumnRef(id).into_typed(column_map[id].ty())
             } else {
                 let default_value = dest_column.default_value.clone().unwrap();
                 let (new_plan, expr) = ExpressionBinder::new(self).bind(plan, default_value)?;
@@ -231,7 +231,7 @@ impl<'a> Planner<'a> {
         let mut column_map = self.column_map_mut();
         let old = outputs
             .into_iter()
-            .map(|id| PlanExpression::ColumnRef(id).into_typed(column_map[id].ty));
+            .map(|id| PlanExpression::ColumnRef(id).into_typed(column_map[id].ty()));
         let new = exprs
             .into_iter()
             .zip(old.clone())

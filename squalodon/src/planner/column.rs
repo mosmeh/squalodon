@@ -3,25 +3,103 @@ use std::borrow::Cow;
 
 #[derive(Debug, Clone)]
 pub struct Column {
-    pub table_name: Option<String>,
-    pub column_name: String,
-    pub ty: NullableType,
+    canonical_name: parser::ColumnRef,
+    alias: Option<parser::ColumnRef>,
+    ty: NullableType,
 }
 
 impl Column {
     pub fn new(name: impl Into<String>, ty: impl Into<NullableType>) -> Self {
         Self {
-            table_name: None,
-            column_name: name.into(),
+            canonical_name: parser::ColumnRef {
+                table_name: None,
+                column_name: name.into(),
+            },
+            alias: None,
             ty: ty.into(),
         }
     }
 
-    pub fn name(&self) -> Cow<str> {
-        self.table_name.as_ref().map_or_else(
-            || Cow::Borrowed(self.column_name.as_str()),
-            |table_name| Cow::Owned(format!("{}.{}", table_name, self.column_name)),
+    pub fn with_table_name(
+        table_name: impl Into<String>,
+        column_name: impl Into<String>,
+        ty: impl Into<NullableType>,
+    ) -> Self {
+        Self {
+            canonical_name: parser::ColumnRef {
+                table_name: Some(table_name.into()),
+                column_name: column_name.into(),
+            },
+            alias: None,
+            ty: ty.into(),
+        }
+    }
+
+    pub fn canonical_name(&self) -> Cow<str> {
+        let canonical = &self.canonical_name;
+        canonical.table_name.as_ref().map_or_else(
+            || Cow::Borrowed(canonical.column_name.as_str()),
+            |table_name| Cow::Owned(format!("{}.{}", table_name, canonical.column_name)),
         )
+    }
+
+    pub fn simple_name(&self) -> &str {
+        &self
+            .alias
+            .as_ref()
+            .unwrap_or(&self.canonical_name)
+            .column_name
+    }
+
+    pub fn column_ref(&self) -> &parser::ColumnRef {
+        self.alias.as_ref().unwrap_or(&self.canonical_name)
+    }
+
+    pub fn is_match<T: ColumnRef>(&self, column_ref: &T) -> bool {
+        let r = self.alias.as_ref().unwrap_or(&self.canonical_name);
+        if r.column_name != column_ref.column_name() {
+            return false;
+        }
+        match (&r.table_name, column_ref.table_name()) {
+            (Some(a), Some(b)) if a == b => true,
+            (_, None) => {
+                // If the column reference does not specify
+                // a table name, it ambiguously matches any column
+                // with the same column name.
+                true
+            }
+            (_, Some(_)) => false,
+        }
+    }
+
+    pub fn set_table_alias<T: Into<Option<String>>>(&mut self, alias: T) {
+        let alias = alias.into();
+        match &mut self.alias {
+            Some(a) => a.table_name = alias,
+            None => {
+                self.alias = Some(parser::ColumnRef {
+                    table_name: alias,
+                    ..self.canonical_name.clone()
+                });
+            }
+        }
+    }
+
+    pub fn set_column_alias<T: Into<String>>(&mut self, alias: T) {
+        let alias = alias.into();
+        match &mut self.alias {
+            Some(a) => a.column_name = alias,
+            None => {
+                self.alias = Some(parser::ColumnRef {
+                    column_name: alias,
+                    ..self.canonical_name.clone()
+                });
+            }
+        }
+    }
+
+    pub fn ty(&self) -> NullableType {
+        self.ty
     }
 }
 
