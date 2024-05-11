@@ -151,6 +151,7 @@ impl<'a> CatalogRef<'a> {
         let bytes = self
             .txn
             .get(&key)
+            .map_err(StorageError::Backend)?
             .ok_or_else(|| CatalogError::UnknownEntry(kind, name.to_owned()))?;
         bincode::deserialize(&bytes).map_err(Into::into)
     }
@@ -160,9 +161,10 @@ impl<'a> CatalogRef<'a> {
         kind: CatalogEntryKind,
     ) -> impl Iterator<Item = CatalogResult<T>> + '_ {
         let prefix = kind.catalog_prefix();
-        self.txn
-            .prefix_scan(prefix)
-            .map(|(_, v)| bincode::deserialize(&v).map_err(Into::into))
+        self.txn.prefix_scan(prefix).map(|r| {
+            let (_, v) = r.map_err(StorageError::Backend)?;
+            bincode::deserialize(&v).map_err(Into::into)
+        })
     }
 
     fn insert_entry<T: Serialize>(
@@ -173,7 +175,11 @@ impl<'a> CatalogRef<'a> {
     ) -> CatalogResult<()> {
         let key = kind.catalog_key(name);
         let value = bincode::serialize(value)?;
-        if self.txn.insert(&key, &value) {
+        if self
+            .txn
+            .insert(&key, &value)
+            .map_err(StorageError::Backend)?
+        {
             Ok(())
         } else {
             Err(CatalogError::DuplicateEntry(kind, name.to_owned()))
@@ -188,7 +194,9 @@ impl<'a> CatalogRef<'a> {
     ) -> CatalogResult<()> {
         let key = kind.catalog_key(name);
         let value = bincode::serialize(value)?;
-        let _ = self.txn.insert(&key, &value);
+        self.txn
+            .insert(&key, &value)
+            .map_err(StorageError::Backend)?;
         Ok(())
     }
 
@@ -196,6 +204,7 @@ impl<'a> CatalogRef<'a> {
         let key = kind.catalog_key(name);
         self.txn
             .remove(&key)
+            .map_err(StorageError::Backend)?
             .ok_or_else(|| CatalogError::UnknownEntry(kind, name.to_owned()))?;
         Ok(())
     }

@@ -7,7 +7,7 @@ use crate::{
     rows::Rows,
     storage::{Storage, Transaction},
     types::Params,
-    Database, Error, ExecutorError, Result, Row,
+    Database, Error, ExecutorError, Result, Row, StorageError,
 };
 use fastrand::Rng;
 use std::{cell::RefCell, collections::HashMap};
@@ -63,7 +63,11 @@ impl<'a, T: Storage> Connection<'a, T> {
     /// is marked as failed. Further inserts return errors immediately.
     pub fn inserter(&self, table: &str) -> Result<Inserter<T::Transaction<'a>>> {
         let table_name = table.to_owned();
-        let txn = self.db.storage.transaction();
+        let txn = self
+            .db
+            .storage
+            .transaction()
+            .map_err(StorageError::Backend)?;
         let catalog = self.db.catalog.with(&txn);
         let table = catalog.table(&table_name)?;
         let columns = table.columns().to_vec();
@@ -120,7 +124,12 @@ impl<'a, T: Storage> Connection<'a, T> {
         let txn = match &*txn_status {
             TransactionState::Active(txn) => txn,
             TransactionState::Aborted => return Err(TransactionError::TransactionAborted.into()),
-            TransactionState::Inactive => implicit_txn.insert(self.db.storage.transaction()),
+            TransactionState::Inactive => implicit_txn.insert(
+                self.db
+                    .storage
+                    .transaction()
+                    .map_err(StorageError::Backend)?,
+            ),
         };
 
         let catalog = self.db.catalog.with(txn);
@@ -130,7 +139,7 @@ impl<'a, T: Storage> Connection<'a, T> {
         match execution_ctx.execute(plan) {
             Ok(rows) => {
                 if let Some(txn) = implicit_txn {
-                    txn.commit(); // Auto commit
+                    txn.commit().map_err(StorageError::Backend)?; // Auto commit
                 }
                 Ok(rows)
             }
@@ -143,18 +152,15 @@ impl<'a, T: Storage> Connection<'a, T> {
         }
     }
 
-    fn handle_transaction_control(
-        &self,
-        txn_control: TransactionControl,
-    ) -> std::result::Result<(), TransactionError> {
+    fn handle_transaction_control(&self, txn_control: TransactionControl) -> Result<()> {
         let mut txn_status = self.txn_status.borrow_mut();
         match (&*txn_status, txn_control) {
             (TransactionState::Active(_), TransactionControl::Begin) => {
-                Err(TransactionError::NestedTransaction)
+                Err(TransactionError::NestedTransaction.into())
             }
             (TransactionState::Active(_), TransactionControl::Commit) => {
                 match std::mem::replace(&mut *txn_status, TransactionState::Inactive) {
-                    TransactionState::Active(txn) => txn.commit(),
+                    TransactionState::Active(txn) => txn.commit().map_err(StorageError::Backend)?,
                     _ => unreachable!(),
                 }
                 Ok(())
@@ -168,16 +174,21 @@ impl<'a, T: Storage> Connection<'a, T> {
                 Ok(())
             }
             (TransactionState::Aborted, TransactionControl::Begin) => {
-                Err(TransactionError::TransactionAborted)
+                Err(TransactionError::TransactionAborted.into())
             }
             (TransactionState::Inactive, TransactionControl::Begin) => {
-                *txn_status = TransactionState::Active(self.db.storage.transaction());
+                *txn_status = TransactionState::Active(
+                    self.db
+                        .storage
+                        .transaction()
+                        .map_err(StorageError::Backend)?,
+                );
                 Ok(())
             }
             (
                 TransactionState::Inactive,
                 TransactionControl::Commit | TransactionControl::Rollback,
-            ) => Err(TransactionError::NoActiveTransaction),
+            ) => Err(TransactionError::NoActiveTransaction.into()),
         }
     }
 }
@@ -323,7 +334,7 @@ impl<T: Transaction> Drop for Inserter<'_, T> {
     fn drop(&mut self) {
         let _ = self.flush();
         if let Some(txn) = self.txn.take() {
-            txn.commit();
+            let _ = txn.commit();
         }
     }
 }

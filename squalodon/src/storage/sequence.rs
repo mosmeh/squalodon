@@ -18,7 +18,9 @@ impl Sequence<'_> {
             None => self.start_value(),
         };
         let key = self.id().serialize();
-        let _ = self.transaction().insert(&key, &next_value.to_be_bytes());
+        self.transaction()
+            .insert(&key, &next_value.to_be_bytes())
+            .map_err(StorageError::Backend)?;
         Ok(next_value)
     }
 
@@ -27,7 +29,11 @@ impl Sequence<'_> {
     /// Returns None if the sequence has not been incremented yet.
     fn current_value(&self) -> StorageResult<Option<i64>> {
         let key = self.id().serialize();
-        let Some(bytes) = self.transaction().get(&key) else {
+        let Some(bytes) = self
+            .transaction()
+            .get(&key)
+            .map_err(StorageError::Backend)?
+        else {
             return Ok(None);
         };
         let bytes = bytes
@@ -37,8 +43,11 @@ impl Sequence<'_> {
     }
 
     /// Resets the sequence to the state that it has not been incremented yet.
-    pub fn reset(&self) {
+    pub fn reset(&self) -> StorageResult<()> {
         let key = self.id().serialize();
-        let _ = self.transaction().remove(&key);
+        match self.transaction().remove(&key) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(StorageError::Backend(e)),
+        }
     }
 }

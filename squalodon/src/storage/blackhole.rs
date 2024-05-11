@@ -1,4 +1,4 @@
-use super::Storage;
+use super::{BackendResult, ScanIter, Storage};
 use std::marker::PhantomData;
 
 /// A storage engine that discards all data.
@@ -16,10 +16,10 @@ impl Blackhole {
 impl Storage for Blackhole {
     type Transaction<'a> = Transaction<'a>;
 
-    fn transaction(&self) -> Transaction {
-        Transaction {
+    fn transaction(&self) -> BackendResult<Transaction> {
+        Ok(Transaction {
             phantom: PhantomData,
-        }
+        })
     }
 }
 
@@ -28,21 +28,23 @@ pub struct Transaction<'a> {
 }
 
 impl super::Transaction for Transaction<'_> {
-    fn get(&self, _key: &[u8]) -> Option<Vec<u8>> {
-        None
+    fn get(&self, _key: &[u8]) -> BackendResult<Option<Vec<u8>>> {
+        Ok(None)
     }
 
-    fn scan(&self, _start: Vec<u8>, _end: Vec<u8>) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)>> {
+    fn scan(&self, _start: Vec<u8>, _end: Vec<u8>) -> Box<ScanIter> {
         Box::new(std::iter::empty())
     }
 
-    fn insert(&self, _key: &[u8], _value: &[u8]) -> bool {
-        true
+    fn insert(&self, _key: &[u8], _value: &[u8]) -> BackendResult<bool> {
+        Ok(true)
     }
 
-    fn remove(&self, _key: &[u8]) -> Option<Vec<u8>> {
-        None
+    fn remove(&self, _key: &[u8]) -> BackendResult<Option<Vec<u8>>> {
+        Ok(None)
     }
 
-    fn commit(self) {}
+    fn commit(self) -> BackendResult<()> {
+        Ok(())
+    }
 }

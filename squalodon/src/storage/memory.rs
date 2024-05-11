@@ -1,4 +1,4 @@
-use super::Storage;
+use super::{BackendResult, ScanIter, Storage};
 use crossbeam_skiplist::SkipMap;
 use std::{
     cell::RefCell,
@@ -22,13 +22,13 @@ impl Memory {
 impl Storage for Memory {
     type Transaction<'a> = Transaction<'a>;
 
-    fn transaction(&self) -> Transaction {
-        Transaction {
+    fn transaction(&self) -> BackendResult<Transaction> {
+        Ok(Transaction {
             data: &self.data,
             undo_set: BTreeMap::new().into(),
             is_committed: false,
             _guard: self.txn.lock().unwrap(),
-        }
+        })
     }
 }
 
@@ -42,30 +42,27 @@ pub struct Transaction<'a> {
 }
 
 impl super::Transaction for Transaction<'_> {
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.data
+    fn get(&self, key: &[u8]) -> BackendResult<Option<Vec<u8>>> {
+        Ok(self
+            .data
             .get(key)
-            .map(|entry| entry.value().clone().into_vec())
+            .map(|entry| entry.value().clone().into_vec()))
     }
 
-    fn scan(
-        &self,
-        start: Vec<u8>,
-        end: Vec<u8>,
-    ) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + '_> {
+    fn scan(&self, start: Vec<u8>, end: Vec<u8>) -> Box<ScanIter> {
         let iter = self
             .data
             .range(start.into_boxed_slice()..end.into_boxed_slice())
             .map(|entry| {
-                (
+                Ok((
                     entry.key().clone().into_vec(),
                     entry.value().clone().into_vec(),
-                )
+                ))
             });
         Box::new(iter)
     }
 
-    fn insert(&self, key: &[u8], value: &[u8]) -> bool {
+    fn insert(&self, key: &[u8], value: &[u8]) -> BackendResult<bool> {
         let prev_value = self.data.get(key).map(|entry| entry.value().clone());
         let was_present = prev_value.is_some();
         self.data.insert(
@@ -76,20 +73,21 @@ impl super::Transaction for Transaction<'_> {
             .borrow_mut()
             .entry(key.to_vec().into_boxed_slice())
             .or_insert(prev_value);
-        !was_present
+        Ok(!was_present)
     }
 
-    fn remove(&self, key: &[u8]) -> Option<Vec<u8>> {
+    fn remove(&self, key: &[u8]) -> BackendResult<Option<Vec<u8>>> {
         let value = self.data.remove(key).map(|entry| entry.value().clone());
         self.undo_set
             .borrow_mut()
             .entry(key.to_vec().into_boxed_slice())
             .or_insert_with(|| value.clone());
-        value.map(<[_]>::into_vec)
+        Ok(value.map(<[_]>::into_vec))
     }
 
-    fn commit(mut self) {
+    fn commit(mut self) -> BackendResult<()> {
         self.is_committed = true;
+        Ok(())
     }
 }
 

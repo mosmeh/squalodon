@@ -1,5 +1,5 @@
 use rocksdb::{Direction, IteratorMode, TransactionDB};
-use squalodon::storage::Storage;
+use squalodon::storage::{BackendResult, ScanIter, Storage};
 
 pub struct RocksDB {
     db: TransactionDB,
@@ -14,56 +14,60 @@ impl RocksDB {
 impl Storage for RocksDB {
     type Transaction<'a> = Transaction<'a>;
 
-    fn transaction(&self) -> Self::Transaction<'_> {
-        Transaction(Some(self.db.transaction()))
+    fn transaction(&self) -> BackendResult<Self::Transaction<'_>> {
+        Ok(Transaction(Some(self.db.transaction())))
     }
 }
 
 pub struct Transaction<'a>(Option<rocksdb::Transaction<'a, TransactionDB>>);
 
 impl squalodon::storage::Transaction for Transaction<'_> {
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.inner().get(key).unwrap()
+    fn get(&self, key: &[u8]) -> BackendResult<Option<Vec<u8>>> {
+        self.inner().get(key).map_err(Into::into)
     }
 
-    fn scan(
-        &self,
-        start: Vec<u8>,
-        end: Vec<u8>,
-    ) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + '_> {
+    fn scan(&self, start: Vec<u8>, end: Vec<u8>) -> Box<ScanIter> {
         let iter = self
             .inner()
             .iterator(IteratorMode::From(&start, Direction::Forward))
-            .map(std::result::Result::unwrap)
-            .take_while(move |(k, _)| k.as_ref() < &end)
-            .map(|(k, v)| (k.to_vec(), v.to_vec()));
+            .take_while(move |r| match r {
+                Ok((k, _)) => k.as_ref() < &end,
+                Err(_) => true,
+            })
+            .map(|r| match r {
+                Ok((k, v)) => Ok((k.to_vec(), v.to_vec())),
+                Err(e) => Err(e.into()),
+            });
         Box::new(iter)
     }
 
-    fn insert(&self, key: &[u8], value: &[u8]) -> bool {
+    fn insert(&self, key: &[u8], value: &[u8]) -> BackendResult<bool> {
         let inner = self.inner();
-        let was_present = inner.get(key).unwrap().is_some();
-        inner.put(key, value).unwrap();
-        !was_present
+        let was_present = inner.get(key)?.is_some();
+        inner.put(key, value)?;
+        Ok(!was_present)
     }
 
-    fn remove(&self, key: &[u8]) -> Option<Vec<u8>> {
+    fn remove(&self, key: &[u8]) -> BackendResult<Option<Vec<u8>>> {
         let inner = self.inner();
-        inner.get(key).unwrap().map(|value| {
-            inner.delete(key).unwrap();
-            value
-        })
+        inner
+            .get(key)?
+            .map(|value| {
+                inner.delete(key)?;
+                Ok(value)
+            })
+            .transpose()
     }
 
-    fn commit(mut self) {
-        self.0.take().unwrap().commit().unwrap();
+    fn commit(mut self) -> BackendResult<()> {
+        self.0.take().unwrap().commit().map_err(Into::into)
     }
 }
 
 impl Drop for Transaction<'_> {
     fn drop(&mut self) {
         if let Some(inner) = self.0.take() {
-            inner.rollback().unwrap();
+            let _ = inner.rollback();
         }
     }
 }

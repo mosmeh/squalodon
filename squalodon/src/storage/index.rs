@@ -16,7 +16,10 @@ impl<'a> Index<'a> {
         let txn = self.transaction();
         self.scan_inner(range).map(move |row| {
             let (_, row_key) = row?;
-            let bytes = txn.get(&row_key).ok_or(StorageError::Inconsistent)?;
+            let bytes = txn
+                .get(&row_key)
+                .map_err(StorageError::Backend)?
+                .ok_or(StorageError::Inconsistent)?;
             bincode::deserialize(&bytes).map_err(Into::into)
         })
     }
@@ -59,7 +62,8 @@ impl<'a> Index<'a> {
         let num_columns = self.column_indexes().len();
         self.transaction()
             .prefix_range_scan(self.id().serialize(), (start, end))
-            .map(move |(k, v)| {
+            .map(move |r| {
+                let (k, v) = r.map_err(StorageError::Backend)?;
                 let serde = MemcomparableSerde::new();
                 let mut indexed = Vec::with_capacity(num_columns);
                 let mut slice = &k[ObjectId::SERIALIZED_LEN..];
@@ -95,7 +99,11 @@ impl<'a> Index<'a> {
             // the index.
             Vec::new()
         };
-        if self.transaction().insert(&key, &value) {
+        if self
+            .transaction()
+            .insert(&key, &value)
+            .map_err(StorageError::Backend)?
+        {
             Ok(())
         } else {
             Err(StorageError::DuplicateKey)
@@ -104,7 +112,11 @@ impl<'a> Index<'a> {
 
     pub(super) fn remove(&self, row: &[Value], row_key: &[u8]) -> StorageResult<()> {
         let key = self.key(row, row_key);
-        match self.transaction().remove(&key) {
+        match self
+            .transaction()
+            .remove(&key)
+            .map_err(StorageError::Backend)?
+        {
             Some(_) => Ok(()),
             None => Err(StorageError::Inconsistent),
         }
@@ -124,8 +136,11 @@ impl<'a> Index<'a> {
     pub fn clear(&self) -> StorageResult<()> {
         let prefix = self.id().serialize();
         let txn = self.transaction();
-        for (k, _) in txn.prefix_scan(prefix) {
-            txn.remove(&k).ok_or(StorageError::Inconsistent)?;
+        for r in txn.prefix_scan(prefix) {
+            let (k, _) = r.map_err(StorageError::Backend)?;
+            txn.remove(&k)
+                .map_err(StorageError::Backend)?
+                .ok_or(StorageError::Inconsistent)?;
         }
         Ok(())
     }

@@ -38,7 +38,7 @@ impl Sequence<'_> {
     }
 
     pub fn drop_it(self) -> CatalogResult<()> {
-        self.reset();
+        self.reset()?;
         self.catalog
             .remove_entry(CatalogEntryKind::Sequence, &self.def.name)
     }

@@ -4,9 +4,10 @@ use crate::{catalog::Table, memcomparable::MemcomparableSerde, Row, StorageError
 impl<'a> Table<'a> {
     pub fn scan(&self) -> impl Iterator<Item = StorageResult<Row>> + 'a {
         let row_key_prefix = self.id().serialize();
-        self.transaction()
-            .prefix_scan(row_key_prefix)
-            .map(|(_, v)| bincode::deserialize(&v).map_err(Into::into))
+        self.transaction().prefix_scan(row_key_prefix).map(|r| {
+            let (_, v) = r.map_err(StorageError::Backend)?;
+            bincode::deserialize(&v).map_err(Into::into)
+        })
     }
 
     pub fn insert<'r, R: Into<&'r [Value]>>(&self, row: R) -> StorageResult<()> {
@@ -15,6 +16,7 @@ impl<'a> Table<'a> {
         if !self
             .transaction()
             .insert(&row_key, &bincode::serialize(row)?)
+            .map_err(StorageError::Backend)?
         {
             return Err(StorageError::DuplicateKey);
         }
@@ -33,14 +35,23 @@ impl<'a> Table<'a> {
 
         let serialized = bincode::serialize(new_row)?;
         if new_row_key == old_row_key {
-            if self.transaction().insert(&new_row_key, &serialized) {
+            if self
+                .transaction()
+                .insert(&new_row_key, &serialized)
+                .map_err(StorageError::Backend)?
+            {
                 return Err(StorageError::Inconsistent);
             }
         } else {
             self.transaction()
                 .remove(&old_row_key)
+                .map_err(StorageError::Backend)?
                 .ok_or(StorageError::Inconsistent)?;
-            if !self.transaction().insert(&new_row_key, &serialized) {
+            if !self
+                .transaction()
+                .insert(&new_row_key, &serialized)
+                .map_err(StorageError::Backend)?
+            {
                 return Err(StorageError::DuplicateKey);
             }
         }
@@ -53,6 +64,7 @@ impl<'a> Table<'a> {
         let row_key = self.prepare_for_write(row)?;
         self.transaction()
             .remove(&row_key)
+            .map_err(StorageError::Backend)?
             .ok_or(StorageError::Inconsistent)?;
         self.update_indexes(Some((row, &row_key)), None)
     }
@@ -62,7 +74,9 @@ impl<'a> Table<'a> {
         for row in self.scan() {
             let row = row?;
             let row_key = self.prepare_for_write(&row.0)?;
-            txn.remove(&row_key).ok_or(StorageError::Inconsistent)?;
+            txn.remove(&row_key)
+                .map_err(StorageError::Backend)?
+                .ok_or(StorageError::Inconsistent)?;
         }
         for index in self.indexes() {
             index.clear()?;
