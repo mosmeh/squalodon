@@ -96,17 +96,16 @@ impl Node for NestedLoopJoin<'_> {
             return Err(NodeError::EndOfRows);
         }
         'outer: loop {
-            let outer_row = match &self.outer_row {
-                Some(row) => row,
-                None => {
-                    let row = self.outer_source.next_row()?;
-                    let keys = self
-                        .comparisons
-                        .iter()
-                        .map(|(_, k)| k.eval(self.ctx, &row))
-                        .collect::<ExecutorResult<_>>()?;
-                    self.outer_row.insert(JoinRow { row, keys })
-                }
+            let outer_row = if let Some(row) = &self.outer_row {
+                row
+            } else {
+                let row = self.outer_source.next_row()?;
+                let keys = self
+                    .comparisons
+                    .iter()
+                    .map(|(_, k)| k.eval(self.ctx, &row))
+                    .collect::<ExecutorResult<_>>()?;
+                self.outer_row.insert(JoinRow { row, keys })
             };
             if let Some(inner_row) = self.inner_rows.get(self.inner_cursor) {
                 for ((lhs, rhs), (op, _)) in outer_row
@@ -184,25 +183,24 @@ impl<'a> HashJoin<'a> {
 impl Node for HashJoin<'_> {
     fn next_row(&mut self) -> Output {
         'outer: loop {
-            let outer_row = match &self.outer_row {
-                Some(row) => row,
-                None => {
-                    let outer_row = self.outer_row.insert(self.outer_source.next_row()?);
-                    let serde = MemcomparableSerde::new();
-                    let mut key = Vec::new();
-                    for expr in &self.keys {
-                        let value = expr.eval(self.ctx, outer_row)?;
-                        if value.is_null() {
-                            continue 'outer;
-                        }
-                        serde.serialize_into(&value, &mut key);
+            let outer_row = if let Some(row) = &self.outer_row {
+                row
+            } else {
+                let outer_row = self.outer_row.insert(self.outer_source.next_row()?);
+                let serde = MemcomparableSerde::new();
+                let mut key = Vec::new();
+                for expr in &self.keys {
+                    let value = expr.eval(self.ctx, outer_row)?;
+                    if value.is_null() {
+                        continue 'outer;
                     }
-                    assert!(self.inner_rows.next().is_none());
-                    if let Some(inner_rows) = self.map.get(&key) {
-                        self.inner_rows = inner_rows.clone().into_iter();
-                    }
-                    outer_row
+                    serde.serialize_into(&value, &mut key);
                 }
+                assert!(self.inner_rows.next().is_none());
+                if let Some(inner_rows) = self.map.get(&key) {
+                    self.inner_rows = inner_rows.clone().into_iter();
+                }
+                outer_row
             };
             if let Some(inner_row) = self.inner_rows.next() {
                 let mut row = outer_row.0.clone().into_vec();

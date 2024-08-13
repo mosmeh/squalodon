@@ -122,15 +122,12 @@ impl MemcomparableSerde {
             if buf.is_empty() {
                 return None;
             }
-            match self.deserialize_from(buf) {
-                Ok((value, len)) => {
-                    buf = &buf[len..];
-                    Some(Ok(value))
-                }
-                Err(DeserializeError) => {
-                    buf = &[];
-                    Some(Err(DeserializeError))
-                }
+            if let Ok((value, len)) = self.deserialize_from(buf) {
+                buf = &buf[len..];
+                Some(Ok(value))
+            } else {
+                buf = &[];
+                Some(Err(DeserializeError))
             }
         })
     }
